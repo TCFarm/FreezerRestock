@@ -1089,13 +1089,14 @@ function openLine(id){
           if(Math.abs(adj) < 0.001){
             c.innerHTML = 'No change — this will just confirm the count.'; return; }
           const list = adj < 0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
-          const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
+
+          const ph = '<option value="__none__" selected>— choose a reason —</option>';
           c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj)
                           :'Found '+n(adj)+' extra')+'</b>'+
             '<div class="sm dim" style="margin:6px 0">A Finale '+
             (adj<0?'decrease':'increase')+' at '+esc(f.p?f.p.loc:'this pallet')+'.</div>'+
             '<select id="sreason">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
-              esc(r||'(no reason — found stock has no agreed code yet)')+
+              esc(r)+
               '</option>').join('')+'</select></div>';
         };
         const e = $('#q1'); if(e) e.addEventListener('input', upd);
@@ -1232,7 +1233,7 @@ function openLine(id){
         }
         const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
 
-        const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
+        const ph = '<option value="__none__" selected>— choose a reason —</option>';
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
 
           '<div class="sm dim" style="margin:6px 0">We will record '+
@@ -1242,7 +1243,7 @@ function openLine(id){
                    'because that is where the extra stock physically is')+
           ', as well as the move.</div>'+
           '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
-            esc(r||'(no reason — found stock has no agreed code yet)')+'</option>').join('')+'</select></div>';
+            esc(r)+'</option>').join('')+'</select></div>';
       };
       $('#q1').addEventListener('input',upd); $('#q2').addEventListener('input',upd); upd();
     });
