@@ -20,7 +20,7 @@
    strictly worse than no service worker, because nothing on screen says so.
    ⭐ deploy_freezer_page.py rewrites it from the built page's own byte length, so it cannot
    be forgotten — see STAMP below. */
-const VERSION = '96ed6ce15f82';
+const VERSION = '54b04f930b04';
 const CACHE = 'freezer-shell-' + VERSION;
 const SHELL = ['./', './index.html'];
 
