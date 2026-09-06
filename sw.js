@@ -20,9 +20,16 @@
    strictly worse than no service worker, because nothing on screen says so.
    ⭐ deploy_freezer_page.py rewrites it from the built page's own byte length, so it cannot
    be forgotten — see STAMP below. */
-const VERSION = '8be055bde898';
+const VERSION = '3dc82c6c965e';
 const CACHE = 'freezer-shell-' + VERSION;
-const SHELL = ['./', './index.html'];
+/* ⛔⛔ `zxing.js` IS IN THE SHELL, AND THAT IS THE WHOLE POINT OF PRECACHING IT.
+   It is the barcode decoder for every device whose browser has none (Safari, i.e. the crew's
+   iPad). It is fetched LAZILY by the page — only on the first camera tap — so without this
+   line the very first offline camera scan would be the one that fails, in a freezer, having
+   worked perfectly at the desk. ⭐ Precaching it at install means it is on the device before
+   anyone needs it. ⚠️ `addAll` is atomic, so if this file ever fails to publish the install
+   fails loudly and the old worker keeps serving — which is the correct failure. */
+const SHELL = ['./', './index.html', './zxing.js'];
 
 self.addEventListener('install', e => {
   /* ⭐ addAll is ATOMIC: if any entry fails the whole install fails and the OLD worker keeps
