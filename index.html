@@ -165,7 +165,8 @@ async function sha256(str){
 function tokStore(v){
   try{ if(v === undefined) return JSON.parse(localStorage.getItem(TOK_KEY) || 'null');
        if(v === null) localStorage.removeItem(TOK_KEY);
-       else localStorage.setItem(TOK_KEY, JSON.stringify(v)); }catch(e){ return null; }
+       else { localStorage.setItem(TOK_KEY, JSON.stringify(v)); clearAutoSignIn(); }
+     }catch(e){ return null; }
 }
 function haveToken(){
   const t = tokStore();
@@ -369,6 +370,19 @@ function renderOfflineBadge(){
   }
 }
 
+const AUTO_KEY = 'freezer.autosignin';
+function clearAutoSignIn(){ try{ sessionStorage.removeItem(AUTO_KEY); }catch(e){} }
+function autoSignInOK(){
+  if(cachedPlan()) return false;
+  if(navigator.onLine === false) return false;
+  try{
+    const n = Number(sessionStorage.getItem(AUTO_KEY) || 0);
+    if(n >= 2) return false;
+    sessionStorage.setItem(AUTO_KEY, String(n + 1));
+    return true;
+  }catch(e){ return false; }   
+}
+
 async function boot(){
   registerSW();
   try{
@@ -382,7 +396,11 @@ async function boot(){
   if(c){ setPlan(c.plan); render();
          ensureToken().then(ok => { if(ok) refreshPlanQuietly(); });  
          return; }
-  if(!(await ensureToken())) return renderGate();
+  if(!(await ensureToken())){
+
+    if(autoSignInOK()){ renderGate(null, true); return signIn(); }
+    return renderGate();
+  }
   renderGate(null, true);
   try{ const p = await fetchPlan(); acceptPlan(p); render(); }
   catch(e){ renderGate('Could not load the plan: ' + e.message); }
@@ -892,7 +910,7 @@ function pallet(b, p){
   let h = '<div class="card"><div class="ph" onclick="togglePallet(\''+p.loc+'\')">'+
     '<span class="tag '+(ps.done?'t-stay':'t-take')+'">'+(ps.done?'✓':'pos '+p.pos)+'</span>'+
     '<div class="grow"><b>'+esc(p.loc)+'</b>'+
-      (p.pallet_id ? ' <span class="tag t-count">card '+esc(p.pallet_id)+'</span>' : '')+
+      (p.pallet_id ? ' <span class="tag t-count">card '+esc(cardOf(p))+'</span>' : '')+
       '<small><b>'+esc(head)+'</b></small>'+
       '<small>'+esc(counts)+
       (p.spoil?' · <b>SPOIL — nothing to take, goes straight back</b>':'')+'</small></div>'+
@@ -923,7 +941,7 @@ function pallet(b, p){
     if(p.pallet_id){
       h += '<div class="pad" style="border-top:1px solid var(--line);padding-bottom:0">'+
         '<div class="okbox" style="margin:0 0 10px"><b>① Put temporary card '+
-        esc(p.pallet_id)+' on this pallet now.</b>'+
+        esc(cardOf(p))+' on this pallet now.</b>'+
         '<div class="sm dim" style="margin-top:4px">It came from '+esc(p.loc)+'. '+
         (p.goes_back_to
           ? 'When it goes back up it gets the Finale placard <b>'+esc(p.goes_back_to)+'</b> '+
@@ -964,7 +982,7 @@ function line(b, p, l, i){
   let sub = '';
   if(l.kind === 'take')  sub = '→ ' + esc(l.dest || 'F1');
 
-  if(l.kind === 'aside') sub = '→ pallet ' + esc(l.onto_pallet) +
+  if(l.kind === 'aside') sub = '→ pallet ' + esc(l.onto_card || cardOf(l.onto_pallet)) +
                                (l.cross
                                  ? ' in <b>bay '+l.onto_bay+' · '+esc(l.onto_lane||'')+
                                    '</b> — keep it on the floor until then'
@@ -1096,13 +1114,14 @@ function openLine(id){
   dlg(l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
     (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+esc(l.sku)+'</b> is also '+
         (sib.kind === 'take' ? 'being taken to '+esc(sib.dest||'F1')
-                             : 'being set aside onto '+esc(sib.onto_pallet))+
+                             : 'being set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
         ' — <b>'+n(sibTook)+'</b> units on the other line. '+
         'So this line is only about the <b>'+n(baseline)+'</b> that are not part of that.</div>' : '')+
     '<div class="row"><div><label class="sm dim">How many '+esc(verb)+'?</label>'+
       qtyField('q1', n(planned))+'</div>'+
+
       '<div><label class="sm dim">Of those '+n(baseline)+', how many are LEFT on '+
-        esc(f.p?f.p.loc:'the pallet')+'?</label>'+
+        esc(palletLabel(f.p))+'?</label>'+
       qtyField('q2', n(prev.left != null ? prev.left : Math.max(0, baseline - Number(planned))))+
       '</div></div>'+
     '<div class="sm dim" style="margin-top:8px">'+
@@ -1142,19 +1161,29 @@ function openLine(id){
           setTimeout(() => skipLine(id), 0);   
           return;
         }
-        const patch = {state:'done', actual:mv, left:lf, adjustment:adj,
-                       baseline:baseline, sibling_took:sibTook};
-        if(Math.abs(adj) > 0.001){
+        let adj2 = adj;
+        const rl = $('#realloc');
+
+        const realloc = (rl && rl.value === 'yes') ? adj : 0;
+        if(realloc) adj2 = 0;
+        const patch = {state:'done', actual:mv, left:lf, adjustment:adj2,
+                       baseline:baseline, sibling_took:sibTook,
+                       took_from_sibling: realloc || undefined,
+                       sibling_line: realloc ? (sib.onto_pallet || sib.dest || '') : undefined};
+        if(Math.abs(adj2) > 0.001){
           const sel = $('#rsn');
           if(sel && sel.value === '__none__'){
             toast('⛔ pick a reason — it becomes a Finale accounting code');
             return false;                      
           }
           patch.reason = sel ? sel.value : '';
-          patch.direction = adj < 0 ? 'shrink' : 'found';
+          patch.direction = adj2 < 0 ? 'shrink' : 'found';
         }
         setLine(id, patch);
-        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj});
+        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj2, realloc:realloc||0});
+        if(realloc){
+          toast('Recorded — ' + n(realloc) + ' taken from the other line, no correction');
+        }
         maybeDone(f.p.loc); render(); }},
 
      ...((f.l.kind === 'aside') ? [{t:'Save — but it did not all fit', c:'', f:()=>{
@@ -1180,12 +1209,33 @@ function openLine(id){
         const mv=Number($('#q1').value)||0, lf=Number($('#q2').value)||0;
         const adj=(mv+lf)-baseline; const c=$('#calc');
         if(Math.abs(adj)<0.001){ c.innerHTML='<div class="okbox sm">Adds up — nothing to correct.</div>'; return; }
+
+        if(sib && adj > 0.001 && adj <= sibTook + 0.001){
+          c.innerHTML =
+            '<div class="okbox"><b>That is '+n(adj)+' more than this line\'s share.</b>'+
+            '<div class="sm" style="margin:6px 0">Did you take it out of the other line — '+
+            esc(l.sku)+' '+(sib.kind==='take' ? 'going to '+esc(sib.dest||'F1')
+                                              : 'set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
+            ', which was down for <b>'+n(sibTook)+'</b>?</div>'+
+            '<select id="realloc">'+
+              '<option value="yes" selected>Yes — I moved '+n(adj)+' from that line to this '+
+                'one (nothing to correct)</option>'+
+              '<option value="no">No — there really was '+n(adj)+' more on the pallet than '+
+                'Finale says</option>'+
+            '</select></div>';
+          return;
+        }
         const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
 
         const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
-          '<div class="sm dim" style="margin:6px 0">We will record '+(adj<0?'a decrease':'an increase')+
-          ' at '+esc(f.p?f.p.loc:'source')+' as well as the move.</div>'+
+
+          '<div class="sm dim" style="margin:6px 0">We will record '+
+          (adj<0 ? 'a decrease at <b>'+esc(f.p?f.p.loc:'source')+'</b> — where Finale still '+
+                   'thinks it is'
+                 : 'an increase at <b>'+esc(adjLoc(f.p))+'</b> — where this pallet ends up, '+
+                   'because that is where the extra stock physically is')+
+          ', as well as the move.</div>'+
           '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
             esc(r||'(no reason — found stock has no agreed code yet)')+'</option>').join('')+'</select></div>';
       };
@@ -1292,11 +1342,11 @@ function putbackCard(b){
       (function(){
 
         const a = actualFor(pb.pallet_id);
-        if(!a) return '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
+        if(!a) return '<div class="grow"><div class="sku">take <b>'+esc(cardOf(pb)||'pallet')+
           '</b> → placard <b>'+esc(pb.loc)+'</b>'+
           (pb.pos===1?' <span class="dim sm">FRONT</span>':'')+'</div>';
         const where = a.state === 'floor' ? 'STILL ON THE FLOOR' : a.loc;
-        return '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
+        return '<div class="grow"><div class="sku">take <b>'+esc(cardOf(pb)||'pallet')+
           '</b> → <b style="color:'+(a.deviated?'var(--aside)':'inherit')+'">'+esc(where)+'</b>'+
           (a.deviated?' <span class="dim sm">(you changed this from '+esc(a.planned||'the plan')+
             ')</span>':' <span class="dim sm">as planned</span>')+'</div>';
@@ -1388,6 +1438,27 @@ const FULL_BUCKETS = [
   {k:'full',     pct:95,  t:'FULL',       d:'nothing else fits'},
   {k:'over',     pct:120, t:'OVERFULL',   d:'⛔ would not all fit — say what is left over'},
 ];
+
+function adjLoc(p){
+  if(!p) return '';
+  return palletFinalLoc(p.pallet_id) || p.goes_back_to || p.loc || '';
+}
+
+function cardOf(x){
+  if(!x) return '';
+  if(typeof x === 'object') return x.card || x.pallet_id || '';
+  for(const b of PAYLOAD.bays){
+    for(const p of (b.pallets||[])) if(p.pallet_id === x) return p.card || x;
+    for(const pb of (b.putback||[])) if(pb.pallet_id === x) return pb.card || x;
+  }
+  return x;                       
+}
+
+function palletLabel(p){
+  if(!p) return 'the pallet';
+  return p.pallet_id ? ('pallet ' + cardOf(p)) : (p.loc || 'the pallet');
+}
+
 function bucketOf(k){ return FULL_BUCKETS.find(x => x.k === k) || null; }
 
 function nearestBucket(pct){
@@ -1404,7 +1475,7 @@ function askFullness(bayN, loc){
   const deck = Number(p.deck_m3 || 0), ours = Number(p.est_m3 || 0);
   const ourPct = deck > 0 ? Math.round(100 * ours / deck) : null;
   const nov = (p.no_volume || []);
-  const title = (p.pallet_id || loc);
+  const title = (cardOf(p) || loc);
 
   if(ourPct == null || nov.length){
     return askFullnessBlind(bayN, loc, title, nov, ourPct);
@@ -1584,7 +1655,7 @@ function askActual(bayN, pid){
   const built = !!(S.new_pallets || {})[pid];
   const pos = lanePositions(pid, bayN);
   const prev = actualFor(pid) || {};
-  dlg((built ? 'Where did you put ' : 'Where did ') + esc(pid) + (built ? '?' : ' actually go?'),
+  dlg((built ? 'Where did you put ' : 'Where did ') + esc(cardOf(pid)) + (built ? '?' : ' actually go?'),
     (planned ? '<p class="sm dim">The plan said <b>'+esc(planned)+'</b>. If it went somewhere '+
        'else that is fine — we just need the real position, because next week is planned '+
        'against it and the placard on the pallet is what gets scanned.</p>'
@@ -1911,12 +1982,18 @@ function moves(){
 
             as_planned: !pt.deviated,
             planned_pallet: l.kind === 'aside' ? (l.onto_pallet||'') : '',
+             
+            took_from_sibling: s.took_from_sibling || '',
+            sibling_line: s.sibling_line || '',
             kind:l.kind, bay:b.bay, ts:s.ts});
         });
       }
       if(s.adjustment && Math.abs(s.adjustment) > 0.001){
 
-        out.adjustments.push({location:loc, sku:l.sku, lot:l.lot||'',
+        out.adjustments.push({location: (s.adjustment > 0 ? (adjLoc(p) || loc) : loc),
+
+          origin: loc, posted_at: (s.adjustment > 0 ? 'final position' : 'origin'),
+          sku:l.sku, lot:l.lot||'',
           change:s.adjustment, direction:s.adjustment<0?'decrease':'increase',
           baseline:(s.baseline != null ? s.baseline : l.system_qty),
           sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
