@@ -434,6 +434,7 @@ function blank(){
           bays:{},            
           putback_actual:{},  
           new_pallets:{},     
+          split_contents:{},  
           events:[],          
           breaks:[]};
 }
@@ -441,7 +442,8 @@ function load(){
   try{ const r = localStorage.getItem(KEY); if(r){ const o = JSON.parse(r);
 
         if(o && o.v === 2){ o.putback_actual = o.putback_actual || {};
-                            o.new_pallets = o.new_pallets || {}; return o; } } }catch(e){}
+                            o.new_pallets = o.new_pallets || {};
+                            o.split_contents = o.split_contents || {}; return o; } } }catch(e){}
   return blank();
 }
 
@@ -1556,6 +1558,65 @@ function setFullness(bayN, loc, k, mode, ourPct){
   render();
 }
 
+function knownLocations(){
+  if(window.__LOCS) return window.__LOCS;
+  const set = new Set();
+  PAYLOAD.bays.forEach(b => {
+    (b.pallets || []).forEach(p => { if(p.loc) set.add(p.loc);
+                                     if(p.goes_back_to) set.add(p.goes_back_to); });
+    (b.putback || []).forEach(pb => { if(pb.loc) set.add(pb.loc); });
+    (b.pallets || []).forEach(p => (p.lines || []).forEach(l => { if(l.dest) set.add(l.dest); }));
+    (b.orphan_pulls || []).forEach(o => { if(o.dest) set.add(o.dest);
+                                          if(o.from_location) set.add(o.from_location); });
+  });
+  window.__LOCS = set;
+  return set;
+}
+
+function normLoc(raw){
+  return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+ 
+function scanField(id){
+  return '<label class="sm" style="margin-top:2px">Scan the placard <span class="dim">'+
+    '(or pick it below)</span></label>'+
+    '<input id="'+id+'" autocomplete="off" autocapitalize="characters" spellcheck="false" '+
+    'placeholder="scan or type, e.g. F2-A-03-2" style="font-size:17px">'+
+    '<div id="'+id+'msg" class="sm dim" style="margin:4px 0 10px"></div>';
+}
+function wireScan(id, selId){
+  const inp = $('#'+id), sel = $('#'+selId), msg = $('#'+id+'msg');
+  if(!inp || !sel) return;
+  const apply = () => {
+    const v = normLoc(inp.value);
+    if(!v){ msg.textContent = ''; return; }
+    const opt = [...sel.options].find(o => normLoc(o.value) === v);
+    if(opt){ sel.value = opt.value;
+      msg.innerHTML = '✓ <b>'+esc(opt.value)+'</b>'; return; }
+    if(knownLocations().has(v)){
+
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v + ' — scanned, outside this lane';
+      sel.appendChild(o); sel.value = v;
+      msg.innerHTML = '✓ <b>'+esc(v)+'</b> — that is not in this lane, which is fine if it '+
+        'is where you put it.';
+      return;
+    }
+    const o = document.createElement('option');
+    o.value = v; o.textContent = v + ' — scanned (not in this plan)';
+    sel.appendChild(o); sel.value = v;
+    msg.innerHTML = '⚠️ <b>'+esc(v)+'</b> is not a location we have seen in this plan. '+
+      'We will record it exactly as scanned — check it is right.';
+  };
+
+  inp.addEventListener('keydown', e => {
+    if(e.key === 'Enter'){ e.preventDefault(); e.stopPropagation(); apply(); }
+  });
+  inp.addEventListener('change', apply);
+  inp.addEventListener('blur', apply);
+  setTimeout(() => { try{ inp.focus(); }catch(e){} }, 30);
+}
+
 function palletChoices(bayN, exclude){
 
   const b = PAYLOAD.bays.find(x => x.n === bayN) || {};
@@ -1663,6 +1724,7 @@ function askActual(bayN, pid){
        'against it and the placard on the pallet is what gets scanned.</p>'
      : '<p class="sm dim">You built this pallet, so there is no plan for it. Tell us where it '+
        'went and it becomes a real position like any other.</p>')+
+    scanField('pascan')+
     '<label class="sm">Position it went into</label>'+
     '<select id="pa">'+
       (planned ? '<option value="'+esc(planned)+'"'+(!prev.loc||prev.loc===planned?' selected':'')+
@@ -1693,6 +1755,7 @@ function askActual(bayN, pid){
         if(note === 'split') setTimeout(()=>askSecondPallet(bayN, pid), 0);
      }}],
     ()=>{
+      wireScan('pascan', 'pa');
       const sel = $('#pan'), m = $('#panote');
       const upd = () => { m.textContent = sel.value === 'split'
         ? 'We will ask for the second pallet next — it needs its own card and its own position.'
@@ -1700,6 +1763,48 @@ function askActual(bayN, pid){
         ? 'Say so at the end of the bay too, so nobody goes looking for it next week.' : ''; };
       sel.addEventListener('change', upd); upd();
     });
+}
+
+function splitPicker(pid){
+  let pal = null, bay = null;
+  PAYLOAD.bays.forEach(b => (b.pallets||[]).forEach(p => {
+    if(p.pallet_id === pid){ pal = p; bay = b; } }));
+  if(!pal) return '<div class="sm dim">nothing recorded on that pallet</div>';
+  const seen = {}, rows = [];
+  (pal.lines || []).forEach(l => {
+    if(l.kind === 'count') return;
+    const k = l.sku + '␟' + (l.lot || '');
+    if(seen[k]) return; seen[k] = 1;
+
+    const rid = 'sp' + rows.length;
+    rows.push('<div style="display:flex;gap:10px;align-items:center;padding:9px 2px;'+
+      'border-bottom:1px solid var(--line);min-height:48px">'+
+      '<input type="checkbox" class="splititem" id="'+rid+'" '+
+        'style="width:24px;height:24px;flex:0 0 auto" '+
+        'data-sku="'+esc(l.sku)+'" data-lot="'+esc(l.lot||'')+'" data-max="'+n(l.system_qty)+'">'+
+      '<label for="'+rid+'" class="grow" style="cursor:pointer"><b>'+esc(l.sku)+'</b>'+
+        (l.lot ? ' <span class="dim sm">lot '+esc(l.lot)+'</span>'
+               : ' <span class="dim sm">no lot</span>')+
+        '<div class="sm dim">'+n(l.system_qty)+' on it</div></label>'+
+      '<input class="splitqty" data-for="'+rid+'" inputmode="numeric" disabled '+
+        'value="'+n(l.system_qty)+'" style="width:78px;text-align:center;font-size:16px">'+
+      '</div>');
+  });
+  return rows.length
+    ? '<div style="max-height:250px;overflow-y:auto">'+rows.join('')+'</div>'+
+      '<div class="sm dim" style="margin-top:6px">Tick what moved. If only part of it went, '+
+      'change the number.</div>'
+    : '<div class="sm dim">nothing left on it to move</div>';
+}
+
+function wireSplitQty(){
+  document.querySelectorAll('.splititem').forEach(cb => {
+    const q = document.querySelector('.splitqty[data-for="'+cb.id+'"]');
+    if(!q) return;
+    const sync = () => { q.disabled = !cb.checked;
+      q.style.opacity = cb.checked ? '1' : '.4'; };
+    cb.addEventListener('change', sync); sync();
+  });
 }
 
 function askSecondPallet(bayN, fromPid){
@@ -1711,23 +1816,46 @@ function askSecondPallet(bayN, fromPid){
     'invisible.</p>'+
     '<label class="sm">P- card you put on it</label>'+
     '<input id="s2card" inputmode="numeric" placeholder="e.g. 12">'+
-    '<label class="sm" style="margin-top:10px">Position it went into</label>'+
+    scanField('s2scan')+
+    '<label class="sm">Position it went into</label>'+
     '<select id="s2pos">'+
       pos.map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
-      '<option value="__floor__">⛔ still on the floor</option></select>',
+      '<option value="__floor__">⛔ still on the floor</option></select>'+
+
+    '<div style="margin-top:14px"><label class="sm"><b>Which items went on this one?</b> '+
+      '<span class="dim">Tick everything you carried across.</span></label>'+
+      splitPicker(fromPid)+'</div>'+
+    '<div class="sm dim" style="margin-top:8px">Only part of one item moved? Leave it '+
+      'unticked here and use <b>“it did not all fit”</b> on that line instead.</div>',
     [{t:'Skip', c:'ghost'},
      {t:'Record it', c:'pri', f:()=>{
         const cn = ($('#s2card').value || '').trim().replace(/^P-?/i,'');
         if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card') && false;
         const pid = 'P-' + cn, v = $('#s2pos').value;
+        const took = [];
+        let badq = null;
+        [...document.querySelectorAll('.splititem:checked')].forEach(c => {
+          const box = document.querySelector('.splitqty[data-for="'+c.id+'"]');
+          const raw = box ? String(box.value).trim() : '';
+          const max = Number(c.dataset.max || 0);
+          const q = raw === '' ? max : Number(raw);
+          if(!isFinite(q) || q <= 0 || q > max + 0.001){ badq = c.dataset.sku; return; }
+          took.push({sku: c.dataset.sku, lot: c.dataset.lot || '', qty: q});
+        });
+        if(badq) return toast('⛔ check the quantity on ' + badq) && false;
         S.new_pallets[pid] = {bay:b.bay, bay_n:bayN, split_from:fromPid,
                               built_ts:new Date().toISOString()};
         S.putback_actual[pid] = {state: v === '__floor__' ? 'floor' : 'placed',
                                  loc: v === '__floor__' ? '' : v, note:'split_from_'+fromPid,
                                  planned:'', deviated:true, ts:new Date().toISOString()};
-        ev('pallet_split', {from:fromPid, to:pid, loc:v});
+
+        S.split_contents = S.split_contents || {};
+        S.split_contents[pid] = {from: fromPid, items: took};
+        ev('pallet_split', {from:fromPid, to:pid, loc:v, items:took.length});
         save(); render();
-     }}]);
+        if(!took.length) toast('Recorded — but nothing was ticked, so all the stock still '+
+                               'counts as being on ' + fromPid);
+     }}], ()=>{ wireScan('s2scan','s2pos'); wireSplitQty(); });
 }
 
 function backstockCard(){
@@ -2033,10 +2161,60 @@ function moves(){
         if (!(k in onIt)) onIt[k] = {sku: l.sku, lot: l.lot || '', qty: Number(l.system_qty || 0)};
       });
 
+      const splitTo = {};
+      Object.keys(S.split_contents || {}).forEach(newPid => {
+        const rec = S.split_contents[newPid];
+        if (!rec || rec.from !== p.pallet_id) return;
+
+        (rec.items || []).forEach(x => {
+          const kk = key(x.sku, x.lot);
+          splitTo[kk] = splitTo[kk] || {pid: newPid, qty: 0};
+          splitTo[kk].qty += (x.qty == null ? Infinity : Number(x.qty));
+        });
+      });
+
       Object.keys(onIt).forEach(k => {
         const it = onIt[k];
         const left = Math.round((it.qty - (gone[k] || 0)) * 1000) / 1000;
         if (left <= 0.001) return;
+
+        const sp = splitTo[k];
+        if (sp) {
+          const otherPid = sp.pid;
+          const toOther = Math.min(left, sp.qty);
+          const rest = Math.round((left - toOther) * 1000) / 1000;
+          const oa = actualFor(otherPid), ofin = palletFinalLoc(otherPid);
+          if (oa && oa.state === 'floor') {
+            out.unresolved = out.unresolved || [];
+            out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: toOther,
+              onto_pallet: otherPid,
+              why: 'moved onto ' + otherPid + ' when the pallet was split, and ' + otherPid +
+                   ' is still on the floor'});
+          } else if (!ofin) {
+            out.unresolved = out.unresolved || [];
+            out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: toOther,
+              onto_pallet: otherPid,
+              why: 'moved onto ' + otherPid + ' when the pallet was split, but ' + otherPid +
+                   ' has no recorded position'});
+          } else if (ofin !== origin && toOther > 0.001) {
+            out.transfers.push({from_location: origin, to_location: ofin,
+              onto_pallet: otherPid, sku: it.sku, lot: it.lot, quantity: toOther,
+              planned_qty: '', approved_qty: '', as_planned: false,
+              planned_pallet: p.pallet_id || '', took_from_sibling: '', sibling_line: '',
+              kind: 'pallet_move', split_from: p.pallet_id || '', spoil: !!p.spoil,
+              bay: b.bay, ts: (oa && oa.ts) || new Date().toISOString()});
+          }
+
+          if (rest > 0.001 && final && final !== origin) {
+            out.transfers.push({from_location: origin, to_location: final,
+              onto_pallet: p.pallet_id || '', sku: it.sku, lot: it.lot, quantity: rest,
+              planned_qty: '', approved_qty: '', as_planned: !(a && a.deviated),
+              planned_pallet: '', took_from_sibling: '', sibling_line: '',
+              kind: 'pallet_move', spoil: !!p.spoil, bay: b.bay,
+              ts: (a && a.ts) || new Date().toISOString()});
+          }
+          return;
+        }
 
         if (a && a.state === 'floor') {
           out.unresolved = out.unresolved || [];
@@ -2071,7 +2249,9 @@ function moves(){
 }
 function csv(rows){
   if(!rows.length) return '';
-  const k = Object.keys(rows[0]);
+
+  const k = [];
+  rows.forEach(r => Object.keys(r).forEach(x => { if(!k.includes(x)) k.push(x); }));
   const q = v => { v = v==null?'':String(v);
     return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
   return k.join(',')+'\n'+rows.map(r=>k.map(x=>q(r[x])).join(',')).join('\n')+'\n';
