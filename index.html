@@ -145,7 +145,7 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
 <script>
 "use strict";
 
-const CFG = {"entra":{"client_id":"PASTE_THE_APPLICATION_CLIENT_ID_HERE","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
+const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 let PAYLOAD = null;                       
 let KEY = 'freezer.exec.pending';         
 const CACHE_KEY = 'freezer.plan.cache';
@@ -405,18 +405,23 @@ async function refreshPlanQuietly(){
 }
 
 let S = blank();   
+
 function blank(){
   return {v:2, started:null, bay:0, screen:'review',
           opened:{},          
           lines:{},           
           pallets:{},         
           bays:{},            
+          putback_actual:{},  
+          new_pallets:{},     
           events:[],          
           breaks:[]};
 }
 function load(){
   try{ const r = localStorage.getItem(KEY); if(r){ const o = JSON.parse(r);
-        if(o && o.v === 2) return o; } }catch(e){}
+
+        if(o && o.v === 2){ o.putback_actual = o.putback_actual || {};
+                            o.new_pallets = o.new_pallets || {}; return o; } } }catch(e){}
   return blank();
 }
 
@@ -1150,7 +1155,26 @@ function openLine(id){
         }
         setLine(id, patch);
         ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj});
-        maybeDone(f.p.loc); render(); }}],
+        maybeDone(f.p.loc); render(); }},
+
+     ...((f.l.kind === 'aside') ? [{t:'Save — but it did not all fit', c:'', f:()=>{
+        const mv = readQty('q1'), lf = readQty('q2');
+        if(mv == null) return toast('⛔ how many did you move?') && false;
+        const adj = (mv + (lf==null?0:lf)) - baseline;
+        const patch = {state:'done', actual:mv, left:lf, adjustment:adj,
+                       baseline:baseline, sibling_took:sibTook};
+        if(Math.abs(adj) > 0.001){
+          const sel = $('#rsn');
+          if(sel && sel.value === '__none__'){
+            toast('⛔ pick a reason — it becomes a Finale accounting code'); return false; }
+          patch.reason = sel ? sel.value : '';
+          patch.direction = adj < 0 ? 'shrink' : 'found';
+        }
+        setLine(id, patch);
+        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj, didnt_fit:true});
+        maybeDone(f.p.loc);
+        setTimeout(()=>askSplit(id), 0);
+     }}] : [])],
     ()=>{ 
       const upd = ()=>{
         const mv=Number($('#q1').value)||0, lf=Number($('#q2').value)||0;
@@ -1265,9 +1289,18 @@ function putbackCard(b){
   b.putback.forEach((pb, i) => {
     const waiting = (pb.waits_for||[]).length;
     h += '<div class="ln"><span class="tag '+(pb.pos===1?'t-take':'t-stay')+'">'+(i+1)+'</span>'+
-      '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
-        '</b> → placard <b>'+esc(pb.loc)+'</b>'+
-        (pb.pos===1?' <span class="dim sm">FRONT</span>':'')+'</div>'+
+      (function(){
+
+        const a = actualFor(pb.pallet_id);
+        if(!a) return '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
+          '</b> → placard <b>'+esc(pb.loc)+'</b>'+
+          (pb.pos===1?' <span class="dim sm">FRONT</span>':'')+'</div>';
+        const where = a.state === 'floor' ? 'STILL ON THE FLOOR' : a.loc;
+        return '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
+          '</b> → <b style="color:'+(a.deviated?'var(--aside)':'inherit')+'">'+esc(where)+'</b>'+
+          (a.deviated?' <span class="dim sm">(you changed this from '+esc(a.planned||'the plan')+
+            ')</span>':' <span class="dim sm">as planned</span>')+'</div>';
+      })()+
 
       '<div class="sub">'+pb.items.length+' SKU · '+
         pb.items.map(x=>esc(x.sku)).join(', ')+'</div>'+
@@ -1299,6 +1332,14 @@ function putbackCard(b){
           'min-height:56px;font-size:13px;padding:4px 6px" onclick="event.stopPropagation();'+
           'askFullness('+b.n+',\''+esc(src.loc||'')+'\')">'+
           (bk ? bk.t : 'how<br>full?')+'</button>';
+      })()+
+
+      (function(){
+        const a = actualFor(pb.pallet_id);
+        return '<button type="button" class="'+(a?(a.deviated?'warn':'ok'):'ghost')+
+          '" style="min-width:78px;min-height:56px;font-size:13px;padding:4px 6px" '+
+          'onclick="event.stopPropagation();askActual('+b.n+',\''+esc(pb.pallet_id||'')+'\')">'+
+          (a ? (a.deviated ? 'changed' : '✓ as<br>planned') : 'went<br>elsewhere?')+'</button>';
       })()+
       '</div>';
   });
@@ -1390,8 +1431,16 @@ function setFullness(bayN, loc, k){
         '<b>We estimated '+ourPct+'%</b>; you said <b>'+bk.pct+'%</b>.'+
         (Math.abs(gap) >= 35
           ? '<div class="sm" style="margin-top:6px">That is a big gap, which is exactly what '+
-            'we are looking for — it means our sizes for these items, or for this pallet '+
-            'space, are off. Nothing for you to do.</div>'
+            'we are looking for. <b>If you know why, it saves us guessing:</b></div>'+
+
+            '<select id="fwhy" style="margin-top:8px">'+
+              '<option value="">— skip, no idea —</option>'+
+              '<option value="loose">boxes are loose / lots of air in the box</option>'+
+              '<option value="dense">packed tighter than it looks</option>'+
+              '<option value="stack_height">could not stack it as high here</option>'+
+              '<option value="wrong_contents">what is on it is not what the app listed</option>'+
+              '<option value="part_elsewhere">part of this pallet is somewhere else</option>'+
+              '<option value="other">something else</option></select>'
           : '<div class="sm" style="margin-top:6px">Close to our estimate.</div>')+
         '</div>')+
     (nov.length
@@ -1401,8 +1450,227 @@ function setFullness(bayN, loc, k){
       ? '<div class="warnbox sm" style="margin-top:10px"><b>⛔ Do not force it.</b> Leave '+
         'what will not fit on the floor and tell us at the end — a pallet crammed past its '+
         'deck is how stock ends up in a place Finale cannot see.</div>' : ''),
-    [{t:'OK', c:'pri'}]), 0);
+    [{t:'OK', c:'pri', f:()=>{
+       const w = $('#fwhy');
+       if(w && w.value){ ps_.fullness_why = w.value; save();
+                         ev('fullness_why', {pallet:p?p.pallet_id:loc, why:w.value}); }
+    }}]), 0);
   render();
+}
+
+function palletChoices(bayN, exclude){
+
+  const b = PAYLOAD.bays.find(x => x.n === bayN) || {};
+  const seen = {}, out = [];
+  (b.pallets || []).forEach(p => { if(p.pallet_id && p.pallet_id !== exclude && !seen[p.pallet_id]){
+    seen[p.pallet_id] = 1; out.push({id:p.pallet_id, why:'came down from '+p.loc, spoil:!!p.spoil}); } });
+  (b.putback || []).forEach(pb => { if(pb.pallet_id && pb.pallet_id !== exclude && !seen[pb.pallet_id]){
+    seen[pb.pallet_id] = 1; out.push({id:pb.pallet_id, why:'goes to '+pb.loc}); } });
+  Object.keys(S.new_pallets || {}).forEach(k => { if(k !== exclude && !seen[k]){
+    seen[k] = 1; out.push({id:k, why:'you built this one', built:true}); } });
+  return out;
+}
+
+function laneOf(pid, bayN){
+  const planned = plannedLocFor(pid);
+  if(planned){ const m = String(planned).match(/^(.*)-\d+$/); if(m) return m[1]; }
+  const b = PAYLOAD.bays.find(x => x.n === bayN);
+  return b ? b.bay : '';
+}
+function lanePositions(pid, bayN){
+  const lane = laneOf(pid, bayN);
+  if(!lane) return [];
+  const b = PAYLOAD.bays.find(x => x.bay === lane);
+  const depth = b ? Math.max(Number(b.depth || 0), (b.putback || []).length,
+                             Number(b.deepest || 0)) : 0;
+  const out = [];
+  for(let i = 1; i <= Math.max(depth, 1); i++) out.push(lane + '-' + i);
+  return out;
+}
+
+function askSplit(id){
+  const f = find(id); if(!f) return;
+  const l = f.l, st = S.lines[id] || {};
+  const total = st.actual != null ? st.actual : l.planned_qty;
+  const want = l.onto_pallet || '';
+  const others = palletChoices(f.b.n, want);
+  dlg('Where did the ' + n(total) + ' actually go?',
+    '<p class="sm dim">We asked for all of it on <b>' + esc(want || 'one pallet') + '</b>. If it '+
+    'would not fit, say what really happened — the split is what Finale gets told, and it is '+
+    'how we learn that this pallet space is smaller than we think.</p>'+
+    '<label class="sm">On <b>' + esc(want || 'the planned pallet') + '</b></label>'+
+    qtyField('sp1', total)+
+    '<label class="sm" style="margin-top:10px">The rest went on</label>'+
+    '<select id="sp2">'+
+      '<option value="">— nowhere, the rest is still on the floor —</option>'+
+      others.map(o => '<option value="'+esc(o.id)+'">'+esc(o.id)+' · '+esc(o.why)+
+                      (o.spoil?' ⚠️ spoil':'')+'</option>').join('')+
+      '<option value="__new__">a NEW pallet I built</option>'+
+    '</select>'+
+    '<div id="spnew" hidden><label class="sm" style="margin-top:8px">Which P- card did you '+
+      'put on it?</label><input id="spcard" inputmode="numeric" placeholder="e.g. 12"></div>'+
+    '<div id="spmsg" class="sm dim" style="margin-top:8px"></div>',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Record the split', c:'pri', f:()=>{
+        const a = readQty('sp1');
+        if(a == null) return toast('⛔ how many went on the planned pallet?') && false;
+        if(a > total + 0.001) return toast('⛔ that is more than the '+n(total)+' you moved') && false;
+        const rest = Math.round((total - a) * 1000) / 1000;
+        let dest = $('#sp2').value;
+        if(rest <= 0.001){
+          setLine(id, {placements:[{pallet:want, qty:a, deviated:false}]});
+          ev('split_recorded', {line:id, parts:1}); render(); return;
+        }
+        if(dest === '__new__'){
+          const cn = ($('#spcard').value || '').trim().replace(/^P-?/i,'');
+          if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card') && false;
+          dest = 'P-' + cn;
+          S.new_pallets[dest] = {bay: f.b.bay, bay_n: f.b.n, built_ts: new Date().toISOString()};
+        }
+        const parts = [{pallet:want, qty:a, deviated:false}];
+        parts.push({pallet:dest || '', qty:rest, deviated:true,
+                    floor: !dest});
+        setLine(id, {placements:parts});
+        ev('split_recorded', {line:id, parts:parts.length, overflow:rest, onto:dest||'FLOOR'});
+        render();
+
+        if(dest && S.new_pallets[dest] && !actualFor(dest)) setTimeout(()=>askActual(f.b.n, dest), 0);
+     }}],
+    ()=>{
+      const sel = $('#sp2'), nw = $('#spnew'), msg = $('#spmsg');
+      const upd = () => {
+        nw.hidden = sel.value !== '__new__';
+        const a = Number($('#sp1').value) || 0;
+        const rest = Math.round((total - a) * 1000) / 1000;
+        msg.innerHTML = rest <= 0.001
+          ? 'All ' + n(total) + ' on ' + esc(want) + ' — nothing to split.'
+          : '<b>' + n(rest) + '</b> goes ' + (sel.value === '__new__' ? 'on the new pallet'
+              : sel.value ? 'on ' + esc(sel.value) : '<span style="color:var(--bad)">nowhere — '+
+                'it stays on the floor and someone must deal with it</span>') + '.';
+      };
+      sel.addEventListener('change', upd);
+      $('#sp1').addEventListener('input', upd); upd();
+    });
+}
+
+function askActual(bayN, pid){
+  const b = PAYLOAD.bays.find(x => x.n === bayN); if(!b) return;
+  const planned = plannedLocFor(pid);
+  const built = !!(S.new_pallets || {})[pid];
+  const pos = lanePositions(pid, bayN);
+  const prev = actualFor(pid) || {};
+  dlg((built ? 'Where did you put ' : 'Where did ') + esc(pid) + (built ? '?' : ' actually go?'),
+    (planned ? '<p class="sm dim">The plan said <b>'+esc(planned)+'</b>. If it went somewhere '+
+       'else that is fine — we just need the real position, because next week is planned '+
+       'against it and the placard on the pallet is what gets scanned.</p>'
+     : '<p class="sm dim">You built this pallet, so there is no plan for it. Tell us where it '+
+       'went and it becomes a real position like any other.</p>')+
+    '<label class="sm">Position it went into</label>'+
+    '<select id="pa">'+
+      (planned ? '<option value="'+esc(planned)+'"'+(!prev.loc||prev.loc===planned?' selected':'')+
+                 '>'+esc(planned)+' — as planned</option>' : '')+
+      pos.filter(x => x !== planned).map(x =>
+        '<option value="'+esc(x)+'"'+(prev.loc===x?' selected':'')+'>'+esc(x)+'</option>').join('')+
+      '<option value="__floor__"'+(prev.state==='floor'?' selected':'')+
+        '>⛔ it is still on the floor</option>'+
+    '</select>'+
+    '<label class="sm" style="margin-top:10px">Anything different about it?</label>'+
+    '<select id="pan">'+
+      '<option value="">nothing — one pallet, as it came down</option>'+
+      '<option value="split">⚠️ I had to split it into more than one pallet</option>'+
+      '<option value="rebuilt">I rebuilt/restacked it to make it fit</option>'+
+      '<option value="short">some of it would not fit and is still down</option>'+
+    '</select>'+
+    '<div id="panote" class="sm dim" style="margin-top:8px"></div>',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Record it', c:'pri', f:()=>{
+        const v = $('#pa').value, note = $('#pan').value;
+        const rec = (v === '__floor__')
+          ? {state:'floor', loc:'', note:note, planned:planned, ts:new Date().toISOString()}
+          : {state:'placed', loc:v, note:note, planned:planned, ts:new Date().toISOString()};
+        rec.deviated = (v !== planned) || !!note;
+        S.putback_actual[pid] = rec;
+        ev('putback_actual', {pallet:pid, loc:rec.loc || 'FLOOR', planned:planned, note:note});
+        save(); render();
+        if(note === 'split') setTimeout(()=>askSecondPallet(bayN, pid), 0);
+     }}],
+    ()=>{
+      const sel = $('#pan'), m = $('#panote');
+      const upd = () => { m.textContent = sel.value === 'split'
+        ? 'We will ask for the second pallet next — it needs its own card and its own position.'
+        : sel.value === 'short'
+        ? 'Say so at the end of the bay too, so nobody goes looking for it next week.' : ''; };
+      sel.addEventListener('change', upd); upd();
+    });
+}
+
+function askSecondPallet(bayN, fromPid){
+  const b = PAYLOAD.bays.find(x => x.n === bayN); if(!b) return;
+  const pos = lanePositions(fromPid, bayN);   
+  dlg('The second pallet out of ' + esc(fromPid),
+    '<p class="sm dim">This is exactly the case we cannot see from the data — one digital '+
+    'pallet that is physically two. Give it its own card and position and it stops being '+
+    'invisible.</p>'+
+    '<label class="sm">P- card you put on it</label>'+
+    '<input id="s2card" inputmode="numeric" placeholder="e.g. 12">'+
+    '<label class="sm" style="margin-top:10px">Position it went into</label>'+
+    '<select id="s2pos">'+
+      pos.map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+      '<option value="__floor__">⛔ still on the floor</option></select>',
+    [{t:'Skip', c:'ghost'},
+     {t:'Record it', c:'pri', f:()=>{
+        const cn = ($('#s2card').value || '').trim().replace(/^P-?/i,'');
+        if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card') && false;
+        const pid = 'P-' + cn, v = $('#s2pos').value;
+        S.new_pallets[pid] = {bay:b.bay, bay_n:bayN, split_from:fromPid,
+                              built_ts:new Date().toISOString()};
+        S.putback_actual[pid] = {state: v === '__floor__' ? 'floor' : 'placed',
+                                 loc: v === '__floor__' ? '' : v, note:'split_from_'+fromPid,
+                                 planned:'', deviated:true, ts:new Date().toISOString()};
+        ev('pallet_split', {from:fromPid, to:pid, loc:v});
+        save(); render();
+     }}]);
+}
+
+function backstockCard(){
+  const bs = S.backstock || {};
+  const done = bs.free_spaces != null;
+  return '<div class="card"><div class="pad"><h3>'+(done?'✓ ':'')+
+    'One thing only you can tell us</h3>'+
+    '<div class="sm dim">The F1 back-stock area behind the picking bays is not in Finale at '+
+    'all — no export can see it. Whether there is room in there decides how much we can '+
+    'bring down next week.</div></div><div class="pad">'+
+    (done
+      ? '<div class="okbox sm">Recorded: <b>'+esc(String(bs.free_spaces))+'</b> free pallet '+
+        'space(s)'+(bs.dims?', area about <b>'+esc(bs.dims)+'</b>':'')+'. Thank you — '+
+        '<a href="#" onclick="askBackstock();return false">change it</a>.</div>'
+      : '<button class="big" onclick="askBackstock()">How much room is in F1 back stock?'+
+        '</button>')+
+    '</div></div>';
+}
+function askBackstock(){
+  const bs = S.backstock || {};
+  dlg('F1 back stock — how much room is left?',
+    '<p class="sm dim">Rough is fine. We only really need to know whether there are four or '+
+    'more free spaces — past that it stops changing anything.</p>'+
+    '<label class="sm">Free pallet spaces right now</label>'+
+    '<select id="bsn">'+
+      ['0','1','2','3','4','5','6','7','8','9','10 or more'].map((x,i)=>
+        '<option value="'+(x==='10 or more'?'10+':x)+'"'+
+        ((String(bs.free_spaces)===x||String(bs.free_spaces)===(x==='10 or more'?'10+':x))?' selected':'')+
+        '>'+x+'</option>').join('')+
+      '<option value="unsure"'+(bs.free_spaces==='unsure'?' selected':'')+'>not sure</option>'+
+    '</select>'+
+    '<label class="sm" style="margin-top:10px">Roughly how big is the whole area? '+
+      '<span class="dim">(optional — e.g. "20 ft x 12 ft", or "about 10 pallets worth")</span>'+
+    '</label>'+
+    '<input id="bsd" placeholder="20 ft x 12 ft" value="'+esc(bs.dims||'')+'">',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Record it', c:'pri', f:()=>{
+        S.backstock = {free_spaces: $('#bsn').value, dims: ($('#bsd').value||'').trim(),
+                       ts: new Date().toISOString()};
+        ev('backstock', S.backstock); save(); render();
+     }}]);
 }
 
 function renderDone(a){
@@ -1420,6 +1688,8 @@ function renderDone(a){
         ' bays closed, '+(jp2.total-jp2.done)+' line(s) still outstanding.</b>'+
         '<div class="sm dim" style="margin-top:4px">You can still sync from here; it will be '+
         'recorded as <b>in progress</b>, not complete.</div></div>')+
+
+    backstockCard()+
     '<div class="card"><div class="pad"><h3>What will go to Finale</h3>'+
     '<div>'+chip('Transfers', m.transfers.length)+chip('Corrections', m.adjustments.length)+
     chip('Counts', m.counts.length)+chip('Not found', m.missing.length)+
@@ -1441,6 +1711,9 @@ function renderDone(a){
     '<button onclick="dl(\'skipped\')">Not done CSV</button>'+
     
     '<button onclick="dl(\'missing\')">Not found CSV</button>'+
+
+    '<button onclick="dl(\'pallet_moves\')">Pallet positions CSV</button>'+
+    '<button onclick="dl(\'fullness\')">How full CSV</button>'+
     '<button onclick="dl(\'events\')">Event log</button></div></div>'+
     '<div class="card"><div class="pad">'+
       '<h3>Send to SharePoint</h3>'+
@@ -1480,16 +1753,31 @@ function startOver(){
 
 function palletFinalLoc(pid){
   if(!pid) return null;
+  const a = actualFor(pid);
+  if(a && a.loc) return a.loc;
+  if(a && a.state === 'floor') return '';        
   for(const b of PAYLOAD.bays)
     for(const pb of (b.putback || []))
       if(pb.pallet_id === pid) return pb.loc;
   return null;
 }
 
+function actualFor(pid){ return (S.putback_actual || {})[pid] || null; }
+function plannedLocFor(pid){
+  for(const b of PAYLOAD.bays)
+    for(const pb of (b.putback || []))
+      if(pb.pallet_id === pid) return pb.loc;
+  return '';
+}
+
 function moves(){
   const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[],
 
-               fullness:[], lane_room:[]};
+               fullness:[], lane_room:[],
+
+               pallet_moves:[],
+                
+               backstock: S.backstock ? [Object.assign({plan_date:PAYLOAD.plan_date}, S.backstock)] : []};
   PAYLOAD.bays.forEach(b => {
     (b.pallets || []).forEach(p => {
       const ps_ = S.pallets[p.loc] || {};
@@ -1499,6 +1787,7 @@ function moves(){
       out.fullness.push({bay:b.bay, from_location:p.loc, pallet_id:p.pallet_id||'',
         goes_back_to:p.goes_back_to||'', spoil:!!p.spoil,
         crew_bucket:ps_.fullness, crew_pct:bk?bk.pct:null,
+        crew_why:ps_.fullness_why||'',
         model_m3:ours, deck_m3:deck,
         model_pct: deck>0 ? Math.round(100*ours/deck) : null,
         no_volume_skus:(p.no_volume||[]).join(' '),
@@ -1514,6 +1803,26 @@ function moves(){
         deepest_dug:b.deepest, pallets_down:b.down,
         ts:bst.lane_room_ts});
     }
+  });
+   
+  PAYLOAD.bays.forEach(b => {
+    (b.putback || []).forEach(pb => {
+      const a = actualFor(pb.pallet_id);
+      out.pallet_moves.push({bay:b.bay, pallet_id:pb.pallet_id,
+        planned_location:pb.loc,
+        actual_location: a ? (a.state === 'floor' ? '' : a.loc) : pb.loc,
+        state: a ? a.state : 'planned',
+        confirmed: !!a, deviated: !!(a && a.deviated), note: a ? (a.note||'') : '',
+        built_by_crew:false, ts: a ? a.ts : ''});
+    });
+  });
+  Object.keys(S.new_pallets || {}).forEach(pid => {
+    const np = S.new_pallets[pid], a = actualFor(pid) || {};
+    out.pallet_moves.push({bay:np.bay||'', pallet_id:pid, planned_location:'',
+      actual_location: a.state === 'floor' ? '' : (a.loc||''),
+      state: a.state || 'unplaced', confirmed: !!a.state, deviated:true,
+      note: np.split_from ? ('split from '+np.split_from) : 'built on the floor',
+      built_by_crew:true, ts: a.ts || np.built_ts || ''});
   });
   PAYLOAD.bays.forEach(b => {
 
@@ -1547,21 +1856,37 @@ function moves(){
       }
       const act = s.actual != null ? s.actual : null;
       if(act != null && act > 0){
-        const dest = l.kind === 'take' ? (l.dest || '')
-                                       : (palletFinalLoc(l.onto_pallet) || '');
-        if(!dest){
 
-          out.unresolved = out.unresolved || [];
-          out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:act,
-            onto_pallet:l.onto_pallet||'',
-            why:'the receiving pallet has no final position in the putback list'});
-        }
-        out.transfers.push({from_location:loc,
-          to_location: dest,
-          onto_pallet: l.kind === 'aside' ? (l.onto_pallet||'') : '',
-          sku:l.sku, lot:l.lot||'', quantity:act,
-          planned_qty:l.planned_qty, approved_qty:(s.approved!=null?s.approved:l.planned_qty),
-          kind:l.kind, bay:b.bay, ts:s.ts});
+        const parts = (s.placements && s.placements.length)
+          ? s.placements
+          : [{pallet: (l.kind === 'aside' ? (l.onto_pallet||'') : ''), qty: act, deviated:false}];
+        parts.forEach(pt => {
+          if(!(pt.qty > 0)) return;
+          const pdest = (l.kind === 'take') ? (l.dest || '')
+                                            : (palletFinalLoc(pt.pallet) || '');
+          if(!pdest){
+
+            const pa = actualFor(pt.pallet);
+            out.unresolved = out.unresolved || [];
+            out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:pt.qty,
+              onto_pallet:pt.pallet||'',
+              why: pt.floor
+                     ? 'the crew put this part nowhere — it is loose on the floor'
+                   : (pa && pa.state === 'floor')
+                     ? 'the crew could not put pallet '+(pt.pallet||'?')+' back up — it is '+
+                       'still on the floor, so this stock has not moved anywhere yet'
+                   : 'the receiving pallet has no final position in the putback list'});
+          }
+          out.transfers.push({from_location:loc,
+            to_location: pdest,
+            onto_pallet: l.kind === 'aside' ? (pt.pallet||'') : '',
+            sku:l.sku, lot:l.lot||'', quantity:pt.qty,
+            planned_qty:l.planned_qty, approved_qty:(s.approved!=null?s.approved:l.planned_qty),
+
+            as_planned: !pt.deviated,
+            planned_pallet: l.kind === 'aside' ? (l.onto_pallet||'') : '',
+            kind:l.kind, bay:b.bay, ts:s.ts});
+        });
       }
       if(s.adjustment && Math.abs(s.adjustment) > 0.001){
 
