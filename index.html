@@ -1090,7 +1090,8 @@ function openLine(id){
             c.innerHTML = 'No change — this will just confirm the count.'; return; }
           const list = adj < 0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
 
-          const ph = '<option value="__none__" selected>— choose a reason —</option>';
+          const ph = list.length > 1
+            ? '<option value="__none__" selected>— choose a reason —</option>' : '';
           c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj)
                           :'Found '+n(adj)+' extra')+'</b>'+
             '<div class="sm dim" style="margin:6px 0">A Finale '+
@@ -1233,7 +1234,8 @@ function openLine(id){
         }
         const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
 
-        const ph = '<option value="__none__" selected>— choose a reason —</option>';
+        const ph = list.length > 1
+          ? '<option value="__none__" selected>— choose a reason —</option>' : '';
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
 
           '<div class="sm dim" style="margin:6px 0">We will record '+
@@ -2505,13 +2507,16 @@ async function graphWrite(path, body, method){
   return j;                                   
 }
 
-async function syncNow(){
+async function syncNow(quiet){
+  if(SYNCING) return;                      
+  SYNCING = true;
   let fileLanded = false;
-  const btn = $('#mainbtn');
+  const btn = quiet ? null : $('#mainbtn');
   const was = btn ? btn.textContent : '';
   if(btn){ btn.textContent = 'Syncing…'; btn.disabled = true; }
   try{
-    if(!(await ensureToken())){ await signIn(); return; }   
+
+    if(!(await ensureToken())){ if(quiet) return; await signIn(); return; }
     const sp = CFG.sharepoint;
     const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
     const m = moves();
@@ -2574,11 +2579,12 @@ async function syncNow(){
                 transfers: m.transfers.length, counts: m.counts.length};
     ev('synced', {file: upj.name, transfers: m.transfers.length});
     save(); render();
-    toast(`✅ synced — ${m.transfers.length} transfer(s), ${m.counts.length} count(s)`);
+    if(!quiet) toast(`✅ synced — ${m.transfers.length} transfer(s), ${m.counts.length} count(s)`);
   }catch(e){
     ev('sync_failed', {why: String(e.message || e)});
     save();
 
+    if(quiet) return;
     dlg('Sync failed', '<div class="badbox"><b>'+
       (fileLanded ? 'The record file was saved, but the session row was NOT updated.'
                   : 'Nothing was sent.')+
@@ -2586,8 +2592,35 @@ async function syncNow(){
       '<p class="sm dim">Your work is still saved on this iPad. Get back in signal and try '+
       'again — ⛔ do not start another session for this plan until this succeeds.</p>',
       [{t:'OK', c:'pri'}]);
-  }finally{ if(btn){ btn.disabled = false; btn.textContent = was; } }
+  }finally{ SYNCING = false; if(btn){ btn.disabled = false; btn.textContent = was; } }
 }
+
+let SYNCING = false;
+let LAST_AUTOSYNC = 0;
+const AUTOSYNC_MS = 5 * 60 * 1000;        
+
+function autoSyncTick(){
+  try{
+    if(!S || !S.started) return;                        
+    if(!isDirty()) return;
+    if(Date.now() - LAST_AUTOSYNC < AUTOSYNC_MS) return;
+    if(!tokStore()) return;                             
+    LAST_AUTOSYNC = Date.now();
+    syncNow(true);
+  }catch(e){   }
+}
+setInterval(autoSyncTick, 60 * 1000);
+
+const FLUSH_FLOOR_MS = 30 * 1000;
+function flushSoon(){
+  if(Date.now() - LAST_AUTOSYNC < FLUSH_FLOOR_MS) return;
+  LAST_AUTOSYNC = 0;                   
+  autoSyncTick();
+}
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'hidden') flushSoon();
+});
+window.addEventListener('online', flushSoon);
 
 function dlg(title, bodyHtml, buttons, after){
   const d = $('#dlg');
