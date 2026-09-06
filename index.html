@@ -76,7 +76,14 @@ button[disabled]{opacity:.4}
   min-height:var(--tap)}
 .ln .grow{flex:1;min-width:0}
 .ln .sku{font-weight:650;font-size:16px}
-.ln .sub{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ln .sub{color:var(--dim);font-size:12.5px;white-space:normal;overflow-wrap:anywhere}
+/* ⛔⛔ THIS RULE USED TO BE `nowrap; overflow:hidden; text-overflow:ellipsis`, AND IT WAS
+   THE TRUNCATION DEFECT COMING BACK THROUGH THE CSS. The putback card's SKU list had
+   its `.slice(0,4)` removed on 2026-09-05 precisely so incoming stock could not be
+   hidden — and at 375px, which is the actual iPad/phone width, the browser then cut
+   the same line off with an ellipsis anyway. It also clipped the cross-lane
+   instruction itself ("...keep it on the floor until then · do NOT reload here").
+   ⭐ A taller row is a cost worth paying; half a move is not. */
 .qty{font-variant-numeric:tabular-nums;font-weight:700;font-size:18px;min-width:58px;text-align:right}
 .tag{font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;white-space:nowrap}
 .t-take{background:color-mix(in srgb,var(--take) 18%,transparent);color:var(--take)}
@@ -688,7 +695,10 @@ function openWhy(id){
       row('Source pallet', f.p ? f.p.loc : (l.from_location||'')) +
       row('Lot', l.lot) + row('On that pallet', l.system_qty) +
       row('Destination', l.dest) + row('FIFO note', w.fifo) +
-      (l.kind==='aside' ? row('Goes onto pallet', l.onto_pallet + ' (bay '+l.onto_bay+')') : '')+
+      (l.kind==='aside' ? row('Goes onto pallet',
+                              l.onto_pallet + ' (bay ' + l.onto_bay +
+                              (l.cross ? ' · ' + (l.onto_lane||'') + ' — CROSS-LANE, a '
+                                       + 'different bay later in the shift' : '') + ')') : '')+
     '</table>'+
     '<div style="margin-top:14px"><b>Approve a different amount?</b>'+
     '<div class="sm dim">Planned '+n(l.planned_qty)+'. Changing it here records your INTENT, '+
@@ -931,15 +941,29 @@ function pallet(b, p){
     const arriving = [];
     PAYLOAD.bays.forEach(bb => bb.pallets.forEach(pp => pp.lines.forEach(l2 => {
       if(l2.kind === 'aside' && l2.onto_pallet === p.pallet_id)
-        arriving.push({sku:l2.sku, qty:l2.planned_qty, from:pp.loc, bay:bb.bay, n:bb.n});
+        arriving.push({sku:l2.sku, qty:l2.planned_qty, from:pp.loc, bay:bb.bay, n:bb.n,
+                     cross:!!l2.cross, lot:l2.lot||''});
     })));
+    /* ⚠️ IS THERE ROOM? Every cross-lane destination on the 2026-09-05 plan is estimated
+       OVER its deck once the arrivals land, and volumes are ~40% estimates — so this is a
+       warning, never a silent drop. ⛔ The failure to avoid is the crew finding out with
+       the boxes in their hands and no instruction for the remainder. */
+    const xd = (b.cross_in || []).filter(m => m.onto_pallet === p.pallet_id && m.dest_over_deck);
     if(arriving.length){
       h += '<div class="pad" style="border-top:1px solid var(--line);padding-bottom:0">'+
+        (xd.length ? '<div class="warnbox" style="margin:0 0 8px;border-color:var(--bad)">'+
+          '<b>⚠️ This pallet may not hold all of it.</b><div class="sm" style="margin-top:4px">'+
+          'Estimated <b>'+xd[0].dest_total_m3.toFixed(2)+' m³</b> once everything is on, '+
+          'against a <b>'+xd[0].dest_deck_m3.toFixed(2)+' m³</b> deck. Load what fits, '+
+          'oldest lots first. ⛔ Do NOT force it — leave the remainder on the floor and '+
+          'record it, so the next plan knows where the stock actually is.</div></div>' : '')+
         '<div class="warnbox" style="margin:0 0 10px"><b>⊕ '+arriving.length+
         ' also goes ON this pallet before it goes back up</b>'+
         arriving.map(x => '<div class="sm" style="margin-top:4px">• <b>'+esc(x.sku)+
-          '</b> ×'+n(x.qty)+' — set aside from '+esc(x.from)+
-          (x.n !== b.n ? ' in bay '+esc(x.bay) : '')+'</div>').join('')+
+          '</b> ×'+n(x.qty)+(x.lot?' · lot '+esc(x.lot):'')+' — set aside from '+esc(x.from)+
+          (x.n !== b.n ? ' in bay '+x.n+' ('+esc(x.bay)+')' : '')+
+          (x.cross ? ' <b>— cross-lane, it has been waiting on the floor</b>' : '')+
+          '</div>').join('')+
         '</div></div>';
     }
     if(p.pallet_id){
@@ -994,7 +1018,14 @@ function line(b, p, l, i){
   const onPallet = n(l.system_qty);
   let sub = '';
   if(l.kind === 'take')  sub = '→ ' + esc(l.dest || 'F1');
-  if(l.kind === 'aside') sub = '→ pallet ' + esc(l.onto_pallet) + (l.onto_bay!==b.n?' (bay '+l.onto_bay+')':'') +
+  /* ⭐ FR-530: a CROSS-LANE set-aside is the same instruction with a longer wait — the
+     pallet it joins is opened in a different BAY, in a different LANE, later in the shift.
+     ⛔ Saying only "pallet P-54" would have the crew hunting for it in this bay. */
+  if(l.kind === 'aside') sub = '→ pallet ' + esc(l.onto_pallet) +
+                               (l.cross
+                                 ? ' in <b>bay '+l.onto_bay+' · '+esc(l.onto_lane||'')+
+                                   '</b> — keep it on the floor until then'
+                                 : (l.onto_bay!==b.n?' (bay '+l.onto_bay+')':'')) +
                                (l.after_take?' · the REMAINDER after the pick':'') + ' · do NOT reload here';
   if(l.kind === 'count') sub = 'serial ' + esc(l.serial) + ' · system says ' + n(l.system_qty);
   if(l.kind === 'stay')  sub = 'reload as it was';
@@ -1323,6 +1354,8 @@ function putbackCard(b){
   let h = '<div class="card" id="pbcard"><div class="pad"><h3>Putback — load in this order</h3>'+
     '<div class="sm dim">Deepest first. The LAST pallet you push in is the one at the front '+
     '(position 1). Put the placard on each pallet as it goes in.</div></div><div class="body">';
+  const xin = {};
+  (b.cross_in || []).forEach(m => (xin[m.onto_pallet] = xin[m.onto_pallet] || []).push(m));
   b.putback.forEach((pb, i) => {
     const waiting = (pb.waits_for||[]).length;
     h += '<div class="ln"><span class="tag '+(pb.pos===1?'t-take':'t-stay')+'">'+(i+1)+'</span>'+
@@ -1334,6 +1367,14 @@ function putbackCard(b){
          it does not get to be a summary. */
       '<div class="sub">'+pb.items.length+' SKU · '+
         pb.items.map(x=>esc(x.sku)).join(', ')+'</div>'+
+      /* ⛔ AND THE CROSS-LANE ARRIVALS BELONG ON THIS CARD TOO. The putback screen is
+         where the pallet is physically loaded, so a card listing only the SKUs that were
+         already on it is the same "one half of a move" defect one screen further on —
+         the crew would push the pallet back with the arriving stock still on the floor. */
+      (xin[pb.pallet_id] ? '<div class="sub" style="color:var(--aside)">⊕ plus '+
+         xin[pb.pallet_id].length+' arriving from earlier bays — '+
+         xin[pb.pallet_id].map(m=>esc(m.sku)+' ×'+n(m.units)).join(', ')+
+         ' · put these ON before it goes up</div>' : '')+
       (waiting?'<div class="sub" style="color:var(--aside)">stays on the floor — still waiting for stock from a later bay</div>':'')+
       '</div></div>';
   });
