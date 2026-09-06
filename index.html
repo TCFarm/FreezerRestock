@@ -1390,62 +1390,87 @@ const FULL_BUCKETS = [
 ];
 function bucketOf(k){ return FULL_BUCKETS.find(x => x.k === k) || null; }
 
+function nearestBucket(pct){
+  if(pct == null) return null;
+  let best = FULL_BUCKETS[0];
+  FULL_BUCKETS.forEach(x => { if(Math.abs(x.pct - pct) < Math.abs(best.pct - pct)) best = x; });
+  return best;
+}
+
 function askFullness(bayN, loc){
   const b = PAYLOAD.bays.find(x => x.n === bayN);
   const p = b && b.pallets.find(x => x.loc === loc);
   if(!p) return;
+  const deck = Number(p.deck_m3 || 0), ours = Number(p.est_m3 || 0);
+  const ourPct = deck > 0 ? Math.round(100 * ours / deck) : null;
+  const nov = (p.no_volume || []);
+  const title = (p.pallet_id || loc);
+
+  if(ourPct == null || nov.length){
+    return askFullnessBlind(bayN, loc, title, nov, ourPct);
+  }
+  const guess = nearestBucket(ourPct);
+  dlg('Does this look about right?',
+    '<div class="okbox" style="text-align:center;padding:14px 10px">'+
+      '<div class="sm dim">We think '+esc(title)+' is about</div>'+
+      '<div style="font-size:34px;font-weight:700;line-height:1.1;margin:4px 0">'+ourPct+'%</div>'+
+      '<div class="sm dim">full — '+esc(guess.t)+', '+esc(guess.d)+'</div>'+
+    '</div>'+
+    '<p class="sm dim" style="margin-top:10px">If it looks about right, that is all we need.</p>',
+    [{t:'✓ Yep, about right', c:'pri', f:()=>setFullness(bayN, loc, guess.k, 'confirmed', ourPct)},
+     {t:'No — it is not', c:'warn', f:()=>{
+        setTimeout(()=>askFullnessBlind(bayN, loc, title, nov, ourPct, true), 0); }},
+     {t:'Skip', c:'ghost'}]);
+}
+
+function askFullnessBlind(bayN, loc, title, nov, ourPct, correcting){
   const prev = (S.pallets[loc] || {}).fullness || '';
-  dlg('How full is ' + (p.pallet_id || loc) + ' now it is loaded?',
-    '<p class="sm dim">Eyeball it — a rough answer is worth far more than none. This is the '+
-    'only way we can tell a genuinely empty pallet space from one Finale has simply lost '+
-    'track of.</p>'+
+  dlg(correcting ? 'What is it really?' : 'How full is ' + title + ' now it is loaded?',
+    (correcting
+      ? '<p class="sm dim">Thanks — that is the useful answer. Roughly, then:</p>'
+      : '<p class="sm dim">We have no size on file for '+
+        (nov && nov.length ? esc(nov.slice(0,3).join(', ')) : 'this one')+
+        ', so we cannot even guess. Your eyeball is the only reading there is.</p>')+
     '<div id="fullbtns">'+
       FULL_BUCKETS.map(x =>
         '<button type="button" class="big '+(prev===x.k?'ok':'')+'" style="margin-bottom:8px;'+
-        'text-align:left;min-height:62px" onclick="setFullness('+bayN+',\''+esc(loc)+'\',\''+x.k+'\')">'+
+        'text-align:left;min-height:62px" onclick="setFullness('+bayN+',\''+esc(loc)+'\',\''+
+        x.k+'\',\''+(correcting?'corrected':'blind')+'\','+(ourPct==null?'null':ourPct)+')">'+
         '<b>'+x.t+'</b><div class="sm" style="font-weight:400;opacity:.8">'+x.d+'</div></button>'
       ).join('')+
     '</div>',
     [{t:'Not now', c:'ghost'}]);
 }
 
-function setFullness(bayN, loc, k){
+function setFullness(bayN, loc, k, mode, ourPct){
   const b = PAYLOAD.bays.find(x => x.n === bayN);
   const p = b && b.pallets.find(x => x.loc === loc);
   const ps_ = S.pallets[loc] = S.pallets[loc] || {};
   ps_.fullness = k;
+  ps_.fullness_mode = mode || 'blind';
   ps_.fullness_ts = new Date().toISOString();
-  ev('fullness', {bay: b ? b.bay : '', pallet: p ? p.pallet_id : loc, bucket: k});
+  ev('fullness', {bay: b ? b.bay : '', pallet: p ? p.pallet_id : loc, bucket: k, mode: ps_.fullness_mode});
   save();
-
   const bk = bucketOf(k);
-  const deck = p ? Number(p.deck_m3 || 0) : 0;
-  const ours = p ? Number(p.est_m3 || 0) : 0;
-  const ourPct = deck > 0 ? Math.round(100 * ours / deck) : null;
-  const gap = (ourPct == null) ? null : bk.pct - ourPct;
-  const nov = (p && p.no_volume) || [];
-  setTimeout(() => dlg('Thanks — recorded as ' + bk.t,
-    (ourPct == null
-      ? '<p class="dim">We have no size estimate for this bay, so yours is the only reading.</p>'
-      : '<div class="'+(Math.abs(gap) >= 35 ? 'warnbox' : 'okbox')+'">'+
-        '<b>We estimated '+ourPct+'%</b>; you said <b>'+bk.pct+'%</b>.'+
-        (Math.abs(gap) >= 35
-          ? '<div class="sm" style="margin-top:6px">That is a big gap, which is exactly what '+
-            'we are looking for. <b>If you know why, it saves us guessing:</b></div>'+
 
-            '<select id="fwhy" style="margin-top:8px">'+
-              '<option value="">— skip, no idea —</option>'+
-              '<option value="loose">boxes are loose / lots of air in the box</option>'+
-              '<option value="dense">packed tighter than it looks</option>'+
-              '<option value="stack_height">could not stack it as high here</option>'+
-              '<option value="wrong_contents">what is on it is not what the app listed</option>'+
-              '<option value="part_elsewhere">part of this pallet is somewhere else</option>'+
-              '<option value="other">something else</option></select>'
-          : '<div class="sm" style="margin-top:6px">Close to our estimate.</div>')+
-        '</div>')+
-    (nov.length
-      ? '<p class="sm dim">⚠️ We have no size on file for '+nov.map(esc).join(', ')+
-        ', so our estimate reads light for this one.</p>' : '')+
+  if(ps_.fullness_mode === 'confirmed'){ toast('✓ ' + bk.t + ' — thanks'); render(); return; }
+
+  const gap = (ourPct == null) ? null : bk.pct - ourPct;
+  setTimeout(() => dlg('Recorded as ' + bk.t,
+    (ourPct == null
+      ? '<p class="dim">Nothing to compare it to — yours is the only reading, which makes it '+
+        'one of the most useful answers in the whole session.</p>'
+      : '<div class="warnbox"><b>We said '+ourPct+'%, you said '+bk.pct+'%.</b>'+
+        '<div class="sm" style="margin-top:6px">That is what we are looking for. '+
+        '<b>If you know why, it saves us guessing:</b></div>'+
+        '<select id="fwhy" style="margin-top:8px">'+
+          '<option value="">— skip, no idea —</option>'+
+          '<option value="loose">boxes are loose / lots of air in the box</option>'+
+          '<option value="dense">packed tighter than it looks</option>'+
+          '<option value="stack_height">could not stack it as high here</option>'+
+          '<option value="wrong_contents">what is on it is not what the app listed</option>'+
+          '<option value="part_elsewhere">part of this pallet is somewhere else</option>'+
+          '<option value="other">something else</option></select></div>')+
     (k === 'over'
       ? '<div class="warnbox sm" style="margin-top:10px"><b>⛔ Do not force it.</b> Leave '+
         'what will not fit on the floor and tell us at the end — a pallet crammed past its '+
@@ -1787,7 +1812,8 @@ function moves(){
       out.fullness.push({bay:b.bay, from_location:p.loc, pallet_id:p.pallet_id||'',
         goes_back_to:p.goes_back_to||'', spoil:!!p.spoil,
         crew_bucket:ps_.fullness, crew_pct:bk?bk.pct:null,
-        crew_why:ps_.fullness_why||'',
+         
+        mode:ps_.fullness_mode||'blind', crew_why:ps_.fullness_why||'',
         model_m3:ours, deck_m3:deck,
         model_pct: deck>0 ? Math.round(100*ours/deck) : null,
         no_volume_skus:(p.no_volume||[]).join(' '),
