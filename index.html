@@ -55,7 +55,11 @@ button[disabled]{opacity:.4}
 .bar .grow{flex:1;min-width:0}
 .bar b{display:block;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bar small{color:var(--dim);font-size:12px}
-.bar button{min-height:44px;padding:8px 12px;font-size:14px;border-radius:10px}
+/* ⛔ these were 34px wide with 8px gaps, four in a row, and they do very different
+   things — one changes bay, one blanks the screen, one jumps to the export. Below the
+   44px minimum is not acceptable for a gloved tap with those consequences. */
+.bar button{min-height:48px;min-width:48px;padding:8px 10px;font-size:16px;border-radius:10px;
+  margin-left:2px}
 .prog{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:6px}
 .prog i{display:block;height:100%;background:var(--ok);width:0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:10px 0;
@@ -537,6 +541,27 @@ function readQty(id){
   return (isFinite(v) && v >= 0) ? v : null;
 }
 
+/* ⛔⛔ `<input type=number>` RENDERS NO SPINNERS ON iOS SAFARI. The ▲▼ exist only in
+   desktop Chrome, so on the actual iPad every quantity change was keyboard-only — in a
+   freezer, in gloves. ⭐ Explicit ± buttons at 62px, which is the glove target the rest of
+   the app already uses. ⭐ They step by 1 under 50 and by 5 above, so a 300-unit line is
+   not 300 taps. */
+function qtyField(id, val){
+  return '<div style="display:flex;gap:8px;align-items:stretch;margin-top:4px">'+
+    '<button type="button" style="flex:0 0 62px;font-size:26px" '+
+      'onclick="qtyStep(\''+id+'\',-1)">−</button>'+
+    '<input type="number" inputmode="numeric" id="'+id+'" value="'+val+'" style="flex:1">'+
+    '<button type="button" style="flex:0 0 62px;font-size:26px" '+
+      'onclick="qtyStep(\''+id+'\',1)">+</button></div>';
+}
+function qtyStep(id, dir){
+  const el = $('#' + id); if(!el) return;
+  const cur = Number(el.value) || 0;
+  const step = cur >= 50 ? 5 : 1;
+  el.value = String(Math.max(0, cur + dir * step));
+  el.dispatchEvent(new Event('input'));       // ⭐ so the live correction preview updates
+}
+
 function toast(m){
   const d = document.createElement('div');
   d.textContent = m;
@@ -575,9 +600,18 @@ function render(){
 function renderReview(a){
   const t = PAYLOAD.totals || {};
   const allLines = [];
-  PAYLOAD.bays.forEach(b => b.pallets.forEach(p => p.lines.forEach((l,i) => {
-    if(l.kind === 'take' || l.kind === 'aside') allLines.push({b:b, p:p, l:l, id:lid(b.n,p.loc,l,i)});
-  })));
+  PAYLOAD.bays.forEach(b => {
+    b.pallets.forEach(p => p.lines.forEach((l,i) => {
+      if(l.kind === 'take' || l.kind === 'aside')
+        allLines.push({b:b, p:p, l:l, id:lid(b.n,p.loc,l,i)});
+    }));
+    /* ⛔ ORPHAN PULLS WERE MISSING FROM THE REVIEW TOTAL TOO. The header read "3868 units
+       to the floor / 64 lines" while the plan's own totals said 3890 / 65 — the difference
+       being exactly the orphan. ⭐ Two numbers for the same thing on the same screen is how
+       a reviewer stops trusting either. */
+    (b.orphan_pulls || []).forEach((o,i) =>
+      allLines.push({b:b, p:{loc:o.from_location||'ORPHAN'}, l:o, id:lid(b.n,'ORPHAN',o,i)}));
+  });
   const opened = allLines.filter(x => S.opened[x.id]).length;
   const takes = allLines.filter(x => x.l.kind === 'take');
   const asides = allLines.filter(x => x.l.kind === 'aside');
@@ -723,9 +757,15 @@ function renderBay(a){
   const b = PAYLOAD.bays[S.bay];
   if(!b){ S.screen='done'; save(); return render(); }
   const jp = jobProgress();
-  $('#hdr').textContent = 'Bay ' + b.bay + '  ·  ' + jp.pct + '% done';
+  // ⭐ label it — "1% done" on bay 1 reads as bay progress unless it says otherwise
+  $('#hdr').textContent = 'Bay ' + b.bay + '  ·  ' + jp.pct + '% of the whole job';
+  /* ⚠️ "dig to position 5 · 3 pallets down" reads as impossible in a front-packed lane.
+     It is correct — the positions between hold no stock — but the crew cannot know that
+     from the number alone, so say it. */
+  const gaps = b.deepest - b.pallets.length;
   $('#sub').textContent = 'Step ' + b.n + ' of ' + PAYLOAD.bays.length +
-      ' · dig to position ' + b.deepest + ' · ' + b.pallets.length + ' pallets down' +
+      ' · dig to position ' + b.deepest + ' · ' + b.pallets.length + ' pallets hold stock' +
+      (gaps > 0 ? ' (' + gaps + ' position' + (gaps>1?'s are':' is') + ' empty)' : '') +
       ' · ' + (jp.total - jp.done) + ' of ' + jp.total + ' lines left overall';
   // ⭐ the bar tracks the WHOLE job; the footer still speaks for this bay
   $('#progbar').style.width = jp.pct + '%';
@@ -854,9 +894,19 @@ function pallet(b, p){
   const counts = ORDER.filter(k=>groups[k]).map(k => groups[k].length + ' ' +
       (k==='take'?'to floor':k==='aside'?'set aside':k==='count'?'to count':'stay')).join(' · ');
   // ⭐ the prototype's header line: how much WORK is on this pallet, and how much STOCK.
+  /* ⛔ A COUNTED SKU EMITS TWO LINES — a `count` AND the `stay`/`aside` it sits on — both
+     carrying the SAME `system_qty`. Counting lines therefore double-counted both the SKUs
+     and the units: 12 of 56 pallets were wrong, worst `F2-A-02-3` reading "34 SKU · 2834
+     units" against a truth of 17 / 1417, exactly 2×. ⭐ Count DISTINCT (sku, lot) for stock;
+     the work count is separate and is right to include the count lines. */
   const todo = p.lines.filter(x => isActionable(x)).length;
-  const units = p.lines.reduce((t,x) => t + Number(x.system_qty||0), 0);
-  const head = (todo ? todo + ' to do' : 'nothing to do') + ' · ' + p.lines.length +
+  const seen = new Map();
+  p.lines.forEach(x => {
+    const k = (x.sku||'') + '|' + (x.lot||'');
+    if(!seen.has(k)) seen.set(k, Number(x.system_qty||0));
+  });
+  const units = [...seen.values()].reduce((t,v) => t + v, 0);
+  const head = (todo ? todo + ' to do' : 'nothing to do') + ' · ' + seen.size +
                ' SKU on it · ' + n(units) + ' units';
 
   /* ⭐⭐ THE `P-` CARD IS THE FIRST THING THE CREW DO, SO IT IS THE FIRST THING SHOWN.
@@ -875,6 +925,23 @@ function pallet(b, p){
       (p.spoil?' · <b>SPOIL — nothing to take, goes straight back</b>':'')+'</small></div>'+
     '<span class="dim">'+(open?'▾':'▸')+'</span></div>';
   if(open){
+    /* ⛔⛔ CLAUDE.md: "Never print one half of a move without the other." The SOURCE pallet
+       says "SET ASIDE N — goes onto pallet X", but the RECEIVING pallet said nothing, so the
+       crew loading it had no idea stock was due to go on before it went back up. */
+    const arriving = [];
+    PAYLOAD.bays.forEach(bb => bb.pallets.forEach(pp => pp.lines.forEach(l2 => {
+      if(l2.kind === 'aside' && l2.onto_pallet === p.pallet_id)
+        arriving.push({sku:l2.sku, qty:l2.planned_qty, from:pp.loc, bay:bb.bay, n:bb.n});
+    })));
+    if(arriving.length){
+      h += '<div class="pad" style="border-top:1px solid var(--line);padding-bottom:0">'+
+        '<div class="warnbox" style="margin:0 0 10px"><b>⊕ '+arriving.length+
+        ' also goes ON this pallet before it goes back up</b>'+
+        arriving.map(x => '<div class="sm" style="margin-top:4px">• <b>'+esc(x.sku)+
+          '</b> ×'+n(x.qty)+' — set aside from '+esc(x.from)+
+          (x.n !== b.n ? ' in bay '+esc(x.bay) : '')+'</div>').join('')+
+        '</div></div>';
+    }
     if(p.pallet_id){
       h += '<div class="pad" style="border-top:1px solid var(--line);padding-bottom:0">'+
         '<div class="okbox" style="margin:0 0 10px"><b>① Put temporary card '+
@@ -895,7 +962,14 @@ function pallet(b, p){
     });
     h += '</div><div class="pad row">'+
       '<button class="ok" onclick="allAsPlanned(\''+p.loc+'\')">✓ All as planned</button>'+
-      (groups.count ? '<button onclick="chainCounts(\''+p.loc+'\')">⊙ Count these '+groups.count.length+'</button>' : '')+
+      /* ⛔ was `groups.count.length` — it never decremented, so after 3 of 17 it still
+         said 17 while the toast correctly said 14 left. The button contradicted the app. */
+      (groups.count ? (() => {
+         const left = groups.count.filter(g => !isFinished(st(lid(b.n, p.loc, g.l, g.i)))).length;
+         return left ? '<button onclick="chainCounts(\''+p.loc+'\')">⊙ Count these '+left+
+                       '</button>'
+                     : '<button disabled>⊙ '+groups.count.length+' counted</button>';
+       })() : '')+
       '<button onclick="skipRest(\''+p.loc+'\')">↷ Skip the rest</button>'+
       '</div>';
   }
@@ -995,20 +1069,57 @@ function openLine(id){
   const planned = prev.actual != null ? prev.actual
                 : (s.approved != null ? s.approved : l.planned_qty);
   if(l.kind === 'stay'){
-    return dlg('Stays — ' + l.sku,
+    const prevStay = s || {};
+    return dlg('Stays — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
       '<p class="dim">Nothing to do: reload this exactly as it was.</p>'+
       '<p class="sm dim">Finale says <b>'+n(l.system_qty)+'</b> on this pallet. If that is wrong, '+
       'correct it — a pallet that is already open is the cheapest time to fix a count.</p>'+
       '<label class="sm dim">Actually on the pallet</label>'+
-      '<input type="number" inputmode="numeric" id="q1" value="'+n(l.system_qty)+'">',
+      qtyField('q1', n(prevStay.left != null ? prevStay.left : l.system_qty))+
+      '<div id="scalc" class="sm dim" style="margin-top:8px">Change the number to record a '+
+      'correction.</div>',
       [{t:'Cancel',c:'ghost'},
        {t:'Correct the count',c:'warn',f:()=>{
           const v=readQty('q1');
           if(v===null){ toast('⛔ not a quantity'); return false; }
-          setLine(id,{state:'done', left:v, adjustment:v-Number(l.system_qty), corrected:true});
-          ev('qty_corrected',{line:id, was:l.system_qty, now:v}); maybeDone(f.p.loc); render(); }},
+          const adj = v - Number(l.system_qty);
+          /* ⛔ TAPPING THIS WITHOUT CHANGING THE NUMBER wrote a `corrected: true` row with
+             was === now — a phantom correction in the export. */
+          if(Math.abs(adj) < 0.001){
+            setLine(id,{state:'done', as_planned:true});
+            ev('line_done',{line:id}); maybeDone(f.p.loc); render(); return; }
+          /* ⛔⛔ AND IT WROTE AN UNREASONED ADJUSTMENT. The take/aside path blocks a −8
+             without a reason ("it becomes a Finale accounting code") while this path let
+             −231 through unlabelled — the same Finale correction, no code, no warning. */
+          const sel = $('#sreason');
+          if(!sel || sel.value === '__none__'){
+            toast('⛔ pick a reason — this is a Finale stock correction');
+            return false; }
+          setLine(id,{state:'done', left:v, adjustment:adj, corrected:true,
+                      reason:sel.value, direction: adj<0 ? 'shrink' : 'found'});
+          ev('qty_corrected',{line:id, was:l.system_qty, now:v, adjustment:adj});
+          maybeDone(f.p.loc); render(); }},
        {t:'It is right',c:'ok',f:()=>{ setLine(id,{state:'done', as_planned:true});
-          ev('line_done',{line:id}); maybeDone(f.p.loc); render(); }}]);
+          ev('line_done',{line:id}); maybeDone(f.p.loc); render(); }}],
+      () => {
+        const upd = () => {
+          const v = Number($('#q1').value) || 0, adj = v - Number(l.system_qty);
+          const c = $('#scalc'); if(!c) return;
+          if(Math.abs(adj) < 0.001){
+            c.innerHTML = 'No change — this will just confirm the count.'; return; }
+          const list = adj < 0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
+          const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
+          c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj)
+                          :'Found '+n(adj)+' extra')+'</b>'+
+            '<div class="sm dim" style="margin:6px 0">A Finale '+
+            (adj<0?'decrease':'increase')+' at '+esc(f.p?f.p.loc:'this pallet')+'.</div>'+
+            '<select id="sreason">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
+              esc(r||'(no reason — found stock has no agreed code yet)')+
+              '</option>').join('')+'</select></div>';
+        };
+        const e = $('#q1'); if(e) e.addEventListener('input', upd);
+        upd();
+      });
   }
   /* ⛔⛔ `adjustment = (moved + left) − system_qty` IS ONLY VALID WHEN THIS LINE IS THE ONLY
      THING LEAVING THE PALLET — and it often is not. The model deliberately emits a `take`
@@ -1032,18 +1143,21 @@ function openLine(id){
   }
   const baseline = Math.max(0, Number(l.system_qty) - sibTook);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
-  dlg(l.sku + ' — planned ' + n(planned),
+  /* ⛔ THE DIALOG DID NOT NAME THE LOT. `F2-A-02-2` holds `221` twice — lot 2025-08-01
+     (take 7) and lot 2026-06-16 (stay 27) — and the header read only "221 — planned 7", so
+     the crew could not tell which stock they were confirming. Directly FIFO-relevant. */
+  dlg(l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
     (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+esc(l.sku)+'</b> is also '+
         (sib.kind === 'take' ? 'being taken to '+esc(sib.dest||'F1')
                              : 'being set aside onto '+esc(sib.onto_pallet))+
         ' — <b>'+n(sibTook)+'</b> units on the other line. '+
         'So this line is only about the <b>'+n(baseline)+'</b> that are not part of that.</div>' : '')+
     '<div class="row"><div><label class="sm dim">How many '+esc(verb)+'?</label>'+
-      '<input type="number" inputmode="numeric" id="q1" value="'+n(planned)+'"></div>'+
+      qtyField('q1', n(planned))+'</div>'+
       '<div><label class="sm dim">Of those '+n(baseline)+', how many are LEFT on '+
         esc(f.p?f.p.loc:'the pallet')+'?</label>'+
-      '<input type="number" inputmode="numeric" id="q2" value="'+
-        n(prev.left != null ? prev.left : Math.max(0, baseline - Number(planned)))+'"></div></div>'+
+      qtyField('q2', n(prev.left != null ? prev.left : Math.max(0, baseline - Number(planned))))+
+      '</div></div>'+
     '<div class="sm dim" style="margin-top:8px">'+
     (sib ? 'Finale says <b>'+n(l.system_qty)+'</b> on this pallet, <b>'+n(sibTook)+
            '</b> of which is the other line — so <b>'+n(baseline)+'</b> belongs to this one. '
@@ -1052,8 +1166,21 @@ function openLine(id){
     'you do not have to work it out.</div>'+
     '<div id="calc" style="margin-top:10px"></div>',
     [{t:'Cancel',c:'ghost'},
-     {t:'Not here at all',c:'',f:()=>{ setLine(id,{state:'missing', actual:0,
-        reason:'not found'}); ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }},
+     /* ⛔ one tap, no confirmation, and it asserts FINALE IS WRONG about the whole
+        `system_qty`. Re-opening the line then showed a perfectly normal dialog with no sign
+        it was marked missing. Confirm it, and say what it means. */
+     {t:'Not here at all',c:'',f:()=>{ setTimeout(() => dlg(
+        'Not here at all — ' + l.sku,
+        '<div class="warnbox"><b>This says Finale is WRONG.</b><div class="sm" '+
+        'style="margin-top:6px">Finale believes <b>'+n(l.system_qty)+'</b> of '+esc(l.sku)+
+        (l.lot?' (lot '+esc(l.lot)+')':'')+' is on '+esc(f.p?f.p.loc:'this pallet')+
+        '. Recording this proposes a decrease of the whole amount.</div></div>'+
+        '<p class="sm dim">⛔ Not the same as <b>Skip</b> — skip means we did not do it and '+
+        'Finale stays as it is.</p>',
+        [{t:'Cancel',c:'ghost'},
+         {t:'Yes — it is not there',c:'warn',f:()=>{
+            setLine(id,{state:'missing', actual:0, reason:'not found'});
+            ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }}]), 0); }},
      /* ⛔ never re-enter dlg() from inside a dialog button — let this one close first */
      {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
@@ -1086,7 +1213,7 @@ function openLine(id){
            deliberate choice, and Save is blocked until it is made. */
         const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
-          '<div class="sm dim" style="margin:6px 0">We will record a '+(adj<0?'decrease':'increase')+
+          '<div class="sm dim" style="margin:6px 0">We will record '+(adj<0?'a decrease':'an increase')+
           ' at '+esc(f.p?f.p.loc:'source')+' as well as the move.</div>'+
           '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
             esc(r||'(no reason — found stock has no agreed code yet)')+'</option>').join('')+'</select></div>';
@@ -1173,7 +1300,7 @@ function doCount(id, rest){
     '<p class="sm dim">'+esc(l.desc||'')+'<br>Serial <b>'+esc(l.serial)+'</b> · on '+esc(f.p.loc)+
     '<br>Finale says <b>'+n(l.system_qty)+'</b>.</p>'+
     '<label class="sm dim">Counted</label>'+
-    '<input type="number" inputmode="numeric" id="cq" value="">'+
+    qtyField('cq', (st(id)||{}).counted != null ? n((st(id)||{}).counted) : '')+
     (rest && rest.length ? '<p class="sm dim" style="margin-top:8px">'+rest.length+' more on this pallet after this one.</p>' : ''),
     [{t:'Cancel',c:'ghost'},
      {t:'Matches',c:'ok',f:()=>{ setLine(id,{state:'done', counted:l.system_qty, variance:0});
@@ -1202,8 +1329,11 @@ function putbackCard(b){
       '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
         '</b> → placard <b>'+esc(pb.loc)+'</b>'+
         (pb.pos===1?' <span class="dim sm">FRONT</span>':'')+'</div>'+
+      /* ⛔ truncating at four hid INCOMING stock — the crew could not see that 429 units
+         of `174` were arriving on this pallet. A pallet card is the deliverable of putback;
+         it does not get to be a summary. */
       '<div class="sub">'+pb.items.length+' SKU · '+
-        pb.items.slice(0,4).map(x=>esc(x.sku)).join(', ')+(pb.items.length>4?'…':'')+'</div>'+
+        pb.items.map(x=>esc(x.sku)).join(', ')+'</div>'+
       (waiting?'<div class="sub" style="color:var(--aside)">stays on the floor — still waiting for stock from a later bay</div>':'')+
       '</div></div>';
   });
@@ -1321,8 +1451,16 @@ function palletFinalLoc(pid){
 function moves(){
   const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[]};
   PAYLOAD.bays.forEach(b => {
-    const push = (p, l, i, loc) => {
-      const id = lid(b.n, loc, l, i), s = S.lines[id];
+    /* ⛔⛔ `loc` WAS DOING TWO JOBS AND I BROKE IT BY FIXING THE OTHER ONE.
+       It is BOTH the key the UI stored state under AND the location we export. Orphan state
+       is written under the literal key `'ORPHAN'`; when I changed this call to pass the real
+       `from_location` (to stop exporting a fake Finale bin) the LOOKUP started missing, `s`
+       came back undefined, and the row was silently dropped — the crew tapped "Took it", the
+       bay closed clean, and 22 units left the rack with no export at all.
+       ⭐ I traded a visible-wrong-location bug for SILENT STOCK LOSS, which is strictly
+       worse. Two parameters now: `key` identifies the state, `loc` is what Finale is told. */
+    const push = (p, l, i, key, loc) => {
+      const id = lid(b.n, key, l, i), s = S.lines[id];
       if(!s) return;
       if(s.state === 'missing'){
         /* ⛔ `missing` MEANS FINALE IS WRONG, so the row has to be able to express the
@@ -1371,11 +1509,13 @@ function moves(){
           moved:(s.actual!=null?s.actual:0), left_on_pallet:(s.left!=null?s.left:''), ts:s.ts});
       }
     };
-    b.pallets.forEach(p => p.lines.forEach((l,i) => push(p,l,i,p.loc)));
+    b.pallets.forEach(p => p.lines.forEach((l,i) => push(p, l, i, p.loc, p.loc)));
     /* ⛔ WAS `push(..., 'ORPHAN')`, so an orphan that WAS taken exported
        `from_location: "ORPHAN"` — a location Finale does not have. The real source is
        right there on the line. */
-    (b.orphan_pulls||[]).forEach((o,i) => push(null, o, i, o.from_location || 'ORPHAN'));
+    // ⭐ keyed 'ORPHAN' (what the UI wrote), exported at its REAL source location
+    (b.orphan_pulls||[]).forEach((o,i) =>
+      push(null, o, i, 'ORPHAN', o.from_location || 'ORPHAN'));
   });
   return out;
 }
