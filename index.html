@@ -1591,8 +1591,54 @@ function normLoc(raw){
 }
 
 function camScanSupported(){
-  return typeof window.BarcodeDetector === 'function' &&
-         !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+function nativeDetector(){ return typeof window.BarcodeDetector === 'function'; }
+
+let ZXING_LOADING = null;
+function loadZXing(){
+  if(window.ZXing) return Promise.resolve(window.ZXing);
+  if(ZXING_LOADING) return ZXING_LOADING;
+  ZXING_LOADING = new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = './zxing.js';
+    el.onload  = () => window.ZXing ? resolve(window.ZXing)
+                                    : reject(new Error('zxing.js loaded but defined nothing'));
+    el.onerror = () => { ZXING_LOADING = null;       
+                         reject(new Error('could not load the barcode decoder')); };
+    document.head.appendChild(el);
+  });
+  return ZXING_LOADING;
+}
+
+async function makeDetector(){
+  if(nativeDetector()) return new BarcodeDetector();
+  const Z = await loadZXing();
+  const reader = new Z.MultiFormatReader();
+
+  reader.setHints(new Map());
+  const cv = document.createElement('canvas');
+  return {
+    detect: (video) => {
+      const w = video.videoWidth, h = video.videoHeight;
+      if(!w || !h) return [];                      
+
+      const scale = Math.min(1, 640 / w);
+      cv.width = Math.round(w * scale); cv.height = Math.round(h * scale);
+      cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+      const src = new Z.HTMLCanvasElementLuminanceSource(cv);
+      const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(src));
+      try{
+        const r = reader.decode(bmp);
+        return r ? [{rawValue: r.getText()}] : [];
+      }catch(e){
+        return [];                  
+      }finally{
+        reader.reset();             
+      }
+    }
+  };
 }
 function scanField(id){
   return '<label class="sm" style="margin-top:2px">Scan the placard <span class="dim">'+
@@ -1647,7 +1693,20 @@ function startCam(id, onCode){
           msg.innerHTML = '⚠️ The camera opened but is not sending a picture. '+
             'Scan with the handheld or pick the spot below.';
       }, 6000);
-      const det = new BarcodeDetector();
+
+      if(!nativeDetector() && !window.ZXing && msg)
+        msg.textContent = 'Getting the barcode reader ready…';
+      let det;
+      try{ det = await makeDetector(); }
+      catch(e){
+
+        stopCam();
+        if(msg) msg.innerHTML = '⚠️ Could not load the barcode reader. '+
+          'Scan with the handheld or pick the spot below.';
+        return;
+      }
+      if(!CAM || CAM.token !== token) return;       
+      if(msg && msg.textContent === 'Getting the barcode reader ready…') msg.textContent = '';
       const tick = async () => {
         if(!CAM || CAM.token !== token) return;       
 
