@@ -20,7 +20,7 @@
    strictly worse than no service worker, because nothing on screen says so.
    ⭐ deploy_freezer_page.py rewrites it from the built page's own byte length, so it cannot
    be forgotten — see STAMP below. */
-const VERSION = 'dabc8ec69a51';
+const VERSION = 'e9dc513a037c';
 const CACHE = 'freezer-shell-' + VERSION;
 const SHELL = ['./', './index.html'];
 
@@ -50,6 +50,19 @@ self.addEventListener('fetch', e => {
      plan file ever reappears, this worker must not be the thing that quietly persists it
      to a public device cache. */
   if (/payload.*\.json$/i.test(url.pathname)) return;
+
+  /* ⛔⛔ AND THE PKCE REDIRECT LANDS ON THIS ORIGIN CARRYING THE AUTHORIZATION CODE.
+     `redirect_uri` is `location.origin + location.pathname` with `response_mode: 'query'`,
+     so the navigation back from Microsoft is
+     `…/FreezerRestock/?code=<AUTH CODE>&state=…`. The same-origin test above passes it,
+     and `c.put(req, …)` would store an entry whose KEY contains the code, in Cache
+     Storage, on a shared iPad, until the next deploy changes the cache name.
+     ⚠️ The code is single-use, short-lived and PKCE-bound, so this is not an exploitable
+     credential on its own — but this file's own rule is "never auth", and that rule was
+     only guarding the cross-origin half. `history.replaceState` tidies the address bar
+     and does nothing to the cache. */
+  if (url.searchParams.has('code') || url.searchParams.has('state') ||
+      url.searchParams.has('error')) return;
 
   /* ⭐ NETWORK FIRST, CACHE AS THE FLOOR. Cache-first would be faster and is the wrong
      trade: the crew sign in warm at the desk, where the network is there, and that is
