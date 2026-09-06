@@ -2006,6 +2006,65 @@ function moves(){
     (b.orphan_pulls||[]).forEach((o,i) =>
       push(null, o, i, 'ORPHAN', o.from_location || 'ORPHAN'));
   });
+
+  PAYLOAD.bays.forEach(b => {
+    (b.pallets || []).forEach(p => {
+      const origin = p.loc;
+      const a = actualFor(p.pallet_id);
+      const final = palletFinalLoc(p.pallet_id);
+      const key = (sk, lt) => sk + ' ' + (lt || '');
+
+      const gone = {};
+      out.transfers.forEach(t => {
+        if (t.from_location === origin)
+          gone[key(t.sku, t.lot)] = (gone[key(t.sku, t.lot)] || 0) + Number(t.quantity || 0);
+      });
+      (out.missing || []).forEach(m => {
+        if (m.from === origin)
+          gone[key(m.sku, m.lot)] = (gone[key(m.sku, m.lot)] || 0) + Number(m.suggested_decrease || 0);
+      });
+
+      const onIt = {};
+      (p.lines || []).forEach(l => {
+        if (l.kind === 'count') return;
+        const k = key(l.sku, l.lot);
+        if (!(k in onIt)) onIt[k] = {sku: l.sku, lot: l.lot || '', qty: Number(l.system_qty || 0)};
+      });
+
+      Object.keys(onIt).forEach(k => {
+        const it = onIt[k];
+        const left = Math.round((it.qty - (gone[k] || 0)) * 1000) / 1000;
+        if (left <= 0.001) return;
+
+        if (a && a.state === 'floor') {
+          out.unresolved = out.unresolved || [];
+          out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: left,
+            onto_pallet: p.pallet_id || '',
+            why: 'the pallet is still on the floor - this stock has not gone anywhere yet'});
+          return;
+        }
+        if (!final) {
+          out.unresolved = out.unresolved || [];
+          out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: left,
+            onto_pallet: p.pallet_id || '',
+            why: 'the pallet has no final position, so its remaining stock cannot be moved'});
+          return;
+        }
+
+        if (final === origin) return;
+
+        out.transfers.push({from_location: origin, to_location: final,
+          onto_pallet: p.pallet_id || '',
+          sku: it.sku, lot: it.lot, quantity: left,
+          planned_qty: '', approved_qty: '',
+          as_planned: !(a && a.deviated),
+          planned_pallet: '', took_from_sibling: '', sibling_line: '',
+
+          kind: 'pallet_move', spoil: !!p.spoil, bay: b.bay,
+          ts: (a && a.ts) || new Date().toISOString()});
+      });
+    });
+  });
   return out;
 }
 function csv(rows){
