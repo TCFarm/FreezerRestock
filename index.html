@@ -617,6 +617,7 @@ function toast(m){
     'background:#22272e;border:1px solid #30363d;padding:12px 18px;border-radius:12px;'+
     'z-index:200;max-width:90vw;text-align:center';
   document.body.appendChild(d); setTimeout(()=>d.remove(), 3200);
+  return false;                  
 }
 
 const ORDER = ['take','aside','count','stay'];
@@ -1558,6 +1559,18 @@ function setFullness(bayN, loc, k, mode, ourPct){
   render();
 }
 
+function f1Choices(){
+  if(window.__F1) return window.__F1;
+  const set = new Set();
+  PAYLOAD.bays.forEach(b => {
+    (b.pallets || []).forEach(p => (p.lines || []).forEach(l => {
+      if(l.dest && /^F1/i.test(l.dest)) set.add(l.dest); }));
+    (b.orphan_pulls || []).forEach(o => { if(o.dest && /^F1/i.test(o.dest)) set.add(o.dest); });
+  });
+  window.__F1 = [...set].sort();
+  return window.__F1;
+}
+
 function knownLocations(){
   if(window.__LOCS) return window.__LOCS;
   const set = new Set();
@@ -1576,13 +1589,93 @@ function knownLocations(){
 function normLoc(raw){
   return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
 }
- 
+
+function camScanSupported(){
+  return typeof window.BarcodeDetector === 'function' &&
+         !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
 function scanField(id){
   return '<label class="sm" style="margin-top:2px">Scan the placard <span class="dim">'+
     '(or pick it below)</span></label>'+
     '<input id="'+id+'" autocomplete="off" autocapitalize="characters" spellcheck="false" '+
     'placeholder="scan or type, e.g. F2-A-03-2" style="font-size:17px">'+
+    (camScanSupported()
+      ? '<button type="button" id="'+id+'cam" class="ghost" style="margin-top:8px;'+
+        'min-height:48px;width:100%">📷 Use the camera instead</button>'+
+        '<div id="'+id+'cambox" hidden style="margin-top:8px">'+
+          '<video id="'+id+'vid" playsinline muted style="width:100%;max-height:240px;'+
+            'border-radius:10px;background:#000"></video>'+
+          '<button type="button" id="'+id+'stop" class="ghost" style="margin-top:6px;'+
+            'min-height:44px;width:100%">Stop the camera</button>'+
+        '</div>'
+      : '')+
     '<div id="'+id+'msg" class="sm dim" style="margin:4px 0 10px"></div>';
+}
+
+let CAM = null;                        
+
+function stopCam(){
+  const c = CAM; CAM = null;           
+  if(!c) return;
+  try{ if(c.box) c.box.hidden = true; }catch(e){}
+  try{ if(c.stream) c.stream.getTracks().forEach(t => t.stop()); }catch(e){}
+  try{ if(c.vid) c.vid.srcObject = null; }catch(e){}
+}
+
+(function(){ const d = document.getElementById('dlg');
+             if(d){ d.addEventListener('close', stopCam);
+                    d.addEventListener('cancel', stopCam); } })();
+
+function startCam(id, onCode){
+  const box = $('#'+id+'cambox'), vid = $('#'+id+'vid'), msg = $('#'+id+'msg');
+  if(!box || !vid) return;
+  stopCam();                           
+  const token = {};                    
+  const stopBtn = $('#'+id+'stop'); if(stopBtn) stopBtn.onclick = stopCam;
+
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})
+    .then(async st => {
+       
+      if(!document.body.contains(box)){ st.getTracks().forEach(t => t.stop()); return; }
+      CAM = {stream: st, box: box, vid: vid, token: token};
+      box.hidden = false; vid.srcObject = st;
+
+      vid.play().catch(()=>{});
+
+      setTimeout(() => {
+        if(CAM && CAM.token === token && vid.readyState === 0 && msg)
+          msg.innerHTML = '⚠️ The camera opened but is not sending a picture. '+
+            'Scan with the handheld or pick the spot below.';
+      }, 6000);
+      const det = new BarcodeDetector();
+      const tick = async () => {
+        if(!CAM || CAM.token !== token) return;       
+
+        const dl = document.getElementById('dlg');
+        if(!dl || !dl.open || !document.body.contains(vid)){ stopCam(); return; }
+        let raw = null;
+        try{
+          const found = await det.detect(vid);
+          if(found && found.length) raw = found[0].rawValue || '';
+        }catch(e){   }
+
+        if(raw){
+          stopCam();
+          const inp = $('#'+id); if(inp){ inp.value = raw;
+            inp.dispatchEvent(new Event('change')); }
+          if(onCode) onCode(raw);
+          return;
+        }
+        setTimeout(tick, 220);
+      };
+      tick();
+    })
+    .catch(e => {
+
+      if(msg) msg.innerHTML = '⚠️ Could not open the camera ('+esc(e.name||'blocked')+
+        '). Scan with the handheld or pick the spot below.';
+      try{ box.hidden = true; }catch(err){}
+    });
 }
 function wireScan(id, selId){
   const inp = $('#'+id), sel = $('#'+selId), msg = $('#'+id+'msg');
@@ -1614,6 +1707,8 @@ function wireScan(id, selId){
   });
   inp.addEventListener('change', apply);
   inp.addEventListener('blur', apply);
+  const cam = $('#'+id+'cam');
+  if(cam) cam.onclick = () => startCam(id, apply);
   setTimeout(() => { try{ inp.focus(); }catch(e){} }, 30);
 }
 
@@ -1731,9 +1826,14 @@ function askActual(bayN, pid){
                  '>'+esc(planned)+' — as planned</option>' : '')+
       pos.filter(x => x !== planned).map(x =>
         '<option value="'+esc(x)+'"'+(prev.loc===x?' selected':'')+'>'+esc(x)+'</option>').join('')+
-      '<option value="__floor__"'+(prev.state==='floor'?' selected':'')+
-        '>⛔ it is still on the floor</option>'+
+       
+      '<optgroup label="or it is not back in the rack — where in F1?">'+
+        f1Choices().map(x => '<option value="'+esc(x)+'"'+(prev.loc===x?' selected':'')+
+          '>'+esc(x)+'</option>').join('')+
+      '</optgroup>'+
     '</select>'+
+    '<div class="sm dim" style="margin-top:6px">Left it out for the night? That is fine — put '+
+    'it in an F1 spot and scan that, so nobody has to go looking for it tomorrow.</div>'+
     '<label class="sm" style="margin-top:10px">Anything different about it?</label>'+
     '<select id="pan">'+
       '<option value="">nothing — one pallet, as it came down</option>'+
@@ -1745,9 +1845,10 @@ function askActual(bayN, pid){
     [{t:'Cancel', c:'ghost'},
      {t:'Record it', c:'pri', f:()=>{
         const v = $('#pa').value, note = $('#pan').value;
-        const rec = (v === '__floor__')
-          ? {state:'floor', loc:'', note:note, planned:planned, ts:new Date().toISOString()}
-          : {state:'placed', loc:v, note:note, planned:planned, ts:new Date().toISOString()};
+
+        if(!v) return toast('⛔ where did it go? Scan the placard or pick a spot') && false;
+        const rec = {state:'placed', loc:v, note:note, planned:planned,
+                     ts:new Date().toISOString()};
         rec.deviated = (v !== planned) || !!note;
         S.putback_actual[pid] = rec;
         ev('putback_actual', {pallet:pid, loc:rec.loc || 'FLOOR', planned:planned, note:note});
@@ -1820,7 +1921,9 @@ function askSecondPallet(bayN, fromPid){
     '<label class="sm">Position it went into</label>'+
     '<select id="s2pos">'+
       pos.map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
-      '<option value="__floor__">⛔ still on the floor</option></select>'+
+      '<optgroup label="or not in the rack — where in F1?">'+
+        f1Choices().map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+      '</optgroup></select>'+
 
     '<div style="margin-top:14px"><label class="sm"><b>Which items went on this one?</b> '+
       '<span class="dim">Tick everything you carried across.</span></label>'+
@@ -1845,8 +1948,8 @@ function askSecondPallet(bayN, fromPid){
         if(badq) return toast('⛔ check the quantity on ' + badq) && false;
         S.new_pallets[pid] = {bay:b.bay, bay_n:bayN, split_from:fromPid,
                               built_ts:new Date().toISOString()};
-        S.putback_actual[pid] = {state: v === '__floor__' ? 'floor' : 'placed',
-                                 loc: v === '__floor__' ? '' : v, note:'split_from_'+fromPid,
+        if(!v) return toast('⛔ where did this one go?') && false;
+        S.putback_actual[pid] = {state:'placed', loc:v, note:'split_from_'+fromPid,
                                  planned:'', deviated:true, ts:new Date().toISOString()};
 
         S.split_contents = S.split_contents || {};
@@ -1899,6 +2002,33 @@ function askBackstock(){
      }}]);
 }
 
+function unplacedPallets(){
+  const out = [];
+  const homeless = pid => { const a = actualFor(pid);
+    return !a || !a.loc || a.state === 'floor'; };    
+  Object.keys(S.new_pallets || {}).forEach(pid => {
+    if(homeless(pid)) out.push({pid, built: true, bay: (S.new_pallets[pid] || {}).bay || '',
+                                from: (S.new_pallets[pid] || {}).split_from || ''});
+  });
+
+  Object.keys(S.putback_actual || {}).forEach(pid => {
+    if(!(S.new_pallets || {})[pid] && homeless(pid))
+      out.push({pid, built: false, bay: bayOfPallet(pid), from: ''});
+  });
+
+  Object.keys(S.split_contents || {}).forEach(pid => {           
+    if(homeless(pid) && !out.some(o => o.pid === pid))
+      out.push({pid, built: true, bay: bayOfPallet(pid),
+                from: (S.split_contents[pid] || {}).from || ''});
+  });
+  return out;
+}
+function bayOfPallet(pid){
+  for(const b of PAYLOAD.bays)
+    for(const pb of (b.putback || [])) if(pb.pallet_id === pid) return b.bay || ('bay ' + b.n);
+  return '';
+}
+
 function renderDone(a){
   const jp2 = jobProgress();
   $('#hdr').textContent = jobProgress().pct === 100 ? 'Finished' : 'Review / sync';
@@ -1908,8 +2038,25 @@ function renderDone(a){
 
   const closed = PAYLOAD.bays.filter(x => (S.bays[x.n]||{}).closed).length;
   const allClosed = closed === PAYLOAD.bays.length;
-  a.innerHTML = (allClosed
-      ? '<div class="okbox"><b>All '+PAYLOAD.bays.length+' bays closed.</b></div>'
+
+  const homeless = unplacedPallets();
+  a.innerHTML = (homeless.length
+      ? '<div class="badbox"><b>⛔ '+homeless.length+' pallet'+(homeless.length===1?'':'s')+
+        ' with no location recorded.</b><div class="sm" style="margin-top:6px">'+
+
+        homeless.map(h => '<b>'+esc(h.pid)+'</b>'+
+          (h.bay ? ' ('+(h.built ? 'built in ' : '')+esc(h.bay)+')' : '')).join(', ')+
+        ' — nobody said where '+(homeless.length===1?'it':'they')+' ended up. Go back to that bay and tap '+
+        '<b>went elsewhere?</b>, or scan the spot. Even if it is parked on the floor for the '+
+        'night, it belongs in an F1 location so nobody has to go looking tomorrow.</div></div>'
+      : '') +
+
+    (allClosed
+      ? '<div class="'+(homeless.length ? 'warnbox' : 'okbox')+'"><b>All '+
+        PAYLOAD.bays.length+' bays closed'+
+        (homeless.length ? ' — but the shift is not done until the pallet'+
+          (homeless.length===1?'':'s')+' above ha'+(homeless.length===1?'s':'ve')+
+          ' a location.' : '.')+'</b></div>'
       : '<div class="warnbox"><b>⚠️ Not finished — '+closed+' of '+PAYLOAD.bays.length+
         ' bays closed, '+(jp2.total-jp2.done)+' line(s) still outstanding.</b>'+
         '<div class="sm dim" style="margin-top:4px">You can still sync from here; it will be '+
@@ -2281,7 +2428,8 @@ function deviceId(){
 }
 function sessionKey(){ return `${PAYLOAD.plan_date}_${deviceId()}`; }
 function allBaysClosed(){
-  return PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed);
+
+  return PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed) && unplacedPallets().length === 0;
 }
 
 async function graphWrite(path, body, method){
@@ -2389,9 +2537,12 @@ function dlg(title, bodyHtml, buttons, after){
     const el = document.createElement('button');
     el.textContent = b.t; el.className = b.c || '';
 
-    el.onclick = (e) => { if(b.f){ e.preventDefault(); if(b.f() !== false) d.close(); } };
+    el.onclick = (e) => { if(b.f){ e.preventDefault();
+
+      if(b.f() !== false){ stopCam(); d.close(); } } };
     f.appendChild(el);
   });
+  stopCam();                     
   d.showModal(); if(after) after();
 }
 
