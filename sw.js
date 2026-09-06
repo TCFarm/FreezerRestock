@@ -43,6 +43,14 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;         // ⛔ never auth, never Graph
 
+  /* ⛔⛔ DEFENCE IN DEPTH: never cache anything plan-shaped, even same-origin. There is no
+     payload.json on this origin today — the page is code-only and the plan comes from
+     Graph — but the whole 2026-09-05 incident was someone (me) making the page
+     self-contained for a good reason and not asking who could read it. If a same-origin
+     plan file ever reappears, this worker must not be the thing that quietly persists it
+     to a public device cache. */
+  if (/payload.*\.json$/i.test(url.pathname)) return;
+
   /* ⭐ NETWORK FIRST, CACHE AS THE FLOOR. Cache-first would be faster and is the wrong
      trade: the crew sign in warm at the desk, where the network is there, and that is
      exactly the moment a new build must land. Offline, the cache answers. */
