@@ -6,6 +6,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Freezer restock</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#0b62c4">
+<!-- ⭐ iOS ignores the manifest's icons; this is the one it uses for Add to Home Screen.
+     Inline so the page stays code-only and needs no second network round trip. -->
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='38' fill='%230b62c4'/%3E%3Ctext x='90' y='122' font-size='96' font-family='system-ui,sans-serif' font-weight='700' fill='white' text-anchor='middle'%3E%E2%9D%84%3C/text%3E%3C/svg%3E">
 <style>
 /* ⛔ GLOVES AND −10°F DRIVE EVERY CHOICE HERE. Targets >=60px, high contrast, no hover-only
    affordance, no drag, no long-press. ⭐ Taps are the unit of cost. */
@@ -346,6 +351,7 @@ function renderGate(msg, busy){
       (msg ? '<div class="warnbox">'+esc(msg)+'</div>' : '')+
       (c ? '<div class="okbox">A plan for <b>'+esc(c.plan.plan_date)+'</b> is already on this '+
            'device (loaded '+esc(String(c.fetched).slice(0,16))+'). You can work offline.</div>' : '')+
+      '<div id="offbadge" class="sm" style="margin-top:10px"></div>'+
     '</div></div>';
   const btn = $('#mainbtn');
   if(c){
@@ -358,7 +364,74 @@ function renderGate(msg, busy){
   }
 }
 
+/* ============================ OFFLINE SHELL (FR-523) ========================
+   ⛔⛔ THE PLAN SURVIVES OFFLINE AND THE PAGE DID NOT. Making the page code-only fixed the
+   public-URL leak and moved the offline problem rather than solving it: `localStorage` holds
+   the plan, but a crew member who opens the app INSIDE the freezer gets Safari's network
+   error screen, with the cached plan sitting unreachable behind it.
+   ⭐ `sw.js` caches the shell. Both halves now work with no signal, and neither is public.
+
+   ⚠️ TWO iOS FACTS THAT DECIDE HOW THIS IS USED, AND THEY ARE NOT OPTIONAL READING:
+     1. A home-screen web app has its OWN storage, SEPARATE from Safari's. Signing in in
+        Safari and THEN adding to the home screen loses the cached plan — the app looks
+        empty for no visible reason. ⭐ ADD TO HOME SCREEN FIRST, then sign in inside it.
+     2. Storage can be evicted after ~7 days of non-use. The cadence here is weekly, which
+        is uncomfortably close to that line, so the app never treats its cache as durable —
+        it re-fetches whenever it has a token, and says out loud when it has not. */
+let SW_STATE = 'unknown';         // unknown | installing | ready | unsupported | failed
+function offlineReady(){ return SW_STATE === 'ready'; }
+
+function registerSW(){
+  if(!('serviceWorker' in navigator)){ SW_STATE = 'unsupported'; return; }
+  /* ⛔ file:// and any non-secure origin cannot register one. Say so rather than sitting on
+     'installing' forever, which reads as "nearly there" when it is "never". */
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost'){
+    SW_STATE = 'unsupported'; return;
+  }
+  SW_STATE = navigator.serviceWorker.controller ? 'ready' : 'installing';
+  navigator.serviceWorker.register('./sw.js').then(reg => {
+    if(navigator.serviceWorker.controller) SW_STATE = 'ready';
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      if(!w) return;
+      w.addEventListener('statechange', () => {
+        if(w.state === 'activated'){ SW_STATE = 'ready'; renderOfflineBadge(); }
+      });
+    });
+    renderOfflineBadge();
+  }).catch(() => { SW_STATE = 'failed'; renderOfflineBadge(); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    SW_STATE = 'ready'; renderOfflineBadge();
+  });
+}
+
+/* ⭐ THE CREW MUST BE ABLE TO SEE, BEFORE THEY WALK IN, WHETHER THIS WILL OPEN IN THERE.
+   ⛔ Finding out inside the freezer is the whole failure this exists to prevent, and it is
+   silent — the app looks perfectly fine right up until there is no signal. */
+function renderOfflineBadge(){
+  const el = document.getElementById('offbadge');
+  if(!el) return;
+  const cached = !!cachedPlan();
+  if(SW_STATE === 'ready' && cached){
+    el.className = 'okbox sm';
+    el.innerHTML = '✓ <b>Saved on this device.</b> This will open in the freezer with no signal.';
+  }else if(SW_STATE === 'unsupported'){
+    el.className = 'warnbox sm';
+    el.innerHTML = '⚠️ <b>This browser cannot save the app offline.</b> Open it from the ' +
+      'home-screen icon (Share → Add to Home Screen) while you still have wifi.';
+  }else if(!cached){
+    el.className = 'warnbox sm';
+    el.innerHTML = '⚠️ <b>No plan saved on this device yet.</b> Sign in here, on wifi, ' +
+      'before you go in — there is nothing to open in the freezer until you do.';
+  }else{
+    el.className = 'warnbox sm';
+    el.innerHTML = '⏳ <b>Saving the app for offline use…</b> Stay on wifi for a moment. ' +
+      'The plan itself is already saved.';
+  }
+}
+
 async function boot(){
+  registerSW();
   try{
     if(new URLSearchParams(location.search).has('code') ||
        new URLSearchParams(location.search).has('error')){
@@ -595,10 +668,10 @@ function navArrows(){
 }
 
 function render(){
-  if(!PAYLOAD || !PAYLOAD.bays){ return renderGate(); }
+  if(!PAYLOAD || !PAYLOAD.bays){ renderGate(); renderOfflineBadge(); return; }
   const a = $('#app');
   navArrows();
-  if(S.screen === 'review') return renderReview(a);
+  if(S.screen === 'review'){ renderReview(a); renderOfflineBadge(); return; }
   if(S.screen === 'done')   return renderDone(a);
   renderBay(a);
 }
@@ -632,7 +705,10 @@ function renderReview(a){
 
   /* ⭐ THE SUMMARY COMES FIRST, NOT A LIST. The reviewer's first question is
      "is this week the right size?" and a list of lines cannot answer it. */
-  let h = '<div class="card"><div class="pad">'+
+  /* ⭐ FR-523: the LAST screen with a signal is the review screen, so this is where
+     "will this open in the freezer?" has to be answered. */
+  let h = '<div id="offbadge" class="sm" style="margin:0 0 12px"></div>'+
+    '<div class="card"><div class="pad">'+
     '<h2>Is this week the right size?</h2><div>'+
     chip('Bays to open', t.bays) + chip('Pallets down', t.pallets_down) +
     chip('Units to the floor', Math.round(units)) +
