@@ -1,0 +1,11 @@
+{
+  "name": "Freezer restock",
+  "short_name": "Freezer",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f8",
+  "theme_color": "#0b62c4",
+  "description": "The week's freezer restock worklist. Sign in once on wifi; it then works with no signal."
+}
