@@ -198,6 +198,31 @@ function haveToken(){
   const t = tokStore();
   return !!(t && t.access_token && Date.now() < (t.exp || 0) - 60000);
 }
+function canRefresh(){ const t = tokStore(); return !!(t && t.refresh_token); }
+
+/* ⛔ `offline_access` WAS REQUESTED, THE REFRESH TOKEN WAS STORED, AND NOTHING EVER
+   REDEEMED IT. An access token lasts ~1 hour, so the end-of-shift sync — the one moment
+   that matters — bounced to Microsoft and came back saying "Not sent yet", needing a
+   second tap. ⭐ Redeem silently; only fall back to an interactive sign-in if that fails. */
+async function ensureToken(){
+  if(haveToken()) return true;
+  if(!canRefresh()) return false;
+  try{
+    const t = tokStore();
+    const body = new URLSearchParams({
+      client_id: CFG.entra.client_id, grant_type: 'refresh_token',
+      refresh_token: t.refresh_token,
+      scope: 'https://graph.microsoft.com/Sites.ReadWrite.All offline_access openid profile'});
+    const r = await fetch(`${AUTHZ()}/token`, {
+      method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error_description || j.error || ('HTTP ' + r.status));
+    j.exp = Date.now() + (Number(j.expires_in || 3600) * 1000);
+    if(!j.refresh_token) j.refresh_token = t.refresh_token;   // ⛔ do not lose it on rotation
+    tokStore(j);
+    return true;
+  }catch(e){ tokStore(null); return false; }
+}
 
 async function signIn(){
   const verifier = b64u(crypto.getRandomValues(new Uint8Array(48)));
@@ -252,9 +277,30 @@ async function fetchPlan(){
     `/sites/${site.id}/drive/root:/${sp.doc_folder}/plan_latest.json:/content`);
   const p = (typeof txt === 'string') ? JSON.parse(txt) : txt;
   if(!p || !p.bays || !p.bays.length) throw new Error('the plan file has no bays');
-  try{ localStorage.setItem(CACHE_KEY, JSON.stringify({fetched: new Date().toISOString(), plan: p})); }
+  return p;                       // ⛔ the CALLER decides whether to accept it — see below
+}
+
+/* ⛔⛔ CACHING ON FETCH ORPHANED A WHOLE SHIFT. `fetchPlan` used to write the cache
+   unconditionally while `refreshPlanQuietly` guarded only the IN-MEMORY plan. So a quiet
+   refresh during a dirty session left the cache holding the NEW plan: the next load keyed
+   the session store to the new plan date, `load()` returned blank, and the crew came back
+   to 0% — their work still in localStorage under the old key with ⛔ no UI path to it.
+   ⭐ Accepting a plan is now an explicit act. */
+function acceptPlan(p){
+  try{ localStorage.setItem(CACHE_KEY, JSON.stringify(
+        {fetched: new Date().toISOString(), plan: p})); }
   catch(e){ toast('⚠️ plan loaded but too large to cache — it will need signal again'); }
-  return p;
+  setPlan(p);
+}
+
+/* ⛔ `Object.keys(S.lines).length` WAS TOO NARROW. A crew on bay 6 with a pallet open who
+   has dug but not yet ticked a line has no lines — so the guard passed and the plan was
+   swapped LIVE, mid-bay, announced by a toast. Anything that shows work has begun counts. */
+function isDirty(){
+  return !!(S.started || (S.events && S.events.length) ||
+            Object.keys(S.lines || {}).length ||
+            Object.keys(S.pallets || {}).length ||
+            Object.keys(S.bays || {}).length || S.bay > 0);
 }
 function cachedPlan(){
   try{ const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
@@ -311,11 +357,11 @@ async function boot(){
 
   const c = cachedPlan();
   if(c){ setPlan(c.plan); render();
-         if(haveToken()) refreshPlanQuietly();          // ⭐ never blocks the crew
+         ensureToken().then(ok => { if(ok) refreshPlanQuietly(); });  // ⭐ never blocks
          return; }
-  if(!haveToken()) return renderGate();
+  if(!(await ensureToken())) return renderGate();
   renderGate(null, true);
-  try{ const p = await fetchPlan(); setPlan(p); render(); }
+  try{ const p = await fetchPlan(); acceptPlan(p); render(); }
   catch(e){ renderGate('Could not load the plan: ' + e.message); }
 }
 
@@ -324,11 +370,16 @@ async function boot(){
 async function refreshPlanQuietly(){
   try{
     const p = await fetchPlan();
-    if(p.plan_date !== PAYLOAD.plan_date){
-      const dirty = Object.keys(S.lines).length;
-      toast(dirty ? `⚠️ a newer plan (${p.plan_date}) is available — finish and sync first`
-                  : `newer plan ${p.plan_date} loaded`);
-      if(!dirty){ setPlan(p); render(); }
+    // ⭐ compare on `built`, not just the date — CLAUDE.md records that a mid-week rebuild
+    // writes ANOTHER plan for the SAME pull day, which a date test cannot see.
+    const changed = (p.plan_date !== PAYLOAD.plan_date) || (p.built !== PAYLOAD.built);
+    if(changed){
+      if(isDirty()){
+        toast(`⚠️ a newer plan is available (${p.plan_date}) — finish and sync first`);
+      }else{
+        acceptPlan(p); render();
+        toast(`newer plan ${p.plan_date} loaded`);
+      }
     }
   }catch(e){ /* offline or expired — the cached plan is what matters */ }
 }
@@ -473,6 +524,19 @@ function setLine(id, patch){
   S.lines[id].ts = new Date().toISOString();
   save();
 }
+/* ⛔⛔ `Number('') === 0`, SO EVERY `if(!isFinite(v) || v < 0)` GUARD WAS DEAD.
+   Tapping Save on an untouched count pad recorded a count of ZERO — reproduced on `104-2`
+   where Finale says 201, giving a 201-unit phantom variance on the one feed whose entire
+   purpose is making the overstock figure trustworthy. ⭐ Test the RAW STRING first. */
+function readQty(id){
+  const el = $('#' + id);
+  if(!el) return null;
+  const raw = String(el.value == null ? '' : el.value).trim();
+  if(raw === '') return null;
+  const v = Number(raw);
+  return (isFinite(v) && v >= 0) ? v : null;
+}
+
 function toast(m){
   const d = document.createElement('div');
   d.textContent = m;
@@ -598,8 +662,8 @@ function openWhy(id){
     '<input type="number" inputmode="numeric" id="apq" value="'+n(cur)+'" style="margin-top:8px"></div>',
     [{t:'Cancel', c:'ghost'},
      {t:'Save', c:'pri', f:()=>{
-        const v = Number($('#apq').value);
-        if(!isFinite(v) || v < 0) return toast('⛔ not a quantity');
+        const v = readQty('apq');
+        if(v === null){ toast('⛔ not a quantity'); return false; }
         setLine(id, {approved:v, approved_explicitly:true});
         ev('approve', {line:id, approved:v}); render(); }}]);
 }
@@ -624,11 +688,18 @@ function find(id){
    the number with things nobody does. */
 function jobProgress(){
   let done = 0, total = 0;
-  PAYLOAD.bays.forEach(b => b.pallets.forEach(p => p.lines.forEach((l,i) => {
-    if(!isActionable(l)) return;
-    total++;
-    if(isFinished(st(lid(b.n, p.loc, l, i)))) done++;
-  })));
+  PAYLOAD.bays.forEach(b => {
+    b.pallets.forEach(p => p.lines.forEach((l,i) => {
+      if(!isActionable(l)) return;
+      total++;
+      if(isFinished(st(lid(b.n, p.loc, l, i)))) done++;
+    }));
+    // ⭐ an orphan pull is real work — it was excluded, so the header under-counted
+    (b.orphan_pulls || []).forEach((o,i) => {
+      total++;
+      if(isFinished(st(lid(b.n, 'ORPHAN', o, i)))) done++;
+    });
+  });
   return {done: done, total: total, pct: total ? Math.round(done / total * 100) : 0};
 }
 
@@ -706,6 +777,16 @@ function renderBay(a){
       const id = lid(b.n, p.loc, l, i);
       if(isActionable(l) && !isFinished(st(id))) out.push({id:id, l:l, loc:p.loc});
     }));
+    /* ⛔⛔ ORPHAN PULLS WERE INVISIBLE TO THE BAY CLOSE. They are the pulls the planner
+       explicitly REFUSES to drop ("a vanished pull is the worst direction to fail
+       quietly") — and closing a bay left them in no bucket at all: not done, not skipped,
+       not missing, not even counted as outstanding. A restock pick disappearing without
+       trace is an objective-1 failure by the exact mechanism the payload builder exists
+       to prevent. */
+    (b.orphan_pulls || []).forEach((o,i) => {
+      const id = lid(b.n, 'ORPHAN', o, i);
+      if(!isFinished(st(id))) out.push({id:id, l:o, loc:o.from_location || 'ORPHAN'});
+    });
     return out;
   };
   // ⭐ close out the non-actions silently — the pallet went back, so they happened.
@@ -731,8 +812,9 @@ function renderBay(a){
     btn.textContent = left.length ? 'Close bay — ' + left.length + ' not done · ' + nxt
                                   : 'Close bay · ' + nxt;
     btn.onclick = () => {
-      settleStays();
-      if(!left.length) return advance();
+      // ⛔ this used to run BEFORE the confirmation, so tapping "Close bay" then "Go back"
+      // had already marked every stay done on a bay the crew did not close.
+      if(!left.length){ settleStays(); return advance(); }
       dlg('Close ' + b.bay + ' with ' + left.length + ' line(s) not done?',
         '<p class="dim">These will be recorded as <b>skipped</b> — we did not do them. '+
         '⛔ That is different from "the stock was not there", and nothing will be '+
@@ -762,7 +844,11 @@ function renderBay(a){
 
 function pallet(b, p){
   const ps = S.pallets[p.loc] || {};
-  const open = ps.open && !ps.done;
+  /* ⛔ WAS `ps.open && !ps.done` — and nothing ever sets `done:false`, so a pallet marked
+     done could NEVER be re-opened. A mis-tap on "All as planned" was unrecoverable except
+     by deleting the whole session. ⭐ A done pallet now expands like any other and shows
+     what was recorded, so a mistake can be corrected. */
+  const open = !!ps.open;
   const groups = {};
   p.lines.forEach((l,i) => { (groups[l.kind] = groups[l.kind] || []).push({l:l, i:i}); });
   const counts = ORDER.filter(k=>groups[k]).map(k => groups[k].length + ' ' +
@@ -870,6 +956,10 @@ function allAsPlanned(loc){
     if(l.kind === 'count') return;        // ⛔ a count is never "as planned" — it is a measurement
     const s = st(id);
     if(isFinished(s)) return;
+    // ⛔ a `stay` is not a movement — writing `actual` onto it would emit a transfer to
+    // "PALLET undefined" the day a stay carries a quantity. `settleStays`/`skipRest`
+    // already got this right; this was the odd one out.
+    if(!isActionable(l)){ setLine(id, {state:'done', as_planned:true, no_action:true}); return; }
     setLine(id, {state:'done', actual: (s && s.approved!=null) ? s.approved : l.planned_qty,
                  as_planned:true});
   });
@@ -897,7 +987,13 @@ function maybeDone(loc){
 function openLine(id){
   const f = find(id); if(!f) return;
   const l = f.l, s = st(id) || {};
-  const planned = s.approved != null ? s.approved : l.planned_qty;
+  /* ⛔ RE-OPENING A CORRECTED LINE USED TO DESTROY THE CORRECTION. The dialog prefilled
+     from the PLAN and ignored what was recorded, so merely looking at a line and tapping
+     Save turned {actual 251, left 0, adjustment −248} into {actual 251, left 248,
+     adjustment 0} — the correction silently gone. ⭐ Prefill what is actually recorded. */
+  const prev = s || {};
+  const planned = prev.actual != null ? prev.actual
+                : (s.approved != null ? s.approved : l.planned_qty);
   if(l.kind === 'stay'){
     return dlg('Stays — ' + l.sku,
       '<p class="dim">Nothing to do: reload this exactly as it was.</p>'+
@@ -907,34 +1003,71 @@ function openLine(id){
       '<input type="number" inputmode="numeric" id="q1" value="'+n(l.system_qty)+'">',
       [{t:'Cancel',c:'ghost'},
        {t:'Correct the count',c:'warn',f:()=>{
-          const v=Number($('#q1').value);
-          if(!isFinite(v)||v<0) return toast('⛔ not a quantity');
+          const v=readQty('q1');
+          if(v===null){ toast('⛔ not a quantity'); return false; }
           setLine(id,{state:'done', left:v, adjustment:v-Number(l.system_qty), corrected:true});
           ev('qty_corrected',{line:id, was:l.system_qty, now:v}); maybeDone(f.p.loc); render(); }},
        {t:'It is right',c:'ok',f:()=>{ setLine(id,{state:'done', as_planned:true});
           ev('line_done',{line:id}); maybeDone(f.p.loc); render(); }}]);
   }
+  /* ⛔⛔ `adjustment = (moved + left) − system_qty` IS ONLY VALID WHEN THIS LINE IS THE ONLY
+     THING LEAVING THE PALLET — and it often is not. The model deliberately emits a `take`
+     AND an `aside` for the same SKU-lot when part goes to the floor and the remainder is
+     consolidated (`after_take`), ⭐ 11 such pairs in the live plan.
+     ⛔ So a crew who clears the pallet and truthfully answers "left = 0" on the take line
+     fabricated a shrink of the whole set-aside quantity — reproduced at −248 on `130`, and
+     −687 on `107` where the deck is emptied outright. A phantom Finale correction, invented
+     by the app, on stock that never went missing.
+     ⭐ THE FIX: this line's baseline is what is on the pallet MINUS whatever its sibling
+     takes. The two-cause derivation is intact; it was the baseline that was wrong. */
+  const sib = f.p ? f.p.lines.find((x,ix) =>
+        ix !== f.i && x.sku === l.sku && (x.lot||'') === (l.lot||'') &&
+        (x.kind === 'take' || x.kind === 'aside')) : null;
+  let sibTook = 0, sibId = null;
+  if(sib){
+    const si = f.p.lines.indexOf(sib);
+    sibId = lid(f.b.n, f.p.loc, sib, si);
+    const ss = st(sibId);
+    sibTook = Number((ss && ss.actual != null) ? ss.actual : sib.planned_qty) || 0;
+  }
+  const baseline = Math.max(0, Number(l.system_qty) - sibTook);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
   dlg(l.sku + ' — planned ' + n(planned),
+    (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+esc(l.sku)+'</b> is also '+
+        (sib.kind === 'take' ? 'being taken to '+esc(sib.dest||'F1')
+                             : 'being set aside onto '+esc(sib.onto_pallet))+
+        ' — <b>'+n(sibTook)+'</b> units on the other line. '+
+        'So this line is only about the <b>'+n(baseline)+'</b> that are not part of that.</div>' : '')+
     '<div class="row"><div><label class="sm dim">How many '+esc(verb)+'?</label>'+
       '<input type="number" inputmode="numeric" id="q1" value="'+n(planned)+'"></div>'+
-      '<div><label class="sm dim">How many LEFT on '+esc(f.p?f.p.loc:'the pallet')+'?</label>'+
-      '<input type="number" inputmode="numeric" id="q2" value="'+n(Math.max(0,Number(l.system_qty)-Number(planned)))+'"></div></div>'+
-    '<div class="sm dim" style="margin-top:8px">Finale says <b>'+n(l.system_qty)+'</b> was on this pallet. '+
+      '<div><label class="sm dim">Of those '+n(baseline)+', how many are LEFT on '+
+        esc(f.p?f.p.loc:'the pallet')+'?</label>'+
+      '<input type="number" inputmode="numeric" id="q2" value="'+
+        n(prev.left != null ? prev.left : Math.max(0, baseline - Number(planned)))+'"></div></div>'+
+    '<div class="sm dim" style="margin-top:8px">'+
+    (sib ? 'Finale says <b>'+n(l.system_qty)+'</b> on this pallet, <b>'+n(sibTook)+
+           '</b> of which is the other line — so <b>'+n(baseline)+'</b> belongs to this one. '
+         : 'Finale says <b>'+n(l.system_qty)+'</b> was on this pallet. ')+
     'If moved + left does not equal that, we record the difference as a correction — '+
     'you do not have to work it out.</div>'+
     '<div id="calc" style="margin-top:10px"></div>',
     [{t:'Cancel',c:'ghost'},
      {t:'Not here at all',c:'',f:()=>{ setLine(id,{state:'missing', actual:0,
         reason:'not found'}); ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }},
-     {t:'Skip',c:'',f:()=>{ skipLine(id); }},
+     /* ⛔ never re-enter dlg() from inside a dialog button — let this one close first */
+     {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
         const mv=Number($('#q1').value), lf=Number($('#q2').value);
         if(!isFinite(mv)||mv<0||!isFinite(lf)||lf<0) return toast('⛔ not a quantity');
-        const adj = (mv+lf) - Number(l.system_qty);
+        const adj = (mv + lf) - baseline;      // ⭐ baseline, not raw system_qty
         const patch = {state:'done', actual:mv, left:lf, adjustment:adj};
         if(Math.abs(adj) > 0.001){
-          const sel = $('#rsn'); patch.reason = sel ? sel.value : '';
+          const sel = $('#rsn');
+          if(sel && sel.value === '__none__'){
+            toast('⛔ pick a reason — it becomes a Finale accounting code');
+            return false;                      // ⛔ never default someone into "Damaged"
+          }
+          patch.reason = sel ? sel.value : '';
           patch.direction = adj < 0 ? 'shrink' : 'found';
         }
         setLine(id, patch);
@@ -943,13 +1076,19 @@ function openLine(id){
     ()=>{ // live recalc + reason picker, only when it is actually needed
       const upd = ()=>{
         const mv=Number($('#q1').value)||0, lf=Number($('#q2').value)||0;
-        const adj=(mv+lf)-Number(l.system_qty); const c=$('#calc');
+        const adj=(mv+lf)-baseline; const c=$('#calc');
         if(Math.abs(adj)<0.001){ c.innerHTML='<div class="okbox sm">Adds up — nothing to correct.</div>'; return; }
         const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
+        /* ⛔ THE FIRST OPTION USED TO BE `Damaged`, SO A REASON NOBODY CHOSE WAS WRITTEN
+           into a real Finale accounting code. `ACCOUNTING-HANDOFF.md` rules that every
+           reason is its own group — a defaulted one is not a harmless placeholder.
+           ⭐ The found list already began with a blank on purpose; the shrink list needs a
+           deliberate choice, and Save is blocked until it is made. */
+        const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
           '<div class="sm dim" style="margin:6px 0">We will record a '+(adj<0?'decrease':'increase')+
           ' at '+esc(f.p?f.p.loc:'source')+' as well as the move.</div>'+
-          '<select id="rsn">'+list.map(r=>'<option value="'+esc(r)+'">'+
+          '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
             esc(r||'(no reason — found stock has no agreed code yet)')+'</option>').join('')+'</select></div>';
       };
       $('#q1').addEventListener('input',upd); $('#q2').addEventListener('input',upd); upd();
@@ -1040,8 +1179,8 @@ function doCount(id, rest){
      {t:'Matches',c:'ok',f:()=>{ setLine(id,{state:'done', counted:l.system_qty, variance:0});
         ev('count_recorded',{line:id, counted:l.system_qty, variance:0});
         maybeDone(f.p.loc); render(); if(rest&&rest.length) setTimeout(()=>doCount(rest[0],rest.slice(1)),260); }},
-     {t:'Save count',c:'pri',f:()=>{ const v=Number($('#cq').value);
-        if(!isFinite(v)||v<0) return toast('⛔ enter the counted quantity');
+     {t:'Save count',c:'pri',f:()=>{ const v=readQty('cq');
+        if(v===null){ toast('⛔ enter the counted quantity'); return false; }
         setLine(id,{state:'done', counted:v, variance:v-Number(l.system_qty)});
         ev('count_recorded',{line:id, counted:v, variance:v-Number(l.system_qty)});
         maybeDone(f.p.loc); render(); if(rest&&rest.length) setTimeout(()=>doCount(rest[0],rest.slice(1)),260); }}],
@@ -1081,11 +1220,22 @@ function putbackDone(nn){
 
 /* ============================== FINISH ===================================== */
 function renderDone(a){
-  $('#hdr').textContent = 'Finished';
+  const jp2 = jobProgress();
+  $('#hdr').textContent = jobProgress().pct === 100 ? 'Finished' : 'Review / sync';
   $('#sub').textContent = 'Export the moves for Finale';
-  $('#progbar').style.width = '100%';
+  $('#progbar').style.width = jp2.pct + '%';   // ⛔ never a hardcoded 100%
   const m = moves();
-  a.innerHTML = '<div class="okbox"><b>All '+PAYLOAD.bays.length+' bays closed.</b></div>'+
+  /* ⛔ THIS USED TO ASSERT "All N bays closed" UNCONDITIONALLY, and the ⇪ button is always
+     available — so tapping it on bay 1 showed a green "All 18 bays closed" and a 100% bar
+     with 114 of 114 lines outstanding. ⭐ Derive it from the work. */
+  const closed = PAYLOAD.bays.filter(x => (S.bays[x.n]||{}).closed).length;
+  const allClosed = closed === PAYLOAD.bays.length;
+  a.innerHTML = (allClosed
+      ? '<div class="okbox"><b>All '+PAYLOAD.bays.length+' bays closed.</b></div>'
+      : '<div class="warnbox"><b>⚠️ Not finished — '+closed+' of '+PAYLOAD.bays.length+
+        ' bays closed, '+(jp2.total-jp2.done)+' line(s) still outstanding.</b>'+
+        '<div class="sm dim" style="margin-top:4px">You can still sync from here; it will be '+
+        'recorded as <b>in progress</b>, not complete.</div></div>')+
     '<div class="card"><div class="pad"><h3>What will go to Finale</h3>'+
     '<div>'+chip('Transfers', m.transfers.length)+chip('Corrections', m.adjustments.length)+
     chip('Counts', m.counts.length)+chip('Not found', m.missing.length)+
@@ -1105,6 +1255,8 @@ function renderDone(a){
     '<button class="warn" onclick="dl(\'adjustments\')">Corrections CSV</button>'+
     '<button onclick="dl(\'counts\')">Counts CSV</button>'+
     '<button onclick="dl(\'skipped\')">Not done CSV</button>'+
+    // ⛔ `missing` had a chip on this screen and NO WAY TO EXPORT IT
+    '<button onclick="dl(\'missing\')">Not found CSV</button>'+
     '<button onclick="dl(\'events\')">Event log</button></div></div>'+
     '<div class="card"><div class="pad">'+
       '<h3>Send to SharePoint</h3>'+
@@ -1151,14 +1303,35 @@ function startOver(){
    the FIELDS the transactions need, in a flat CSV, not a validated Finale
    template. ⭐ Column names are kept literal and obvious so remapping is a rename,
    never a re-derivation. */
+/* ⛔⛔ A `P-` CARD IS APP-ONLY AND MUST NEVER REACH FINALE AS A LOCATION.
+   The export wrote `to_location: "PALLET P-18"` for all 32 set-asides — the temporary
+   laminated card, which CLAUDE.md is explicit is NOT a Finale bin ("never make these real
+   Finale locations — that manufactures precisely what F9-T5 became"). A Finale import would
+   reject the row or post it against a location that does not exist.
+   ⭐ The real destination IS known: the receiving pallet's FINAL position, derived by
+   lane_packing and carried in the putback list. Resolve it. */
+function palletFinalLoc(pid){
+  if(!pid) return null;
+  for(const b of PAYLOAD.bays)
+    for(const pb of (b.putback || []))
+      if(pb.pallet_id === pid) return pb.loc;
+  return null;
+}
+
 function moves(){
   const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[]};
   PAYLOAD.bays.forEach(b => {
     const push = (p, l, i, loc) => {
       const id = lid(b.n, loc, l, i), s = S.lines[id];
       if(!s) return;
-      if(s.state === 'missing'){ out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot,
-        planned:l.planned_qty, note:s.reason||'not found'}); return; }
+      if(s.state === 'missing'){
+        /* ⛔ `missing` MEANS FINALE IS WRONG, so the row has to be able to express the
+           correction — it carried `planned` but NOT `system_qty`, and the correction is
+           against what Finale believes is there, not against what we hoped to take. */
+        out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot||'',
+          planned_qty:l.planned_qty, system_qty:l.system_qty,
+          suggested_decrease:l.system_qty, note:s.reason||'not found', ts:s.ts});
+        return; }
       /* ⛔ SKIPPED IS NOT A TRANSFER AND NOT AN ADJUSTMENT — it is the absence of both,
          recorded on purpose. ⭐ It still leaves the planner a fact: this line was planned,
          reached, and deliberately not done. Objective 1 says a skipped TAKE is the one
@@ -1174,8 +1347,19 @@ function moves(){
       }
       const act = s.actual != null ? s.actual : null;
       if(act != null && act > 0){
+        const dest = l.kind === 'take' ? (l.dest || '')
+                                       : (palletFinalLoc(l.onto_pallet) || '');
+        if(!dest){
+          // ⛔ never invent one. An unresolvable destination is a row a human must look at,
+          // not a row to guess — and it is exported so it cannot be lost.
+          out.unresolved = out.unresolved || [];
+          out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:act,
+            onto_pallet:l.onto_pallet||'',
+            why:'the receiving pallet has no final position in the putback list'});
+        }
         out.transfers.push({from_location:loc,
-          to_location: l.kind==='take' ? (l.dest||'') : ('PALLET '+(l.onto_pallet||'')),
+          to_location: dest,
+          onto_pallet: l.kind === 'aside' ? (l.onto_pallet||'') : '',
           sku:l.sku, lot:l.lot||'', quantity:act,
           planned_qty:l.planned_qty, approved_qty:(s.approved!=null?s.approved:l.planned_qty),
           kind:l.kind, bay:b.bay, ts:s.ts});
@@ -1188,7 +1372,10 @@ function moves(){
       }
     };
     b.pallets.forEach(p => p.lines.forEach((l,i) => push(p,l,i,p.loc)));
-    (b.orphan_pulls||[]).forEach((o,i) => push(null,o,i,'ORPHAN'));
+    /* ⛔ WAS `push(..., 'ORPHAN')`, so an orphan that WAS taken exported
+       `from_location: "ORPHAN"` — a location Finale does not have. The real source is
+       right there on the line. */
+    (b.orphan_pulls||[]).forEach((o,i) => push(null, o, i, o.from_location || 'ORPHAN'));
   });
   return out;
 }
@@ -1231,6 +1418,9 @@ function deviceId(){
   return d;
 }
 function sessionKey(){ return `${PAYLOAD.plan_date}_${deviceId()}`; }
+function allBaysClosed(){
+  return PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed);
+}
 
 async function graphWrite(path, body, method){
   const t = tokStore();
@@ -1246,11 +1436,12 @@ async function graphWrite(path, body, method){
 }
 
 async function syncNow(){
+  let fileLanded = false;
   const btn = $('#mainbtn');
   const was = btn ? btn.textContent : '';
   if(btn){ btn.textContent = 'Syncing…'; btn.disabled = true; }
   try{
-    if(!haveToken()){ await signIn(); return; }          // comes back through boot()
+    if(!(await ensureToken())){ await signIn(); return; }   // silent refresh, else redirect
     const sp = CFG.sharepoint;
     const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
     const m = moves();
@@ -1270,6 +1461,7 @@ async function syncNow(){
        body: JSON.stringify(rec)});
     if(!up.ok) throw new Error(`record upload HTTP ${up.status}`);
     const upj = await up.json();
+    fileLanded = true;      // ⭐ so a later failure does not claim nothing was sent
 
     // 2 · the SESSION ROW — upsert by Title, so re-syncing updates rather than duplicating
     const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
@@ -1278,17 +1470,35 @@ async function syncNow(){
     const units = m.transfers.reduce((t2,x) => t2 + Number(x.quantity||0), 0);
     const fields = {
       Title: sessionKey(), PlanDate: PAYLOAD.plan_date, Device: deviceId(),
-      Status: S.screen === 'done' ? 'complete' : 'in_progress',
+      // ⛔ WAS `S.screen === 'done'` — so tapping ⇪ then Sync marked the SharePoint session
+      // COMPLETE with a FinishedAt while every line was still outstanding.
+      Status: allBaysClosed() ? 'complete' : 'in_progress',
       StartedAt: S.started || new Date().toISOString(),
-      FinishedAt: S.screen === 'done' ? new Date().toISOString() : null,
+      FinishedAt: allBaysClosed() ? new Date().toISOString() : null,
       Transfers: m.transfers.length, UnitsMoved: Math.round(units),
       Corrections: m.adjustments.length, Counts: m.counts.length,
       Skipped: m.skipped.length, NotFound: m.missing.length,
       RecordFile: `${sp.doc_folder}/${fname}`,
       PlanFile: `${sp.doc_folder}/plan_latest.json`};
-    const found = await graph(
-      `/sites/${site.id}/lists/${lst.id}/items?$expand=fields&$top=200`);
-    const hit = (found.value || []).find(i => (i.fields||{}).Title === sessionKey());
+    /* ⛔ WAS AN UNFILTERED `$top=200` SCAN. Past 200 rows it returns the OLDEST 200, the
+       match is never found, and every sync POSTs a NEW item — so the UI's promise
+       "re-syncing updates the same session row" silently becomes false and each mid-shift
+       sync adds a duplicate. ⭐ Filter server-side; `graph()` does not page. */
+    const q = encodeURIComponent(`fields/Title eq '${sessionKey()}'`);
+    let hit = null;
+    try{
+      const found = await graph(
+        `/sites/${site.id}/lists/${lst.id}/items?$expand=fields&$filter=${q}&$top=5`);
+      hit = (found.value || [])[0] || null;
+    }catch(e){
+      // an unindexed Title column can make Graph refuse the filter — fall back, but say so
+      const found = await graph(
+        `/sites/${site.id}/lists/${lst.id}/items?$expand=fields&$top=999`);
+      const all = (found.value || []).filter(i => (i.fields||{}).Title === sessionKey());
+      hit = all[0] || null;
+      if((found.value || []).length >= 999)
+        toast('⚠️ the session list is large — ask for the Title column to be indexed');
+    }
     let ack;
     if(hit){ ack = await graphWrite(
         `/sites/${site.id}/lists/${lst.id}/items/${hit.id}/fields`, fields, 'PATCH'); }
@@ -1305,8 +1515,13 @@ async function syncNow(){
     ev('sync_failed', {why: String(e.message || e)});
     save();
     // ⛔ FAIL LOUDLY. A sync that quietly did nothing is how a shift's work disappears.
-    dlg('Sync failed', '<div class="badbox"><b>Nothing was sent.</b><div class="sm" '+
-      'style="margin-top:6px">'+esc(String(e.message || e))+'</div></div>'+
+    /* ⛔ THIS SAID "Nothing was sent" EVEN WHEN THE RECORD FILE HAD LANDED — the wrong
+       direction for a rule this file states itself ("a row counts as saved only when the
+       server acknowledges it"). Report what actually happened. */
+    dlg('Sync failed', '<div class="badbox"><b>'+
+      (fileLanded ? 'The record file was saved, but the session row was NOT updated.'
+                  : 'Nothing was sent.')+
+      '</b><div class="sm" style="margin-top:6px">'+esc(String(e.message || e))+'</div></div>'+
       '<p class="sm dim">Your work is still saved on this iPad. Get back in signal and try '+
       'again — ⛔ do not start another session for this plan until this succeeds.</p>',
       [{t:'OK', c:'pri'}]);
@@ -1321,7 +1536,14 @@ function dlg(title, bodyHtml, buttons, after){
   buttons.forEach(b => {
     const el = document.createElement('button');
     el.textContent = b.t; el.className = b.c || '';
-    el.onclick = (e) => { if(b.f){ e.preventDefault(); b.f(); d.close(); } };
+    /* ⛔⛔ `d.close()` USED TO RUN UNCONDITIONALLY AFTER THE HANDLER, so every
+       `return toast('⛔ …')` READ like an abort and was not one: bad input closed the
+       dialog and threw the entry away. ⭐ A handler returning exactly `false` now keeps
+       the dialog open. ⛔ It also meant a handler that re-opened `dlg()` (Skip did) had
+       its new dialog closed immediately — the crew tapped Skip and NOTHING was recorded,
+       which is precisely the "we ran out of time" vs "nobody looked" distinction this app
+       exists to preserve. */
+    el.onclick = (e) => { if(b.f){ e.preventDefault(); if(b.f() !== false) d.close(); } };
     f.appendChild(el);
   });
   d.showModal(); if(after) after();
