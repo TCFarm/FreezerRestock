@@ -271,6 +271,8 @@ function setPlan(p){
   S = load();
 }
 
+const HOW_LINK = '<div class="sm" style="text-align:center;margin-top:14px">'+
+  '<a href="./how.html" style="color:var(--accent)">How does this work?</a></div>';
 function renderGate(msg, busy){
   const c = cachedPlan();
   $('#hdr').textContent = 'Freezer restock';
@@ -292,7 +294,7 @@ function renderGate(msg, busy){
       (c ? '<div class="okbox">A plan for <b>'+esc(c.plan.plan_date)+'</b> is already on this '+
            'device (loaded '+esc(String(c.fetched).slice(0,16))+'). You can work offline.</div>' : '')+
       '<div id="offbadge" class="sm" style="margin-top:10px"></div>'+
-    '</div></div>';
+    '</div></div>' + HOW_LINK;
   const btn = $('#mainbtn');
   if(c){
     btn.className = 'big ok'; btn.textContent = 'Work offline — open ' + c.plan.plan_date;
