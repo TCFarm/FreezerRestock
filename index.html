@@ -1590,7 +1590,20 @@ function putbackCard(b){
                  .join(', ')+'</div>' : '');
       })()+
       (waiting?'<div class="sub" style="color:var(--aside)">stays on the floor — still waiting for stock from a later bay</div>':'')+
-      '</div></div>';
+      '</div>'+
+      /* ⭐ FR-568: one tap, at the moment they are looking at the loaded pallet. Optional
+         by design — a crew trapped by a metrics question is a crew that stops using the
+         app. ⛔ Never show our own estimate here; `askFullness` reveals it after. */
+      (function(){
+        const src = (b.pallets.find(x => x.pallet_id === pb.pallet_id) || {});
+        const k = (S.pallets[src.loc] || {}).fullness;
+        const bk = k ? bucketOf(k) : null;
+        return '<button type="button" class="'+(bk?'ok':'ghost')+'" style="min-width:78px;'+
+          'min-height:56px;font-size:13px;padding:4px 6px" onclick="event.stopPropagation();'+
+          'askFullness('+b.n+',\''+esc(src.loc||'')+'\')">'+
+          (bk ? bk.t : 'how<br>full?')+'</button>';
+      })()+
+      '</div>';
   });
   h += '</div><div class="pad"><button class="big '+(st_.putback_done?'ok':'warn')+'" onclick="putbackDone('+b.n+')">'+
     (st_.putback_done?'✓ Putback recorded':'✓ Loaded back in this order')+'</button></div></div>';
@@ -1600,7 +1613,136 @@ function putbackDone(nn){
   // ⚠️ PUTBACK IS TIMED PER BAY, NOT PER PALLET (Jack): "they're just gonna put them
   // all back and then go tap tap tap tap close the bay."
   S.bays[nn] = Object.assign(S.bays[nn]||{}, {putback_done:true});
-  ev('putback_done', {bay: PAYLOAD.bays.find(b=>b.n===nn).bay}); save(); render();
+  ev('putback_done', {bay: PAYLOAD.bays.find(b=>b.n===nn).bay}); save();
+  askLaneRoom(nn);          // ⭐ FR-569 — one question, at the only moment anyone can answer it
+  render();
+}
+
+/* ============ IS THERE ACTUALLY A FREE SPACE IN THIS LANE? (FR-569) ============
+   ⛔⛔ THIS IS THE FALSE-EMPTY PROBLEM, AND NO EXPORT CAN ANSWER IT. Finale's bin export
+   lists only locations HOLDING STOCK, so a genuinely empty position and one whose stock is
+   tagged to the wrong slot look **identical**. ⭐ Counted 2026-09-04: 8 nominally free
+   positions across 22 stocked bays, of which cross-checking bay VOLUME suggested only
+   ~3 are real — and that cross-check is itself built on ~40%-estimated volumes.
+   ⛔ Everything downstream depends on the answer: `plan_wave_pallets` needs a free deck,
+   the cross-lane pass needs somewhere to put arrivals, and `lane_packing` RAISES if a lane
+   is asked to hold more pallets than it has positions.
+
+   ⭐ The crew have just emptied the lane and filled it again. They are the only source
+   that has ever actually seen it. ⛔ Asked ONCE per bay, at putback, with a "not sure"
+   that is a real answer — a forced guess is worse than a gap, because a gap is visible. */
+function askLaneRoom(nn){
+  const b = PAYLOAD.bays.find(x => x.n === nn);
+  if(!b) return;
+  const st_ = S.bays[nn] || {};
+  if(st_.lane_room) return;                 // asked already this session
+  const backN = (b.putback || []).length;
+  setTimeout(() => dlg('One question about ' + b.bay,
+    '<p>You have just put <b>'+backN+'</b> pallet'+(backN===1?'':'s')+' back into '+
+    esc(b.bay)+'.</p>'+
+    '<p class="sm dim">Finale can only ever see positions that hold stock, so it cannot '+
+    'tell us whether a lane is genuinely full. You can.</p>'+
+    '<p><b>Could another pallet fit in this lane right now?</b></p>',
+    [{t:'No — it is full', c:'', f:()=>laneRoom(nn,'full',backN)},
+     {t:'Yes — room for 1', c:'', f:()=>laneRoom(nn,'one',backN)},
+     {t:'Yes — room for 2+', c:'', f:()=>laneRoom(nn,'two_plus',backN)},
+     {t:'Not sure', c:'ghost', f:()=>laneRoom(nn,'unsure',backN)}]), 0);
+}
+function laneRoom(nn, ans, backN){
+  const b = PAYLOAD.bays.find(x => x.n === nn);
+  S.bays[nn] = Object.assign(S.bays[nn]||{}, {lane_room: ans, lane_back: backN,
+                                              lane_room_ts: new Date().toISOString()});
+  ev('lane_room', {bay: b ? b.bay : '', answer: ans, pallets_back: backN});
+  save(); render();
+}
+
+
+/* ============ HOW FULL IS THIS PALLET, REALLY? (FR-568, Jack 2026-09-06) ============
+   ⭐⭐ THE PROBLEM THIS EXISTS TO SOLVE, in Jack's words: *"the items in finale are not
+   stored digitally in the place they actually physically are, so you can't see. You see
+   the ones that are over a hundred percent… but there are a couple empty pallets. It's
+   hard for you to tell which pallet spaces are actually empty because of the FALSE
+   EMPTIES."*
+
+   ⛔ No export can answer this. Finale's bin export lists only locations HOLDING STOCK, so
+   an empty position and a mislabelled one look identical, and our volume model reads six
+   pallets over 100% and twenty-three under 50% with no way to tell which readings are real.
+   ⭐ The crew are standing in front of the pallet. They can just tell us.
+
+   ⛔⛔ ASK BLIND, THEN REVEAL. The model's own estimate is deliberately NOT shown until
+   after they answer. An anchored estimate is not an independent measurement, and having a
+   SECOND independent reading is the entire point — the DISAGREEMENT is the calibration
+   signal. Show it first and we learn nothing except that people agree with numbers.
+
+   ⭐ COARSE BUCKETS, NOT A KEYBOARD. Gloves, −10°F. Six taps, and the one that matters
+   most is OVERFULL — that is the reading that says our deck model is wrong, or that the
+   consolidation is routing stock onto a pallet that cannot take it. */
+const FULL_BUCKETS = [
+  {k:'empty',    pct:0,   t:'Empty',      d:'nothing on it'},
+  {k:'quarter',  pct:25,  t:'¼ full',     d:'lots of room'},
+  {k:'half',     pct:50,  t:'½ full',     d:'room for more'},
+  {k:'three_q',  pct:75,  t:'¾ full',     d:'a bit of room'},
+  {k:'full',     pct:95,  t:'FULL',       d:'nothing else fits'},
+  {k:'over',     pct:120, t:'OVERFULL',   d:'⛔ would not all fit — say what is left over'},
+];
+function bucketOf(k){ return FULL_BUCKETS.find(x => x.k === k) || null; }
+
+function askFullness(bayN, loc){
+  const b = PAYLOAD.bays.find(x => x.n === bayN);
+  const p = b && b.pallets.find(x => x.loc === loc);
+  if(!p) return;
+  const prev = (S.pallets[loc] || {}).fullness || '';
+  dlg('How full is ' + (p.pallet_id || loc) + ' now it is loaded?',
+    '<p class="sm dim">Eyeball it — a rough answer is worth far more than none. This is the '+
+    'only way we can tell a genuinely empty pallet space from one Finale has simply lost '+
+    'track of.</p>'+
+    '<div id="fullbtns">'+
+      FULL_BUCKETS.map(x =>
+        '<button type="button" class="big '+(prev===x.k?'ok':'')+'" style="margin-bottom:8px;'+
+        'text-align:left;min-height:62px" onclick="setFullness('+bayN+',\''+esc(loc)+'\',\''+x.k+'\')">'+
+        '<b>'+x.t+'</b><div class="sm" style="font-weight:400;opacity:.8">'+x.d+'</div></button>'
+      ).join('')+
+    '</div>',
+    [{t:'Not now', c:'ghost'}]);
+}
+
+function setFullness(bayN, loc, k){
+  const b = PAYLOAD.bays.find(x => x.n === bayN);
+  const p = b && b.pallets.find(x => x.loc === loc);
+  const ps_ = S.pallets[loc] = S.pallets[loc] || {};
+  ps_.fullness = k;
+  ps_.fullness_ts = new Date().toISOString();
+  ev('fullness', {bay: b ? b.bay : '', pallet: p ? p.pallet_id : loc, bucket: k});
+  save();
+  /* ⭐ NOW show what we thought — after the answer is locked in, never before. It is
+     feedback for the crew and it is how a wildly wrong model gets noticed on the floor
+     rather than three weeks later in a spreadsheet. */
+  const bk = bucketOf(k);
+  const deck = p ? Number(p.deck_m3 || 0) : 0;
+  const ours = p ? Number(p.est_m3 || 0) : 0;
+  const ourPct = deck > 0 ? Math.round(100 * ours / deck) : null;
+  const gap = (ourPct == null) ? null : bk.pct - ourPct;
+  const nov = (p && p.no_volume) || [];
+  setTimeout(() => dlg('Thanks — recorded as ' + bk.t,
+    (ourPct == null
+      ? '<p class="dim">We have no size estimate for this bay, so yours is the only reading.</p>'
+      : '<div class="'+(Math.abs(gap) >= 35 ? 'warnbox' : 'okbox')+'">'+
+        '<b>We estimated '+ourPct+'%</b>; you said <b>'+bk.pct+'%</b>.'+
+        (Math.abs(gap) >= 35
+          ? '<div class="sm" style="margin-top:6px">That is a big gap, which is exactly what '+
+            'we are looking for — it means our sizes for these items, or for this pallet '+
+            'space, are off. Nothing for you to do.</div>'
+          : '<div class="sm" style="margin-top:6px">Close to our estimate.</div>')+
+        '</div>')+
+    (nov.length
+      ? '<p class="sm dim">⚠️ We have no size on file for '+nov.map(esc).join(', ')+
+        ', so our estimate reads light for this one.</p>' : '')+
+    (k === 'over'
+      ? '<div class="warnbox sm" style="margin-top:10px"><b>⛔ Do not force it.</b> Leave '+
+        'what will not fit on the floor and tell us at the end — a pallet crammed past its '+
+        'deck is how stock ends up in a place Finale cannot see.</div>' : ''),
+    [{t:'OK', c:'pri'}]), 0);
+  render();
 }
 
 /* ============================== FINISH ===================================== */
@@ -1704,7 +1846,39 @@ function palletFinalLoc(pid){
 }
 
 function moves(){
-  const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[]};
+  const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[],
+               /* ⭐ FR-568/569 — the two OBSERVATIONS this app can make that no Finale
+                  export ever will: how full a pallet actually is, and whether a lane
+                  actually has room. Both carry our own prediction alongside, because a
+                  reading without the thing it disagrees with calibrates nothing. */
+               fullness:[], lane_room:[]};
+  PAYLOAD.bays.forEach(b => {
+    (b.pallets || []).forEach(p => {
+      const ps_ = S.pallets[p.loc] || {};
+      if(!ps_.fullness) return;
+      const bk = bucketOf(ps_.fullness);
+      const deck = Number(p.deck_m3 || 0), ours = Number(p.est_m3 || 0);
+      out.fullness.push({bay:b.bay, from_location:p.loc, pallet_id:p.pallet_id||'',
+        goes_back_to:p.goes_back_to||'', spoil:!!p.spoil,
+        crew_bucket:ps_.fullness, crew_pct:bk?bk.pct:null,
+        model_m3:ours, deck_m3:deck,
+        model_pct: deck>0 ? Math.round(100*ours/deck) : null,
+        no_volume_skus:(p.no_volume||[]).join(' '),
+        /* ⭐ a SPOIL pallet is the cleanest calibration point there is: nothing was taken
+           off or put on, so Finale's contents should be exactly right and the only thing
+           being tested is our SIZES. */
+        sku_lots:(p.lines||[]).filter(l=>l.kind!=='count')
+                   .map(l=>l.sku+'@'+(l.lot||'-')+'x'+n(l.system_qty)).join(' '),
+        ts:ps_.fullness_ts});
+    });
+    const bst = S.bays[b.n] || {};
+    if(bst.lane_room){
+      out.lane_room.push({bay:b.bay, answer:bst.lane_room,
+        pallets_put_back:bst.lane_back,
+        deepest_dug:b.deepest, pallets_down:b.down,
+        ts:bst.lane_room_ts});
+    }
+  });
   PAYLOAD.bays.forEach(b => {
     /* ⛔⛔ `loc` WAS DOING TWO JOBS AND I BROKE IT BY FIXING THE OTHER ONE.
        It is BOTH the key the UI stored state under AND the location we export. Orphan state
