@@ -1,0 +1,371 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Freezer restock — how it works</title>
+
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --ink:#14171a; --dim:#5b636b; --line:#e3e6ea;
+  --take:#1565c0; --aside:#b06f00; --stay:#5b636b; --ok:#1b7f3b; --bad:#c0392b;
+  --accent:#1565c0;
+}
+:root[data-theme="dark"], :root:not([data-theme="light"]){ }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171a; --card:#1d2126; --ink:#eef1f4; --dim:#a3adb8; --line:#2c333a;
+    --take:#6aa9ff; --aside:#e0a33a; --stay:#a3adb8; --ok:#5cc47c; --bad:#ff7b6b;
+    --accent:#6aa9ff;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-text-size-adjust:100%}
+.wrap{max-width:820px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:26px;margin:.2em 0 .1em;letter-spacing:-.01em}
+h2{font-size:20px;margin:0}
+.lede{color:var(--dim);margin:0 0 22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:14px 0;
+  overflow:hidden}
+.pad{padding:16px 18px}
+.step{display:flex;gap:14px;align-items:flex-start;width:100%;text-align:left;
+  background:none;border:0;color:inherit;font:inherit;padding:16px 18px;cursor:pointer}
+.step:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.num{flex:0 0 34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;
+  display:grid;place-items:center;font-weight:700;font-size:15px}
+.step h2{font-size:17px}
+.step .sub{color:var(--dim);font-size:14px;margin-top:2px}
+.chev{margin-left:auto;color:var(--dim);transition:transform .18s;flex:0 0 auto;font-size:18px}
+.step[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.detail{border-top:1px solid var(--line);padding:4px 18px 18px}
+.detail h3{font-size:15px;margin:18px 0 6px}
+.detail p, .detail li{font-size:15px}
+ul{padding-left:20px;margin:8px 0}
+li{margin:5px 0}
+.tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;font-weight:700;
+  vertical-align:1px}
+.t-take{background:color-mix(in srgb,var(--take) 16%,transparent);color:var(--take)}
+.t-aside{background:color-mix(in srgb,var(--aside) 18%,transparent);color:var(--aside)}
+.t-stay{background:color-mix(in srgb,var(--stay) 16%,transparent);color:var(--stay)}
+.note{background:color-mix(in srgb,var(--accent) 8%,transparent);
+  border-left:3px solid var(--accent);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;
+  font-size:14.5px}
+.warn{background:color-mix(in srgb,var(--bad) 9%,transparent);border-left-color:var(--bad)}
+.good{background:color-mix(in srgb,var(--ok) 10%,transparent);border-left-color:var(--ok)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14.5px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:.04em}
+code{background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 6px;border-radius:5px;
+  font-size:.9em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.fig{margin:14px 0;overflow-x:auto}
+svg{display:block;max-width:100%;height:auto}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button.mini{font:inherit;font-size:14px;padding:9px 15px;border-radius:9px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;
+  min-height:44px}
+button.mini.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.foot{color:var(--dim);font-size:13.5px;margin-top:30px;text-align:center}
+@media (max-width:420px){ .wrap{padding:14px 12px 70px} h1{font-size:22px} }
+</style>
+
+<div class="wrap">
+<h1>Freezer restock — how it works</h1>
+<p class="lede">Five steps. Tap any one to see more.</p>
+
+<div class="card">
+  <button class="step" aria-expanded="false" data-t="d1">
+    <span class="num">1</span>
+    <span><h2>Before you go in</h2>
+      <span class="sub">Open it on wifi. Add it to your home screen <b>first</b>.</span></span>
+    <span class="chev">›</span>
+  </button>
+  <div class="detail" id="d1" hidden>
+    <p>The app signs you in with your work account — no button to press, it just goes.</p>
+    <h3>On an iPad, do it in this order</h3>
+    <ul>
+      <li><b>Share → Add to Home Screen</b></li>
+      <li>Open it from the <b>icon</b></li>
+      <li>Sign in <b>there</b>, on wifi</li>
+    </ul>
+    <div class="note warn"><b>Order matters.</b> The home-screen icon is its own app with its
+      own memory. Sign in first and add the icon after, and you will just have to sign in
+      again.</div>
+    <div class="note good">Wait for the green line: <b>“Saved on this device.”</b> That means
+      it will open inside the freezer with no signal.</div>
+    <p>Then grab the laminated <b>P- cards</b>. The app tells you which number goes on each
+      pallet.</p>
+  </div>
+</div>
+
+<div class="card">
+  <button class="step" aria-expanded="false" data-t="d2">
+    <span class="num">2</span>
+    <span><h2>Two different cards</h2>
+      <span class="sub">One says <i>which pallet</i>. One says <i>where it lives</i>.</span></span>
+    <span class="chev">›</span>
+  </button>
+  <div class="detail" id="d2" hidden>
+    <p>This trips everyone up once, so it is worth thirty seconds.</p>
+    <div class="fig" id="fig-cards"></div>
+    <table>
+      <tr><th>Card</th><th>Goes on when</th><th>What it means</th></tr>
+      <tr><td><b>P-7</b></td><td>the moment it comes off the rack</td>
+        <td>“this is pallet 7 <i>today</i>”. Just for this job.</td></tr>
+      <tr><td><b>F2-A-03-2</b></td><td>when it goes back up</td>
+        <td>the real Finale location. <b>This is the one that gets scanned.</b></td></tr>
+    </table>
+    <div class="note"><b>The numbers count up all job and are never reused.</b> P-7 means one
+      pallet from the moment it hits the floor until it goes back up. The next job starts
+      again at P-1.</div>
+  </div>
+</div>
+
+<div class="card">
+  <button class="step" aria-expanded="false" data-t="d3">
+    <span class="num">3</span>
+    <span><h2>Work a bay</h2>
+      <span class="sub">Take off, set aside, count — then close it.</span></span>
+    <span class="chev">›</span>
+  </button>
+  <div class="detail" id="d3" hidden>
+    <p>The app walks you through one bay at a time, one pallet at a time.</p>
+    <h3>Every line is one of these</h3>
+    <table>
+      <tr><td><span class="tag t-take">TAKE OFF</span></td>
+        <td>goes down to the floor for picking</td></tr>
+      <tr><td><span class="tag t-aside">SET ASIDE</span></td>
+        <td>goes onto a <b>different</b> pallet — do not put it back on this one</td></tr>
+      <tr><td><span class="tag t-stay">STAYS</span></td>
+        <td>nothing to do. It rides back up on the same pallet.</td></tr>
+    </table>
+    <p>If a pallet went exactly as described, tap <b>All as planned</b> once and move on.
+      Otherwise tap the line and say what really happened.</p>
+    <div class="note"><b>Cycle counts</b> only ever appear on pallets that are already open.
+      Nothing gets unwrapped just to be counted.</div>
+  </div>
+</div>
+
+<div class="card">
+  <button class="step" aria-expanded="false" data-t="d4">
+    <span class="num">4</span>
+    <span><h2>Putting it back</h2>
+      <span class="sub">The <b>last</b> pallet you push in ends up at the front.</span></span>
+    <span class="chev">›</span>
+  </button>
+  <div class="detail" id="d4" hidden>
+    <p>These are pushback lanes, so they pack forward. Load in the order the app shows and
+      the right pallet ends up in front. Watch it:</p>
+    <div class="fig" id="fig-lane"></div>
+    <div class="btnrow">
+      <button class="mini" id="lane-play">▶ Load the lane</button>
+      <button class="mini" id="lane-reset">Reset</button>
+    </div>
+    <div class="note warn"><b>A pallet usually does not go back where it came from.</b> That
+      is normal, not a mistake — the app works out the new spot and prints the placard for
+      it. Put that placard on as it goes in.</div>
+    <p>Once the lane is loaded, the app asks two quick questions. Both take one tap.</p>
+    <ul>
+      <li><b>“Does this look about right?”</b> — we guess how full the pallet is. If it looks
+        about right, tap <b>Yep</b>. If it is way off, tap <b>No</b> and pick the closest.</li>
+      <li><b>“Could another pallet fit in this lane?”</b> — yes / one / two or more / not sure.</li>
+    </ul>
+    <div class="note good">Finale cannot see either of those. You are the only source there
+      is, and a rough answer beats none.</div>
+  </div>
+</div>
+
+<div class="card">
+  <button class="step" aria-expanded="false" data-t="d5">
+    <span class="num">5</span>
+    <span><h2>When it does not go to plan</h2>
+      <span class="sub">Say so. That is the most useful thing you can do.</span></span>
+    <span class="chev">›</span>
+  </button>
+  <div class="detail" id="d5" hidden>
+    <p>The plan is our best guess from the numbers in the computer. You are looking at the
+      actual boxes. When those disagree, <b>you are right</b> — just tell the app.</p>
+    <table>
+      <tr><th>What happened</th><th>What to tap</th></tr>
+      <tr><td>It would not all fit on the pallet we named</td>
+        <td><b>Save — but it did not all fit</b>, then say how much went where</td></tr>
+      <tr><td>The pallet went back in a different spot</td>
+        <td><b>went elsewhere?</b> on the putback list</td></tr>
+      <tr><td>One pallet had to become two</td>
+        <td><b>went elsewhere?</b> → <i>I had to split it</i></td></tr>
+      <tr><td>It is still on the floor at the end</td>
+        <td><b>went elsewhere?</b> → <i>it is still on the floor</i></td></tr>
+      <tr><td>The stock simply is not there</td><td><b>Not here at all</b></td></tr>
+      <tr><td>We are not doing this one today</td><td><b>Skip</b></td></tr>
+      <tr><td>I sent it all to the floor and held none back</td>
+        <td>enter the full number, then pick <i>I moved it from that line</i></td></tr>
+    </table>
+    <div class="note good"><b>None of this gets anyone in trouble.</b> If you put 150 on the
+      pallet we asked for and 50 somewhere else, tell the app both numbers. That is what
+      keeps next week's plan right.</div>
+    <h3>Other things worth knowing</h3>
+    <ul>
+      <li><b>Break button</b> — the screen greys out so nothing gets tapped by accident.</li>
+      <li><b>Wrong tap?</b> Tap the line again and change it. Nothing is locked.</li>
+      <li><b>It will not let you save</b> — stop and tell someone. Do not keep working;
+        nothing is being kept.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card"><div class="pad">
+  <h2 style="font-size:17px">End of the shift</h2>
+  <ul>
+    <li><b>Sync</b> — on wifi. This sends everything up.</li>
+    <li>Answer the last question: how many free pallet spaces are in the F1 back stock area.</li>
+    <li>Someone imports the stock changes into Finale.</li>
+    <li>Check back the next day that it all landed — the movement report only catches up
+      overnight.</li>
+  </ul>
+  <div class="note warn"><b>Use the app for the transfers this pull — not the Finale
+    tablet.</b> If both get used, the stock gets counted twice.</div>
+</div></div>
+
+<p class="foot">Questions or something that looks wrong? Tell Jack.</p>
+</div>
+
+<script>
+ 
+document.querySelectorAll('.step').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const d = document.getElementById(btn.dataset.t);
+    const open = btn.getAttribute('aria-expanded') === 'true';
+    btn.setAttribute('aria-expanded', String(!open));
+    d.hidden = open;                        
+    if (!open && btn.dataset.t === 'd4') drawLane(LOADED);
+  });
+});
+
+const NARROW = () => (document.querySelector('.wrap').clientWidth < 520);
+
+function drawCards(){
+  const el = document.getElementById('fig-cards');
+  if(!el) return;
+  const box = (x,y,w,h,label,sub,colour,dashed) => `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8"
+          fill="${colour}" fill-opacity=".15" stroke="${colour}" stroke-width="2"
+          ${dashed ? 'stroke-dasharray="5 4"' : ''}/>
+    <text x="${x+w/2}" y="${y+h/2-2}" text-anchor="middle" font-weight="700"
+          font-size="17" fill="${colour}">${label}</text>
+    <text x="${x+w/2}" y="${y+h/2+17}" text-anchor="middle" font-size="12.5"
+          fill="currentColor" opacity=".7">${sub}</text>`;
+
+  if(NARROW()){
+    el.innerHTML = `<svg viewBox="0 0 340 250" role="img"
+      aria-label="Two cards: a P- card goes on the pallet the moment it comes down; a location placard goes on when it goes back up.">
+      <g font-family="inherit">
+        <text x="8" y="16" font-size="12.5" fill="currentColor" opacity=".65">1 — comes off the rack</text>
+        ${box(8,26,324,66,'P-7','pallet card · this job only','var(--aside)')}
+        <line x1="170" y1="100" x2="170" y2="132" stroke="currentColor" stroke-opacity=".45"
+              stroke-width="2" marker-end="url(#arD)"/>
+        <text x="182" y="122" font-size="12" fill="currentColor" opacity=".6">goes back up</text>
+        <text x="8" y="160" font-size="12.5" fill="currentColor" opacity=".65">2 — back in the rack</text>
+        ${box(8,170,324,66,'F2-A-03-2','the placard Finale scans','var(--take)')}
+      </g>
+      <defs><marker id="arD" markerWidth="9" markerHeight="9" refX="4.5" refY="8" orient="auto">
+        <path d="M0,0 L9,0 L4.5,9 z" fill="currentColor" fill-opacity=".45"/></marker></defs>
+    </svg>`;
+    return;
+  }
+  el.innerHTML = `<svg viewBox="0 0 620 130" role="img"
+    aria-label="Two cards: a P- card goes on the pallet the moment it comes down; a location placard goes on when it goes back up.">
+    <defs><marker id="arR" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="currentColor" fill-opacity=".45"/></marker></defs>
+    <g font-family="inherit">
+      <text x="14" y="18" font-size="12.5" fill="currentColor" opacity=".65">1 — comes off the rack</text>
+      ${box(14,28,250,70,'P-7','pallet card · this job only','var(--aside)')}
+      <line x1="278" y1="63" x2="342" y2="63" stroke="currentColor" stroke-opacity=".45"
+            stroke-width="2" marker-end="url(#arR)"/>
+      <text x="310" y="52" text-anchor="middle" font-size="12" fill="currentColor" opacity=".6">goes back up</text>
+      <text x="356" y="18" font-size="12.5" fill="currentColor" opacity=".65">2 — back in the rack</text>
+      ${box(356,28,250,70,'F2-A-03-2','the placard Finale scans','var(--take)')}
+    </g></svg>`;
+}
+
+const LANE = ['P-4','P-3','P-2','P-1'];
+let LOADED = 0, timer = null;
+
+function drawLane(n){
+  const el = document.getElementById('fig-lane');
+  if(!el) return;
+  const narrow = NARROW();
+  const done = (n === LANE.length);
+  let svg;
+
+  if(narrow){
+    const W = 340, rowH = 54, gap = 8, top = 30;
+    const H = top + LANE.length * (rowH + gap) + 14;
+    let g = `<text x="6" y="18" font-size="12.5" fill="currentColor" opacity=".7">
+             ↑ FRONT — position 1, nearest the aisle</text>`;
+    for(let i = 0; i < n; i++){
+      const slot = n - 1 - i;                       
+      const y = top + slot * (rowH + gap);
+      const front = slot === 0;
+      const c = front ? 'var(--ok)' : 'currentColor';
+      g += `<g>
+        <rect x="6" y="${y}" width="${W-12}" height="${rowH}" rx="8" fill="${c}"
+              fill-opacity="${front ? '.20' : '.10'}" stroke="${c}"
+              stroke-opacity="${front ? '1' : '.4'}" stroke-width="2"/>
+        <text x="20" y="${y+33}" font-size="17" font-weight="700" fill="${c}">${LANE[i]}</text>
+        <text x="82" y="${y+33}" font-size="13" fill="currentColor" opacity=".72">
+          ${i+1}${['st','nd','rd','th'][Math.min(i,3)]} one pushed in</text>
+        <text x="${W-16}" y="${y+33}" text-anchor="end" font-size="13" font-weight="600"
+              fill="currentColor" opacity=".85">position ${slot+1}</text></g>`;
+    }
+    if(n === 0) g += `<text x="${W/2}" y="${top+40}" text-anchor="middle" font-size="14"
+                      fill="currentColor" opacity=".5">empty lane — press play</text>`;
+    g += `<text x="6" y="${H-2}" font-size="12.5" fill="currentColor" opacity=".7">
+          ↓ back of the lane</text>`;
+    svg = `<svg viewBox="0 0 ${W} ${H}">${g}</svg>`;
+  } else {
+    const W = 620, slotW = 128, gap = 10, y = 44, h = 66;
+    let g = `<text x="20" y="20" font-size="12.5" fill="currentColor" opacity=".7">
+             ← FRONT — position 1, nearest the aisle</text>
+             <text x="${W-20}" y="20" text-anchor="end" font-size="12.5" fill="currentColor"
+             opacity=".7">back of the lane →</text>`;
+    for(let i = 0; i < n; i++){
+      const slot = n - 1 - i, x = 20 + slot * (slotW + gap), front = slot === 0;
+      const c = front ? 'var(--ok)' : 'currentColor';
+      g += `<g>
+        <rect x="${x}" y="${y}" width="${slotW}" height="${h}" rx="8" fill="${c}"
+              fill-opacity="${front ? '.20' : '.10'}" stroke="${c}"
+              stroke-opacity="${front ? '1' : '.4'}" stroke-width="2"/>
+        <text x="${x+slotW/2}" y="${y+30}" text-anchor="middle" font-size="18"
+              font-weight="700" fill="${c}">${LANE[i]}</text>
+        <text x="${x+slotW/2}" y="${y+50}" text-anchor="middle" font-size="12.5"
+              fill="currentColor" opacity=".72">${i+1}${['st','nd','rd','th'][Math.min(i,3)]} in</text>
+        <text x="${x+slotW/2}" y="${y+h+20}" text-anchor="middle" font-size="13"
+              font-weight="600" fill="currentColor" opacity=".85">position ${slot+1}</text></g>`;
+    }
+    if(n === 0) g += `<text x="${W/2}" y="${y+40}" text-anchor="middle" font-size="14"
+                      fill="currentColor" opacity=".5">empty lane — press play</text>`;
+    svg = `<svg viewBox="0 0 ${W} 150">${g}</svg>`;
+  }
+
+  el.innerHTML = `<div role="img" aria-label="A pushback lane packing forward. Pallets go in
+    one at a time and the last one loaded ends up at position 1, nearest the aisle.">
+    ${svg}</div>` + (done
+      ? `<p style="font-size:14.5px;margin:10px 2px 0"><b>P-1 went in LAST and ended up at the
+         front.</b> That is why the app gives you an order — it decides what you reach first
+         next time.</p>` : '');
+}
+
+document.getElementById('lane-play').addEventListener('click', () => {
+  clearInterval(timer); LOADED = 0; drawLane(0);
+  timer = setInterval(() => { LOADED++; drawLane(LOADED);
+    if(LOADED >= LANE.length) clearInterval(timer); }, 750);
+});
+document.getElementById('lane-reset').addEventListener('click', () => {
+  clearInterval(timer); LOADED = 0; drawLane(0);
+});
+ 
+let rt = null;
+addEventListener('resize', () => { clearTimeout(rt);
+  rt = setTimeout(() => { drawCards(); drawLane(LOADED); }, 120); });
+drawCards();
+drawLane(0);
+</script>
