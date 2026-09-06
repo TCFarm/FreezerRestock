@@ -1,0 +1,1058 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Freezer restock</title>
+<style>
+/* ⛔ GLOVES AND −10°F DRIVE EVERY CHOICE HERE. Targets >=60px, high contrast, no hover-only
+   affordance, no drag, no long-press. ⭐ Taps are the unit of cost. */
+/* ⛔ THIS WAS HARDCODED DARK AND JACK ASKED WHY (2026-09-05): *"this one all being black
+   dark view. And maybe that's just because I'm in dark view on Safari. I'm not sure."*
+   ⭐ It was NOT his Safari — there was no `prefers-color-scheme` at all, so the app ignored
+   the device and always rendered dark. The PROTOTYPE was theme-aware and this regressed it.
+   ⭐ Light is now the base and dark follows the device, with an explicit `data-theme`
+   override winning in both directions. ⚠️ Every colour is defined on bare `:root` first —
+   a token whose ONLY definition sits inside a media query renders as nothing in the other
+   theme. */
+:root{
+  --bg:#f4f6f8; --card:#ffffff; --line:#d5dde3; --ink:#101a1f; --dim:#5d707a;
+  --take:#0b62c4; --aside:#8a5406; --count:#6b3fa0; --stay:#6d828c; --ok:#1c6b45; --bad:#a32d24;
+  --onaccent:#ffffff;
+  --tap:62px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1117; --card:#161b22; --line:#30363d; --ink:#e6edf3; --dim:#9198a1;
+  --take:#2f81f7; --aside:#d29922; --count:#a371f7; --stay:#6e7681; --ok:#3fb950; --bad:#f85149;
+  --onaccent:#04240f;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d1117; --card:#161b22; --line:#30363d; --ink:#e6edf3; --dim:#9198a1;
+  --take:#2f81f7; --aside:#d29922; --count:#a371f7; --stay:#6e7681; --ok:#3fb950; --bad:#f85149;
+  --onaccent:#04240f;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-text-size-adjust:100%;overscroll-behavior:none}
+body{padding-bottom:96px}
+.wrap{max-width:900px;margin:0 auto;padding:12px}
+h1,h2,h3{margin:0 0 8px}
+h1{font-size:20px}
+button{font:inherit;color:inherit;background:var(--card);border:2px solid var(--line);
+  border-radius:12px;min-height:var(--tap);padding:12px 16px;cursor:pointer}
+button:active{transform:scale(.985)}
+button.big{width:100%;font-size:18px;font-weight:650}
+button.pri{background:var(--take);border-color:var(--take);color:#fff}
+button.ok{background:var(--ok);border-color:var(--ok);color:var(--onaccent)}
+button.warn{background:var(--aside);border-color:var(--aside);color:#fff}
+button.ghost{background:transparent}
+button[disabled]{opacity:.4}
+.bar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);padding:8px 12px;display:flex;gap:8px;align-items:center}
+.bar .grow{flex:1;min-width:0}
+.bar b{display:block;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar small{color:var(--dim);font-size:12px}
+.bar button{min-height:44px;padding:8px 12px;font-size:14px;border-radius:10px}
+.prog{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:6px}
+.prog i{display:block;height:100%;background:var(--ok);width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:10px 0;
+  overflow:hidden}
+.ph{display:flex;gap:10px;align-items:center;padding:14px;min-height:var(--tap);cursor:pointer}
+.ph .grow{flex:1;min-width:0}
+.ph b{font-size:17px}
+.ph small{display:block;color:var(--dim);font-size:13px}
+.body{border-top:1px solid var(--line);max-height:60vh;overflow-y:auto;
+  -webkit-overflow-scrolling:touch}
+.grp{padding:6px 12px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--dim);background:var(--bg);border-top:1px solid var(--line);position:sticky;top:0}
+.ln{display:flex;gap:10px;align-items:center;padding:10px 12px;border-top:1px solid var(--line);
+  min-height:var(--tap)}
+.ln .grow{flex:1;min-width:0}
+.ln .sku{font-weight:650;font-size:16px}
+.ln .sub{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qty{font-variant-numeric:tabular-nums;font-weight:700;font-size:18px;min-width:58px;text-align:right}
+.tag{font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;white-space:nowrap}
+.t-take{background:color-mix(in srgb,var(--take) 18%,transparent);color:var(--take)}
+.t-aside{background:color-mix(in srgb,var(--aside) 18%,transparent);color:var(--aside)}
+.t-count{background:color-mix(in srgb,var(--count) 18%,transparent);color:var(--count)}
+.t-stay{background:color-mix(in srgb,var(--stay) 15%,transparent);color:var(--stay)}
+.done{opacity:.45}
+.done .qty{text-decoration:line-through}
+.chip{display:inline-block;font-size:12px;padding:4px 9px;border-radius:999px;
+  background:color-mix(in srgb,var(--stay) 15%,transparent);color:var(--dim);margin:0 6px 6px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1;min-width:120px}
+.pad{padding:12px}
+.dim{color:var(--dim)}
+.sm{font-size:13px}
+.warnbox{border:1px solid var(--aside);background:color-mix(in srgb,var(--aside) 12%,transparent);border-radius:12px;padding:12px;margin:10px 0}
+.badbox{border:1px solid var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent);border-radius:12px;padding:12px;margin:10px 0}
+.okbox{border:1px solid var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);border-radius:12px;padding:12px;margin:10px 0}
+input[type=number],select,textarea{width:100%;background:var(--bg);color:var(--ink);
+  border:2px solid var(--line);border-radius:10px;padding:14px;font:inherit;min-height:var(--tap)}
+input[type=number]{font-size:26px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums}
+dialog{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:16px;
+  padding:0;width:min(560px,94vw);max-height:88vh}
+dialog::backdrop{background:#000b}
+.dh{padding:14px;border-bottom:1px solid var(--line);font-weight:700}
+.db{padding:14px;overflow-y:auto;max-height:60vh}
+.df{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px}
+.df>*{flex:1}
+.foot{position:fixed;left:0;right:0;bottom:0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+  background:color-mix(in srgb,var(--bg) 95%,transparent);border-top:1px solid var(--line);z-index:30}
+.foot .wrap{padding:0}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+#breakveil{position:fixed;inset:0;background:#000000f0;z-index:100;display:none;
+  flex-direction:column;align-items:center;justify-content:center;gap:20px;text-align:center;padding:24px}
+#breakveil.on{display:flex}
+</style>
+</head>
+<body>
+<div id="breakveil">
+  <div style="font-size:56px">☕</div>
+  <h1 style="font-size:26px">On break</h1>
+  <p class="dim" style="max-width:340px">The screen is inactive so nothing you lean on gets
+  recorded. Your work is saved.</p>
+  <p class="dim" id="breakclock" style="font-variant-numeric:tabular-nums;font-size:20px"></p>
+  <button class="big ok" style="max-width:320px" onclick="endBreak()">Back to work</button>
+</div>
+
+<div class="bar">
+  <div class="grow">
+    <b id="hdr">Freezer restock</b>
+    <small id="sub"></small>
+    <div class="prog"><i id="progbar"></i></div>
+  </div>
+  <button class="ghost" id="navprev" onclick="goBay(-1)" title="Previous bay">‹</button>
+  <button class="ghost" id="navnext" onclick="goBay(1)" title="Next bay">›</button>
+  <button class="ghost" onclick="startBreak()" title="Break">☕</button>
+  <button class="ghost" onclick="openFinish()" title="Finish &amp; export">⇪</button>
+</div>
+
+<div class="wrap" id="app"></div>
+
+<div class="foot"><div class="wrap"><button class="big pri" id="mainbtn"></button></div></div>
+
+<dialog id="dlg"><form method="dialog">
+  <div class="dh" id="dlgh"></div><div class="db" id="dlgb"></div>
+  <div class="df" id="dlgf"></div>
+</form></dialog>
+
+<script>
+"use strict";
+/* ============================================================================
+   FREEZER RESTOCK — EXECUTION APP
+   ⛔ THIS FILE RENDERS AND RECORDS. IT DECIDES NOTHING.
+   Every disposition, position and quantity is computed by the Python model and
+   arrives in PAYLOAD. Re-deriving any of it here is the defect that put 72
+   phantom restacks on a crew sheet on 2026-09-05.
+   ============================================================================ */
+const PAYLOAD = {"schema":2,"built":"2026-09-05T20:01:34","plan_date":"2026-09-04","title":"Freezer work sequence","snapshot_as_of":"2026-09-05T16:06:32","floor_limit":10,"totals":{"bays":18,"units":3890.0,"lines":65,"pallets_down":56,"retrieval_min":925,"count_min":270},"shrink_reasons":["Damaged","Expired","Received Incorrectly","Lot Code Removal"],"found_reasons":["","Received Incorrectly"],"bays":[{"n":1,"bay":"F2-A-01","deepest":5,"est_minutes":75,"count_minutes":0,"pallets":[{"loc":"F2-A-01-1","pos":1,"lines":[{"sku":"181","desc":"Uncured Smoked Cocktail Wieners ","lot":"2025-12-03","system_qty":523.0,"kind":"stay","planned_qty":0.0},{"sku":"182","desc":" Smoked Franks - 100% Beef","lot":"2025-12-03","system_qty":200.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat1031NSB","desc":"Ground Bison - 1 lb","lot":"","system_qty":36.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat3031NSB","desc":"Rocky Mountain Ground Elk - 1 lb","lot":"","system_qty":36.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat2031NSB","desc":"Ground Beef - 1 lb","lot":"","system_qty":24.0,"kind":"stay","planned_qty":0.0},{"sku":"FPets9900NSB-1","desc":"Bison Pet Raw -1lb","lot":"","system_qty":24.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat2040NSB","desc":"Ground Beef - Old World Blend - 1 lb","lot":"","system_qty":20.0,"kind":"take","planned_qty":8.0,"dest":"F1-E1-3","why":{"on_f1_now":"9","target":"17","cover_after":"4.1","fifo":""}},{"sku":"FMeat1040NSB","desc":"Ground Bison Old World Blend - 1 lb","lot":"","system_qty":12.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat1123NSB","desc":"Bison Chuck Roast - 3 lb","lot":"","system_qty":11.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-22","goes_back_to":"F2-A-01-1","spoil":false},{"loc":"F2-A-01-2","pos":2,"lines":[{"sku":"180","desc":"100% Beef Hotdogs","lot":"2025-12-03","system_qty":1054.0,"kind":"take","planned_qty":54.0,"dest":"F1-B1-3","why":{"on_f1_now":"56","target":"110","cover_after":"7.3","fifo":""}},{"sku":"170-6","desc":"Honey Bacon - avg .85lb","lot":"2026-06-23","system_qty":565.0,"kind":"stay","planned_qty":0.0},{"sku":"7-105","desc":"Old 104-5 Thick Bone in Ribeye (?) Pork chop ","lot":"","system_qty":237.0,"kind":"stay","planned_qty":0.0},{"sku":"104-5","desc":"Thick Cut Bone-in Ribeye Pork Chop - avg 1.6 lb","lot":"2025-05-20","system_qty":133.0,"kind":"stay","planned_qty":0.0},{"sku":"104-4","desc":"Thick Cut Bone-in Porterhouse Pork Chops - avg 1","lot":"2025-05-20","system_qty":94.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-23","goes_back_to":"F2-A-01-2","spoil":false},{"loc":"F2-A-01-5","pos":5,"lines":[{"sku":"174","desc":"Summer Sausage","lot":"2025-09-12","system_qty":556.0,"kind":"take","planned_qty":127.0,"dest":"F1-AB12-2","why":{"on_f1_now":"81","target":"208","cover_after":"13.0","fifo":""}},{"sku":"174","desc":"Summer Sausage","lot":"2025-09-12","system_qty":556.0,"kind":"aside","planned_qty":429.0,"after_take":true,"onto_pallet":"P-22","onto_bay":1},{"sku":"FMeat0009SPP","desc":"Bulk Ranger Frames Stock Bones","lot":"2025-10-16","system_qty":18.0,"kind":"stay","planned_qty":0.0},{"sku":"345-40","desc":"Bulk Cornish Breasts Kitchen Use Only - 40 lb av","lot":"2025-03-25","system_qty":13.0,"kind":"stay","planned_qty":0.0},{"sku":"3488-40","desc":"Kitchen Chicken Thigh Boneless Skinless - 40 lb ","lot":"2025-03-25","system_qty":12.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-24","goes_back_to":"F2-A-01-3","spoil":false}],"putback":[{"pos":3,"loc":"F2-A-01-3","pallet_id":"P-24","items":[{"sku":"345-40","qty":13.0,"disposition":"stay","from_position":"5"},{"sku":"3488-40","qty":12.0,"disposition":"stay","from_position":"5"},{"sku":"FMeat0009SPP","qty":18.0,"disposition":"stay","from_position":"5"}],"waits_for":[]},{"pos":2,"loc":"F2-A-01-2","pallet_id":"P-23","items":[{"sku":"180","qty":1000.0,"disposition":"stay","from_position":"2"},{"sku":"104-5","qty":133.0,"disposition":"stay","from_position":"2"},{"sku":"104-4","qty":94.0,"disposition":"stay","from_position":"2"},{"sku":"170-6","qty":565.0,"disposition":"stay","from_position":"2"},{"sku":"7-105","qty":237.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":1,"loc":"F2-A-01-1","pallet_id":"P-22","items":[{"sku":"FMeat2040NSB","qty":12.0,"disposition":"stay","from_position":"1"},{"sku":"181","qty":523.0,"disposition":"stay","from_position":"1"},{"sku":"FMeat2031NSB","qty":24.0,"disposition":"stay","from_position":"1"},{"sku":"174","qty":429.0,"disposition":"move","from_position":"5"},{"sku":"182","qty":200.0,"disposition":"stay","from_position":"1"},{"sku":"FMeat1031NSB","qty":36.0,"disposition":"stay","from_position":"1"},{"sku":"FMeat1040NSB","qty":12.0,"disposition":"stay","from_position":"1"},{"sku":"FMeat1123NSB","qty":11.0,"disposition":"stay","from_position":"1"},{"sku":"FMeat3031NSB","qty":36.0,"disposition":"stay","from_position":"1"},{"sku":"FPets9900NSB-1","qty":24.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":4,"down":3},{"n":2,"bay":"F2-A-02","deepest":3,"est_minutes":45,"count_minutes":240,"pallets":[{"loc":"F2-A-02-1","pos":1,"lines":[{"sku":"TC Feeds 7-635","desc":"TC Feeds Sirloin Chop 13-24oz","lot":"2026-07-17","system_qty":62.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 24-63166","desc":"2024 Forest Hog Ham 2-6lbs","lot":"2026-07-17","system_qty":49.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 7-636","desc":"TC Feeds Forest Hog Porterhouse Chop .9lb Avg Ra","lot":"2026-07-17","system_qty":48.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 7-63106","desc":"TC Feeds Forest Hog Pork Roast 2.8lb Avg. Range ","lot":"2026-07-17","system_qty":40.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 7-634","desc":"TC Feeds Forest Hog Ribeye Chop 1.2 lb Avg Range","lot":"2026-07-17","system_qty":32.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-40","goes_back_to":"F2-A-02-3","spoil":true},{"loc":"F2-A-02-2","pos":2,"lines":[{"sku":"357","desc":"Chicken Wing Sous Vide","lot":"2025-09-12","system_qty":88.0,"kind":"take","planned_qty":8.0,"dest":"F1-AB14-1","why":{"on_f1_now":"58","target":"66","cover_after":"33.1","fifo":""}},{"sku":"221","desc":"Beef Fat Suet 6.5lb Avg. Min 5lb","lot":"2026-06-16","system_qty":27.0,"kind":"stay","planned_qty":0.0},{"sku":"221","desc":"Beef Fat Suet 6.5lb Avg. Min 5lb","lot":"2025-08-01","system_qty":18.0,"kind":"take","planned_qty":7.0,"dest":"F1-AB13-1","why":{"on_f1_now":"4","target":"11","cover_after":"5.3","fifo":""}},{"sku":"13300","desc":"Thousand Hills Top Sirloin Butt 184A","lot":"2025-05-28","system_qty":11.0,"kind":"stay","planned_qty":0.0},{"sku":"210-1","desc":"Beef Brisket Avg. 3.3lb Range: <3.8lb","lot":"","system_qty":9.0,"kind":"stay","planned_qty":0.0},{"sku":"228","desc":"Beef Cheek Meat 0.9lb Avg. Range: 0.8-1.2","lot":"","system_qty":9.0,"kind":"take","planned_qty":9.0,"dest":"F1-A9-4","why":{"on_f1_now":"5","target":"16","cover_after":"4.7","fifo":""}},{"sku":"13201","desc":"Thousand Hills Strip Loin 180, Half","lot":"2025-05-28","system_qty":3.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-38","goes_back_to":"F2-A-02-1","spoil":false},{"loc":"F2-A-02-3","pos":3,"lines":[{"sku":"104-3","desc":"Thin Bone In Ribeye Pork Chop 1.3 Avg. Range .95","lot":"2026-01-26","system_qty":264.0,"kind":"stay","planned_qty":0.0},{"sku":"104-2","desc":"Thin Bone-in porterhouse Pork Chops 1.3lb Avg Ra","lot":"2025-02-07","system_qty":201.0,"kind":"stay","planned_qty":0.0},{"sku":"167-4","desc":"Sliced Rustic Ham - Jalape\u00f1o  - avg 1.05lb","lot":"2025-04-01","system_qty":200.0,"kind":"stay","planned_qty":0.0},{"sku":"170-0","desc":"Thin Sliced Bacon - MIN .75lb","lot":"2025-05-23","system_qty":160.0,"kind":"aside","planned_qty":160.0,"after_take":false,"onto_pallet":"P-38","onto_bay":2},{"sku":"156","desc":"Hot Dogs","lot":"2025-04-01","system_qty":100.0,"kind":"aside","planned_qty":100.0,"after_take":false,"onto_pallet":"P-38","onto_bay":2},{"sku":"104-2","desc":"Thin Bone-in porterhouse Pork Chops 1.3lb Avg Ra","lot":"2026-01-26","system_qty":97.0,"kind":"stay","planned_qty":0.0},{"sku":"120-2","desc":"Retail Pork Back Fat Avg 2lb","lot":"2026-01-12","system_qty":57.0,"kind":"stay","planned_qty":0.0},{"sku":"106-1","desc":"Boston Pork Roast 3.4 Avg Range 3-3.6","lot":"2026-01-26","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"170-1","desc":"SMALL and THICK  Bacon - MIN .75lb","lot":"","system_qty":50.0,"kind":"aside","planned_qty":50.0,"after_take":false,"onto_pallet":"P-38","onto_bay":2},{"sku":"186","desc":"Sliced Emusified Ham","lot":"2025-08-01","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"144","desc":"Kielbasa","lot":"2026-02-10","system_qty":44.0,"kind":"aside","planned_qty":44.0,"after_take":false,"onto_pallet":"P-38","onto_bay":2},{"sku":"307-2","desc":"Lean Ground Chicken - avg 1.07lb","lot":"2026-03-27","system_qty":35.0,"kind":"stay","planned_qty":0.0},{"sku":"307","desc":"Ground Chicken -Dark meat","lot":"2026-04-15","system_qty":34.0,"kind":"aside","planned_qty":34.0,"after_take":false,"onto_pallet":"P-38","onto_bay":2},{"sku":"7-102","desc":"Butterfly Boneless Pork Chop 1.1lb Avg Range .85","lot":"2026-01-12","system_qty":22.0,"kind":"stay","planned_qty":0.0},{"sku":"106-11","desc":"Small Boston Pork Roast 2.75 Avg Range 2.65-2.9","lot":"2026-01-26","system_qty":21.0,"kind":"stay","planned_qty":0.0},{"sku":"348","desc":"Skin On Chicken Thigh - Cornish","lot":"2026-03-25","system_qty":20.0,"kind":"take","planned_qty":20.0,"dest":"F1-B6","why":{"on_f1_now":"34","target":"56","cover_after":"6.8","fifo":""}},{"sku":"120-2","desc":"Retail Pork Back Fat Avg 2lb","lot":"2025-04-01","system_qty":12.0,"kind":"stay","planned_qty":0.0},{"kind":"count","serial":"","sku":"104-2","desc":"","lot":"2025-02-07","system_qty":201.0,"minutes":30.0},{"kind":"count","serial":"","sku":"104-2","desc":"","lot":"2026-01-26","system_qty":97.0,"minutes":0.0},{"kind":"count","serial":"","sku":"104-3","desc":"","lot":"2026-01-26","system_qty":264.0,"minutes":15.0},{"kind":"count","serial":"","sku":"167-4","desc":"","lot":"2025-04-01","system_qty":200.0,"minutes":15.0},{"kind":"count","serial":"","sku":"170-0","desc":"","lot":"2025-05-23","system_qty":160.0,"minutes":15.0},{"kind":"count","serial":"","sku":"156","desc":"","lot":"2025-04-01","system_qty":100.0,"minutes":15.0},{"kind":"count","serial":"","sku":"120-2","desc":"","lot":"2025-04-01","system_qty":12.0,"minutes":15.0},{"kind":"count","serial":"","sku":"120-2","desc":"","lot":"2026-01-12","system_qty":57.0,"minutes":0.0},{"kind":"count","serial":"","sku":"106-1","desc":"","lot":"2026-01-26","system_qty":50.0,"minutes":15.0},{"kind":"count","serial":"","sku":"170-1","desc":"","lot":"","system_qty":50.0,"minutes":15.0},{"kind":"count","serial":"","sku":"186","desc":"","lot":"2025-08-01","system_qty":50.0,"minutes":15.0},{"kind":"count","serial":"","sku":"144","desc":"","lot":"2026-02-10","system_qty":44.0,"minutes":15.0},{"kind":"count","serial":"","sku":"307-2","desc":"","lot":"2026-03-27","system_qty":35.0,"minutes":15.0},{"kind":"count","serial":"","sku":"307","desc":"","lot":"2026-04-15","system_qty":34.0,"minutes":15.0},{"kind":"count","serial":"","sku":"7-102","desc":"","lot":"2026-01-12","system_qty":22.0,"minutes":15.0},{"kind":"count","serial":"","sku":"106-11","desc":"","lot":"2026-01-26","system_qty":21.0,"minutes":15.0},{"kind":"count","serial":"","sku":"348","desc":"","lot":"2026-03-25","system_qty":20.0,"minutes":15.0}],"pallet_id":"P-39","goes_back_to":"F2-A-02-2","spoil":false}],"putback":[{"pos":3,"loc":"F2-A-02-3","pallet_id":"P-40","items":[{"sku":"TC Feeds 24-63166","qty":49.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-63106","qty":40.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-634","qty":32.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-635","qty":62.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-636","qty":48.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":2,"loc":"F2-A-02-2","pallet_id":"P-39","items":[{"sku":"7-102","qty":22.0,"disposition":"stay","from_position":"3"},{"sku":"307-2","qty":35.0,"disposition":"stay","from_position":"3"},{"sku":"167-4","qty":200.0,"disposition":"stay","from_position":"3"},{"sku":"104-2","qty":298.0,"disposition":"stay","from_position":"3"},{"sku":"186","qty":50.0,"disposition":"stay","from_position":"3"},{"sku":"120-2","qty":69.0,"disposition":"stay","from_position":"3"},{"sku":"104-3","qty":264.0,"disposition":"stay","from_position":"3"},{"sku":"106-1","qty":50.0,"disposition":"stay","from_position":"3"},{"sku":"106-11","qty":21.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":1,"loc":"F2-A-02-1","pallet_id":"P-38","items":[{"sku":"170-1","qty":50.0,"disposition":"move","from_position":"3"},{"sku":"221","qty":31.0,"disposition":"stay","from_position":"2"},{"sku":"144","qty":44.0,"disposition":"move","from_position":"3"},{"sku":"170-0","qty":160.0,"disposition":"move","from_position":"3"},{"sku":"156","qty":100.0,"disposition":"move","from_position":"3"},{"sku":"307","qty":34.0,"disposition":"move","from_position":"3"},{"sku":"357","qty":80.0,"disposition":"stay","from_position":"2"},{"sku":"13201","qty":3.0,"disposition":"stay","from_position":"2"},{"sku":"13300","qty":11.0,"disposition":"stay","from_position":"2"},{"sku":"210-1","qty":9.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[],"floor":6,"down":3},{"n":3,"bay":"F2-A-03","deepest":6,"est_minutes":90,"count_minutes":0,"pallets":[{"loc":"F2-A-03-2","pos":2,"lines":[{"sku":"209","desc":"Whole Ground Beef","lot":"2026-02-09","system_qty":1231.0,"kind":"stay","planned_qty":0.0},{"sku":"214-2","desc":"Beef Short Ribs 2.6lb Avg. Range: 2.5-2.8","lot":"2025-01-16","system_qty":29.0,"kind":"stay","planned_qty":0.0},{"sku":"210-2","desc":"Beef Brisket Avg. 4.8lb Range: >4.5lb","lot":"2025-01-16","system_qty":13.0,"kind":"stay","planned_qty":0.0},{"sku":"218-2","desc":"Beef Sirloin Tip Roast 3.4lb Avg. Range: 3-4.4","lot":"2025-01-16","system_qty":13.0,"kind":"stay","planned_qty":0.0},{"sku":"215-2","desc":"Beef Back Rib 3.3lb Avg. Range: 3-3.5","lot":"2025-01-16","system_qty":10.0,"kind":"stay","planned_qty":0.0},{"sku":"210-1","desc":"Beef Brisket Avg. 3.3lb Range: <3.8lb","lot":"2025-01-16","system_qty":9.0,"kind":"stay","planned_qty":0.0},{"sku":"214-1","desc":"Beef Short Ribs <1.8lb","lot":"2025-01-16","system_qty":7.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-15","goes_back_to":"F2-A-03-1","spoil":true},{"loc":"F2-A-03-3","pos":3,"lines":[{"sku":"202-8","desc":"Ribeye 0.8lb Avg. Range: 0.76-0.9","lot":"2026-06-17","system_qty":106.0,"kind":"stay","planned_qty":0.0},{"sku":"209","desc":"Whole Ground Beef","lot":"2025-11-24","system_qty":96.0,"kind":"stay","planned_qty":0.0},{"sku":"202-9","desc":"Ribeye Steak 0.95lb Avg. Range: 0.9-1.2","lot":"2026-06-17","system_qty":66.0,"kind":"take","planned_qty":29.0,"dest":"F1-AB11-6","why":{"on_f1_now":"16","target":"45","cover_after":"11.3","fifo":""}},{"sku":"203-8","desc":"NY Strip Steak 0.8lb Avg. Range: 0.76-0.9","lot":"2026-06-24","system_qty":41.0,"kind":"stay","planned_qty":0.0},{"sku":"7-204","desc":"Beef Tenderloin Filet 0.75lb Range: 0.7-0.8","lot":"2026-06-17","system_qty":39.0,"kind":"stay","planned_qty":0.0},{"sku":"264","desc":"Beef Korean Style Short Ribs 2.1lb Avg Range: 1.","lot":"","system_qty":25.0,"kind":"stay","planned_qty":0.0},{"sku":"204-2","desc":"Tenderloin Filet 0.9lb Avg. Range: 0.85-0.95","lot":"2026-06-17","system_qty":14.0,"kind":"stay","planned_qty":0.0},{"sku":"218-2","desc":"Beef Sirloin Tip Roast 3.4lb Avg. Range: 3-4.4","lot":"2026-06-16","system_qty":8.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-12","goes_back_to":"F2-A-03-2","spoil":false},{"loc":"F2-A-03-4","pos":4,"lines":[{"sku":"306","desc":"Chicken Thighs - Ranger 0.9 lb Avg Range: 0.8-1.","lot":"2025-10-16","system_qty":402.0,"kind":"aside","planned_qty":402.0,"after_take":false,"onto_pallet":"P-12","onto_bay":3},{"sku":"179","desc":"Cheese Bratwurst - avg 1.03lb","lot":"2025-08-01","system_qty":165.0,"kind":"take","planned_qty":165.0,"dest":"F1-B3-3","why":{"on_f1_now":"15","target":"148","cover_after":"13.8","fifo":"swept the last 32 from this position \u2014 not worth a return trip"}},{"sku":"307-Gristle","desc":"Not to sold as retail packages","lot":"2025-03-25","system_qty":135.0,"kind":"stay","planned_qty":0.0},{"sku":"603","desc":"Salmon Burgers - 2 pack","lot":"","system_qty":92.0,"kind":"take","planned_qty":58.0,"dest":"F1-C3-2","why":{"on_f1_now":"72","target":"146","cover_after":"9.7","fifo":""}},{"sku":"603","desc":"Salmon Burgers - 2 pack","lot":"","system_qty":92.0,"kind":"aside","planned_qty":34.0,"after_take":true,"onto_pallet":"P-12","onto_bay":3},{"sku":"175-2","desc":"Wild Rice Bratwurst - avg 1.03lb","lot":"2025-05-07","system_qty":44.0,"kind":"stay","planned_qty":0.0},{"sku":"120-1","desc":"Bulk Pork Leaf Fat- 35lb cs","lot":"","system_qty":2.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-13","goes_back_to":"F2-A-03-4","spoil":false},{"loc":"F2-A-03-5","pos":5,"lines":[{"sku":"170-55","desc":"Cajun Bacon - avg .85lb","lot":"2025-03-11","system_qty":179.0,"kind":"stay","planned_qty":0.0},{"sku":"170-3","desc":"Raspberry Chipotle Bacon - avg .85lb","lot":"2025-03-11","system_qty":162.0,"kind":"stay","planned_qty":0.0},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-03-11","system_qty":100.0,"kind":"stay","planned_qty":0.0},{"sku":"176","desc":"Italian Brats","lot":"2025-03-11","system_qty":55.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-16","goes_back_to":"F2-A-03-3","spoil":true},{"loc":"F2-A-03-6","pos":6,"lines":[{"sku":"170-0","desc":"Thin Sliced Bacon - MIN .75lb","lot":"2025-05-07","system_qty":148.0,"kind":"aside","planned_qty":148.0,"after_take":false,"onto_pallet":"P-12","onto_bay":3},{"sku":"175-3","desc":"North Country Sausage - avg 1.03lb","lot":"2025-05-07","system_qty":144.0,"kind":"take","planned_qty":2.0,"dest":"F1-B1-2","why":{"on_f1_now":"46","target":"48","cover_after":"12.0","fifo":""}},{"sku":"175-3","desc":"North Country Sausage - avg 1.03lb","lot":"2025-05-07","system_qty":144.0,"kind":"aside","planned_qty":142.0,"after_take":true,"onto_pallet":"P-13","onto_bay":3},{"sku":"166","desc":"BONELESS Ham Roast ","lot":"2025-05-07","system_qty":108.0,"kind":"aside","planned_qty":108.0,"after_take":false,"onto_pallet":"P-12","onto_bay":3},{"sku":"292","desc":"Bacon Burgers (!) - Cajun Style - avg 1.38lb","lot":"2025-05-06","system_qty":40.0,"kind":"aside","planned_qty":40.0,"after_take":false,"onto_pallet":"P-13","onto_bay":3},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-05-06","system_qty":32.0,"kind":"aside","planned_qty":32.0,"after_take":false,"onto_pallet":"P-13","onto_bay":3}],"pallet_id":"P-14","goes_back_to":null,"spoil":false}],"putback":[{"pos":4,"loc":"F2-A-03-4","pallet_id":"P-13","items":[{"sku":"175-3","qty":142.0,"disposition":"move","from_position":"6"},{"sku":"175-2","qty":44.0,"disposition":"stay","from_position":"4"},{"sku":"106","qty":32.0,"disposition":"move","from_position":"6"},{"sku":"292","qty":40.0,"disposition":"move","from_position":"6"},{"sku":"307-Gristle","qty":135.0,"disposition":"stay","from_position":"4"},{"sku":"120-1","qty":2.0,"disposition":"stay","from_position":"4"}],"waits_for":[]},{"pos":3,"loc":"F2-A-03-3","pallet_id":"P-16","items":[{"sku":"167","qty":100.0,"disposition":"stay","from_position":"5"},{"sku":"170-3","qty":162.0,"disposition":"stay","from_position":"5"},{"sku":"170-55","qty":179.0,"disposition":"stay","from_position":"5"},{"sku":"176","qty":55.0,"disposition":"stay","from_position":"5"}],"waits_for":[]},{"pos":2,"loc":"F2-A-03-2","pallet_id":"P-12","items":[{"sku":"209","qty":96.0,"disposition":"stay","from_position":"3"},{"sku":"202-8","qty":106.0,"disposition":"stay","from_position":"3"},{"sku":"170-0","qty":148.0,"disposition":"move","from_position":"6"},{"sku":"166","qty":108.0,"disposition":"move","from_position":"6"},{"sku":"306","qty":402.0,"disposition":"move","from_position":"4"},{"sku":"603","qty":34.0,"disposition":"move","from_position":"4"},{"sku":"202-9","qty":37.0,"disposition":"stay","from_position":"3"},{"sku":"264","qty":25.0,"disposition":"stay","from_position":"3"},{"sku":"204-2","qty":14.0,"disposition":"stay","from_position":"3"},{"sku":"218-2","qty":8.0,"disposition":"stay","from_position":"3"},{"sku":"7-204","qty":39.0,"disposition":"stay","from_position":"3"},{"sku":"203-8","qty":41.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":1,"loc":"F2-A-03-1","pallet_id":"P-15","items":[{"sku":"209","qty":1231.0,"disposition":"stay","from_position":"2"},{"sku":"210-1","qty":9.0,"disposition":"stay","from_position":"2"},{"sku":"210-2","qty":13.0,"disposition":"stay","from_position":"2"},{"sku":"214-1","qty":7.0,"disposition":"stay","from_position":"2"},{"sku":"214-2","qty":29.0,"disposition":"stay","from_position":"2"},{"sku":"215-2","qty":10.0,"disposition":"stay","from_position":"2"},{"sku":"218-2","qty":13.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[{"kind":"take","orphan":true,"sku":"203-5","desc":"","lot":"2026-06-24","system_qty":0.0,"planned_qty":22.0,"from_location":"F2-A-03-3","dest":"F1-AB11-3","note":"planned here, but the latest snapshot no longer shows this SKU on this pallet \u2014 it may have been moved. Take it if it is there."}],"floor":13,"down":5},{"n":4,"bay":"F2-A-04","deepest":3,"est_minutes":45,"count_minutes":0,"pallets":[{"loc":"F2-A-04-1","pos":1,"lines":[{"sku":"7-63170-2","desc":"Forest Hog Honey Bacon - Avg. 0.85lb","lot":"2026-06-28","system_qty":81.0,"kind":"stay","planned_qty":0.0},{"sku":"7-634-1","desc":"Forest Hog Ribeye Chop 1.35 lb Avg Range: 1.18 -","lot":"2026-06-28","system_qty":41.0,"kind":"stay","planned_qty":0.0},{"sku":"7-63167","desc":"Forest Hog Honey Bone-in Ham Roast - 2.5lb Avg R","lot":"2026-06-28","system_qty":34.0,"kind":"stay","planned_qty":0.0},{"sku":"7-63106","desc":"Forest Hog Pork Roast 2.5lb Avg Range:2-3lb","lot":"","system_qty":18.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-43","goes_back_to":"F2-A-04-2","spoil":true},{"loc":"F2-A-04-2","pos":2,"lines":[{"sku":"319","desc":"Chicken Stock Bones","lot":"2021-06-30","system_qty":305.0,"kind":"take","planned_qty":61.0,"dest":"F1-B6","why":{"on_f1_now":"26","target":"84","cover_after":"10.9","fifo":"raised from 58 to 61 \u2014 smallest move ever made for this SKU (median move 76)"}}],"pallet_id":"P-41","goes_back_to":"F2-A-04-1","spoil":false},{"loc":"F2-A-04-3","pos":3,"lines":[{"sku":"3488","desc":"Chicken Thigh - Boneless Skinless","lot":"2026-04-15","system_qty":267.0,"kind":"take","planned_qty":116.0,"dest":"F1-B6","why":{"on_f1_now":"248","target":"364","cover_after":"8.1","fifo":""}},{"sku":"3488","desc":"Chicken Thigh - Boneless Skinless","lot":"2026-04-15","system_qty":267.0,"kind":"aside","planned_qty":151.0,"after_take":true,"onto_pallet":"P-41","onto_bay":4},{"sku":"347","desc":"Chicken Wings - Cornish retail package","lot":"2026-04-15","system_qty":175.0,"kind":"take","planned_qty":75.0,"dest":"F1-B6","why":{"on_f1_now":"54","target":"129","cover_after":"8.1","fifo":""}},{"sku":"347","desc":"Chicken Wings - Cornish retail package","lot":"2026-04-15","system_qty":175.0,"kind":"aside","planned_qty":100.0,"after_take":true,"onto_pallet":"P-41","onto_bay":4},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-02-25","system_qty":120.0,"kind":"aside","planned_qty":120.0,"after_take":false,"onto_pallet":"P-41","onto_bay":4},{"sku":"172","desc":"Smoked Beef Brats","lot":"","system_qty":45.0,"kind":"stay","planned_qty":0.0},{"sku":"2066-2","desc":"Beef Arm Roast 5lb Avg. Range: 4.6-5.1","lot":"2025-01-16","system_qty":19.0,"kind":"stay","planned_qty":0.0},{"sku":"120","desc":"Needs to be sorted into 120-2","lot":"2025-02-25","system_qty":12.0,"kind":"aside","planned_qty":12.0,"after_take":false,"onto_pallet":"P-41","onto_bay":4},{"sku":"119","desc":"Sliced Pork Liver","lot":"2025-02-25","system_qty":6.0,"kind":"aside","planned_qty":6.0,"after_take":false,"onto_pallet":"P-41","onto_bay":4}],"pallet_id":"P-42","goes_back_to":"F2-A-04-3","spoil":false}],"putback":[{"pos":3,"loc":"F2-A-04-3","pallet_id":"P-42","items":[{"sku":"172","qty":45.0,"disposition":"stay","from_position":"3"},{"sku":"2066-2","qty":19.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":2,"loc":"F2-A-04-2","pallet_id":"P-43","items":[{"sku":"7-63106","qty":18.0,"disposition":"stay","from_position":"1"},{"sku":"7-63167","qty":34.0,"disposition":"stay","from_position":"1"},{"sku":"7-63170-2","qty":81.0,"disposition":"stay","from_position":"1"},{"sku":"7-634-1","qty":41.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":1,"loc":"F2-A-04-1","pallet_id":"P-41","items":[{"sku":"120","qty":12.0,"disposition":"move","from_position":"3"},{"sku":"119","qty":6.0,"disposition":"move","from_position":"3"},{"sku":"347","qty":100.0,"disposition":"move","from_position":"3"},{"sku":"3488","qty":151.0,"disposition":"move","from_position":"3"},{"sku":"319","qty":244.0,"disposition":"stay","from_position":"2"},{"sku":"106","qty":120.0,"disposition":"move","from_position":"3"}],"waits_for":[]}],"orphan_pulls":[],"floor":12,"down":3},{"n":5,"bay":"F2-A-05","deepest":5,"est_minutes":100,"count_minutes":0,"pallets":[{"loc":"F2-A-05-1","pos":1,"lines":[{"sku":"293","desc":"Ground Beef Extra Lean 1lb Avg","lot":"","system_qty":325.0,"kind":"stay","planned_qty":0.0},{"sku":"178","desc":"Rosemary Brats","lot":"2026-02-10","system_qty":150.0,"kind":"stay","planned_qty":0.0},{"sku":"143","desc":"Andouille","lot":"2026-02-10","system_qty":90.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6565TCF","desc":"Tater TotDish","lot":"2026-08-04","system_qty":84.0,"kind":"take","planned_qty":84.0,"dest":"F1-C4-5","why":{"on_f1_now":"4","target":"79","cover_after":"29.3","fifo":"swept the last 9 from this position \u2014 not worth a return trip"}},{"sku":"FPrep6558TCF","desc":"Crimson Harvest Curry - 24oz","lot":"2026-05-14","system_qty":66.0,"kind":"stay","planned_qty":0.0},{"sku":"107","desc":"Ground Pork","lot":"2026-02-10","system_qty":51.0,"kind":"take","planned_qty":51.0,"dest":"F1-A8-1","why":{"on_f1_now":"97","target":"148","cover_after":"5.5","fifo":"raised from 51 to 86 \u2014 smallest move ever made for this SKU (median move 182)"}},{"sku":"144","desc":"Kielbasa","lot":"2026-02-10","system_qty":50.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-17","goes_back_to":"F2-A-05-2","spoil":false},{"loc":"F2-A-05-2","pos":2,"lines":[{"sku":"FMeat2383Thl","desc":"Ground Beef - Grass Fed - 80/20 - 16oz","lot":"","system_qty":216.0,"kind":"take","planned_qty":40.0,"dest":"F1-CD10-4","why":{"on_f1_now":"3","target":"43","cover_after":"5.4","fifo":""}},{"sku":"FMeat2369Thl","desc":"Ground Beef - Grass Fed - 92/8 - 16oz","lot":"","system_qty":195.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat2369Thl","desc":"Ground Beef - Grass Fed - 92/8 - 16oz","lot":"2025-03-06","system_qty":85.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat1116Thl","desc":"Grass Fed Beef Chuck Pot Roast - 1.5lb","lot":"2026-02-03","system_qty":48.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat0228Thl","desc":"Grass Fed Beef Cheeks - avg. 1.25lb","lot":"","system_qty":35.0,"kind":"take","planned_qty":14.0,"dest":"F1-CD10-2","why":{"on_f1_now":"8","target":"22","cover_after":"5.4","fifo":""}},{"sku":"FMeat2135Thl","desc":"Grass Fed New York Strip Beef Steak - 8oz","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-18","goes_back_to":"F2-A-05-1","spoil":false},{"loc":"F2-A-05-3","pos":3,"lines":[{"sku":"218","desc":"Beef Sirloin Tip Roast 2.7lb Avg. Range: 2.3-3","lot":"2026-06-16","system_qty":54.0,"kind":"stay","planned_qty":0.0},{"sku":"206 - 1","desc":"Beef Chuck Roast 3.5lb Avg. Range 3.1 - 4","lot":"","system_qty":42.0,"kind":"stay","planned_qty":0.0},{"sku":"263","desc":"Beef Tri Tip 1.7lb Avg. Range: 1.5-1.9","lot":"2026-06-16","system_qty":17.0,"kind":"stay","planned_qty":0.0},{"sku":"2066-1","desc":"Beef Arm Roast Avg 2.9lbs Range: 2.6-3.3","lot":"2026-06-16","system_qty":12.0,"kind":"stay","planned_qty":0.0},{"sku":"210-2","desc":"Beef Brisket Avg. 4.8lb Range: >4.5lb","lot":"2026-06-16","system_qty":11.0,"kind":"stay","planned_qty":0.0},{"sku":"210-1","desc":"Beef Brisket Avg. 3.3lb Range: <3.8lb","lot":"","system_qty":9.0,"kind":"stay","planned_qty":0.0},{"sku":"268-3","desc":"Beef Picanha 2.25lb Avg. Range 2-2.75","lot":"","system_qty":9.0,"kind":"stay","planned_qty":0.0},{"sku":"2066-2","desc":"Beef Arm Roast 5lb Avg. Range: 4.6-5.1","lot":"2026-06-16","system_qty":6.0,"kind":"stay","planned_qty":0.0},{"sku":"263-2","desc":"Beef Tri Tip 2.4lb Avg. Range: 2-2.8","lot":"2026-06-16","system_qty":5.0,"kind":"stay","planned_qty":0.0},{"sku":"206","desc":"Beef Chuck Roast 2.5lb Avg. Range: 2.1-2.9","lot":"2026-06-16","system_qty":3.0,"kind":"take","planned_qty":3.0,"dest":"F1-A9-3","why":{"on_f1_now":"24","target":"150","cover_after":"2.7","fifo":""}},{"sku":"2066","desc":"Beef Arm Roast 4.3lb Avg. Range: 3.9-4.5","lot":"2026-06-16","system_qty":2.0,"kind":"take","planned_qty":2.0,"dest":"F1-A9-1","why":{"on_f1_now":"15","target":"19","cover_after":"8.5","fifo":"raised from 4 to 13 \u2014 smallest move ever made for this SKU (median move 22)"}}],"pallet_id":"P-19","goes_back_to":"F2-A-05-4","spoil":false},{"loc":"F2-A-05-4","pos":4,"lines":[{"sku":"174","desc":"Summer Sausage","lot":"2025-09-12","system_qty":440.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 130","desc":"TC Feeds Pulled Pork","lot":"2023-07-21","system_qty":393.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-21","goes_back_to":"F2-A-05-3","spoil":true},{"loc":"F2-A-05-5","pos":5,"lines":[{"sku":"130","desc":"48hr Pulled Pork","lot":"2023-07-21","system_qty":499.0,"kind":"take","planned_qty":251.0,"dest":"F1-B4","why":{"on_f1_now":"13","target":"264","cover_after":"12.0","fifo":""}},{"sku":"130","desc":"48hr Pulled Pork","lot":"2023-07-21","system_qty":499.0,"kind":"aside","planned_qty":248.0,"after_take":true,"onto_pallet":"P-18","onto_bay":5},{"sku":"7-105","desc":"Old 104-5 Thick Bone in Ribeye (?) Pork chop ","lot":"2024-04-24","system_qty":175.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 130","desc":"TC Feeds Pulled Pork","lot":"2023-07-21","system_qty":77.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-20","goes_back_to":"F2-A-05-5","spoil":false}],"putback":[{"pos":5,"loc":"F2-A-05-5","pallet_id":"P-20","items":[{"sku":"TC Feeds 130","qty":77.0,"disposition":"stay","from_position":"5"},{"sku":"7-105","qty":175.0,"disposition":"stay","from_position":"5"}],"waits_for":[]},{"pos":4,"loc":"F2-A-05-4","pallet_id":"P-19","items":[{"sku":"218","qty":54.0,"disposition":"stay","from_position":"3"},{"sku":"2066-1","qty":12.0,"disposition":"stay","from_position":"3"},{"sku":"2066-2","qty":6.0,"disposition":"stay","from_position":"3"},{"sku":"210-2","qty":11.0,"disposition":"stay","from_position":"3"},{"sku":"263","qty":17.0,"disposition":"stay","from_position":"3"},{"sku":"263-2","qty":5.0,"disposition":"stay","from_position":"3"},{"sku":"206 - 1","qty":42.0,"disposition":"stay","from_position":"3"},{"sku":"210-1","qty":9.0,"disposition":"stay","from_position":"3"},{"sku":"268-3","qty":9.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":3,"loc":"F2-A-05-3","pallet_id":"P-21","items":[{"sku":"174","qty":440.0,"disposition":"stay","from_position":"4"},{"sku":"TC Feeds 130","qty":393.0,"disposition":"stay","from_position":"4"}],"waits_for":[]},{"pos":2,"loc":"F2-A-05-2","pallet_id":"P-17","items":[{"sku":"144","qty":50.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6558TCF","qty":66.0,"disposition":"stay","from_position":"1"},{"sku":"293","qty":325.0,"disposition":"stay","from_position":"1"},{"sku":"178","qty":150.0,"disposition":"stay","from_position":"1"},{"sku":"143","qty":90.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":1,"loc":"F2-A-05-1","pallet_id":"P-18","items":[{"sku":"FMeat1116Thl","qty":48.0,"disposition":"stay","from_position":"2"},{"sku":"FMeat0228Thl","qty":21.0,"disposition":"stay","from_position":"2"},{"sku":"FMeat2383Thl","qty":176.0,"disposition":"stay","from_position":"2"},{"sku":"FMeat2369Thl","qty":280.0,"disposition":"stay","from_position":"2"},{"sku":"130","qty":248.0,"disposition":"move","from_position":"5"},{"sku":"FMeat2135Thl","qty":1.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[],"floor":18,"down":5},{"n":6,"bay":"F2-A-06","deepest":4,"est_minutes":60,"count_minutes":0,"pallets":[{"loc":"F2-A-06-1","pos":1,"lines":[{"sku":"99100","desc":"Bulk Pork Trim Qty in Lbs","lot":"2026-04-28","system_qty":1207.0,"kind":"stay","planned_qty":0.0},{"sku":"99109","desc":"Bulk Pork Belly for Bacon Qty in Lbs","lot":"2026-04-28","system_qty":187.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-31","goes_back_to":"F2-A-06-4","spoil":true},{"loc":"F2-A-06-2","pos":2,"lines":[{"sku":"TC Feeds Whole Chickens","desc":"KS - 32 lbs/case avg","lot":"","system_qty":114.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-32","goes_back_to":"F2-A-06-3","spoil":true},{"loc":"F2-A-06-3","pos":3,"lines":[{"sku":"305-x","desc":"1.4lb Avg. Ranger Chicken Breast","lot":"2025-10-16","system_qty":175.0,"kind":"stay","planned_qty":0.0},{"sku":"309","desc":"Drumsticks - Ranger 2.1 lb Avg Range: 1.8+","lot":"2025-10-16","system_qty":156.0,"kind":"stay","planned_qty":0.0},{"sku":"306","desc":"Chicken Thighs - Ranger 0.9 lb Avg Range: 0.8-1.","lot":"2025-10-16","system_qty":100.0,"kind":"stay","planned_qty":0.0},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"","system_qty":54.0,"kind":"stay","planned_qty":0.0},{"sku":"306","desc":"Chicken Thighs - Ranger 0.9 lb Avg Range: 0.8-1.","lot":"2025-07-31","system_qty":44.0,"kind":"stay","planned_qty":0.0},{"sku":"175-2","desc":"Wild Rice Bratwurst - avg 1.03lb","lot":"2025-04-22","system_qty":42.0,"kind":"stay","planned_qty":0.0},{"sku":"120-2","desc":"Retail Pork Back Fat Avg 2lb","lot":"2025-02-18","system_qty":17.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-33","goes_back_to":"F2-A-06-2","spoil":true},{"loc":"F2-A-06-4","pos":4,"lines":[{"sku":"170-1","desc":"SMALL and THICK  Bacon - MIN .75lb","lot":"2025-06-24","system_qty":230.0,"kind":"take","planned_qty":45.0,"dest":"F1-B2","why":{"on_f1_now":"99","target":"129","cover_after":"4.8","fifo":"raised from 30 to 45 \u2014 smallest move ever made for this SKU (median move 130)"}},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-06-24","system_qty":150.0,"kind":"stay","planned_qty":0.0},{"sku":"170-0","desc":"Thin Sliced Bacon - MIN .75lb","lot":"2025-06-24","system_qty":135.0,"kind":"stay","planned_qty":0.0},{"sku":"175","desc":"Brats","lot":"2025-04-01","system_qty":100.0,"kind":"take","planned_qty":100.0,"dest":"F1-AB12-3","why":{"on_f1_now":"71","target":"175","cover_after":"17.1","fifo":""}},{"sku":"168","desc":"Chorizo","lot":"2025-04-22","system_qty":96.0,"kind":"take","planned_qty":96.0,"dest":"F1-A9-2","why":{"on_f1_now":"66","target":"108","cover_after":"18.0","fifo":"raised from 42 to 67 \u2014 smallest move ever made for this SKU (median move 75) | swept the last 29 from this position \u2014 not worth a return trip"}},{"sku":"7-105","desc":"Old 104-5 Thick Bone in Ribeye (?) Pork chop ","lot":"","system_qty":64.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-30","goes_back_to":"F2-A-06-1","spoil":false}],"putback":[{"pos":4,"loc":"F2-A-06-4","pallet_id":"P-31","items":[{"sku":"99100","qty":1207.0,"disposition":"stay","from_position":"1"},{"sku":"99109","qty":187.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":3,"loc":"F2-A-06-3","pallet_id":"P-32","items":[{"sku":"TC Feeds Whole Chickens","qty":114.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":2,"loc":"F2-A-06-2","pallet_id":"P-33","items":[{"sku":"120-2","qty":17.0,"disposition":"stay","from_position":"3"},{"sku":"167","qty":54.0,"disposition":"stay","from_position":"3"},{"sku":"175-2","qty":42.0,"disposition":"stay","from_position":"3"},{"sku":"305-x","qty":175.0,"disposition":"stay","from_position":"3"},{"sku":"306","qty":144.0,"disposition":"stay","from_position":"3"},{"sku":"309","qty":156.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":1,"loc":"F2-A-06-1","pallet_id":"P-30","items":[{"sku":"170-1","qty":185.0,"disposition":"stay","from_position":"4"},{"sku":"170-0","qty":135.0,"disposition":"stay","from_position":"4"},{"sku":"167","qty":150.0,"disposition":"stay","from_position":"4"},{"sku":"7-105","qty":64.0,"disposition":"stay","from_position":"4"}],"waits_for":[]}],"orphan_pulls":[],"floor":18,"down":4},{"n":7,"bay":"F2-A-07","deepest":1,"est_minutes":15,"count_minutes":0,"pallets":[{"loc":"F2-A-07-1","pos":1,"lines":[{"sku":"170-1","desc":"SMALL and THICK  Bacon - MIN .75lb","lot":"","system_qty":421.0,"kind":"stay","planned_qty":0.0},{"sku":"167-1","desc":"Sliced Ham - Rustic Ham - min .75lbs","lot":"","system_qty":406.0,"kind":"stay","planned_qty":0.0},{"sku":"99322-1","desc":"Wild Nourish retail packs chicken feet for pet t","lot":"","system_qty":200.0,"kind":"stay","planned_qty":0.0},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-05-20","system_qty":176.0,"kind":"stay","planned_qty":0.0},{"sku":"104-3","desc":"Thin Bone In Ribeye Pork Chop 1.3 Avg. Range .95","lot":"2025-02-07","system_qty":131.0,"kind":"stay","planned_qty":0.0},{"sku":"322","desc":"Chicken Feet ","lot":"2025-09-01","system_qty":103.0,"kind":"take","planned_qty":9.0,"dest":"F1-B7-2","why":{"on_f1_now":"16","target":"22","cover_after":"5.0","fifo":"raised from 6 to 9 \u2014 smallest move ever made for this SKU (median move 35)"}},{"sku":"307-2","desc":"Lean Ground Chicken - avg 1.07lb","lot":"2025-03-25","system_qty":35.0,"kind":"stay","planned_qty":0.0},{"sku":"99374","desc":"Bulk Wing Tips - Pet Treats","lot":"2025-09-01","system_qty":6.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-55","goes_back_to":"F2-A-07-1","spoil":false}],"putback":[{"pos":1,"loc":"F2-A-07-1","pallet_id":"P-55","items":[{"sku":"322","qty":94.0,"disposition":"stay","from_position":"1"},{"sku":"170-1","qty":421.0,"disposition":"stay","from_position":"1"},{"sku":"307-2","qty":35.0,"disposition":"stay","from_position":"1"},{"sku":"106","qty":176.0,"disposition":"stay","from_position":"1"},{"sku":"104-3","qty":131.0,"disposition":"stay","from_position":"1"},{"sku":"99374","qty":6.0,"disposition":"stay","from_position":"1"},{"sku":"167-1","qty":406.0,"disposition":"stay","from_position":"1"},{"sku":"99322-1","qty":200.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":15,"down":1},{"n":8,"bay":"F2-E-01","deepest":2,"est_minutes":30,"count_minutes":0,"pallets":[{"loc":"F2-E-01-1","pos":1,"lines":[{"sku":"359","desc":"Chicken Drumstick Sous Vide","lot":"2025-10-10","system_qty":125.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6553TCF","desc":"Baja Chicken - 30oz 2-3 servings","lot":"2026-09-02","system_qty":106.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6599TCF","desc":"Creamy Italian Pasta Soup- 30oz 2-3 servings","lot":"2026-04-07","system_qty":68.0,"kind":"take","planned_qty":22.0,"dest":"F1-C4-4","why":{"on_f1_now":"11","target":"17","cover_after":"11.0","fifo":"raised from 6 to 22 \u2014 smallest move ever made for this SKU (median move 22)"}},{"sku":"FPrep6519TCF","desc":"Browned Butter Chicken - 24oz 3-4 adult servings","lot":"2026-08-24","system_qty":66.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6562TCF","desc":"Hearty Ham & 3 Bean Delight Soup - 30oz 2-3 serv","lot":"2026-03-26","system_qty":44.0,"kind":"take","planned_qty":44.0,"dest":"F1-C4-2","why":{"on_f1_now":"14","target":"19","cover_after":"19.3","fifo":"raised from 5 to 22 \u2014 smallest move ever made for this SKU (median move 22) | swept the last 22 from this position \u2014 not worth a return trip"}},{"sku":"357","desc":"Chicken Wing Sous Vide","lot":"","system_qty":21.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep9151TCF-2","desc":"Fusilli Mac & Cheese - BBQ - 29oz","lot":"2026-08-28","system_qty":21.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep9155TCF","desc":"Spinach & Artichoke Dip - 24oz","lot":"2026-09-03","system_qty":19.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-52","goes_back_to":"F2-E-01-1","spoil":false},{"loc":"F2-E-01-2","pos":2,"lines":[{"sku":"305-x","desc":"1.4lb Avg. Ranger Chicken Breast","lot":"2025-10-16","system_qty":175.0,"kind":"stay","planned_qty":0.0},{"sku":"671","desc":"Vegetable Potato Curry","lot":"2026-06-11","system_qty":87.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6550TCF","desc":"Grass Fed Beef Chili - 30oz 2-3 servings","lot":"2026-06-09","system_qty":66.0,"kind":"take","planned_qty":31.0,"dest":"F1-C8-5","why":{"on_f1_now":"4","target":"35","cover_after":"5.8","fifo":""}},{"sku":"306","desc":"Chicken Thighs - Ranger 0.9 lb Avg Range: 0.8-1.","lot":"2025-10-16","system_qty":59.0,"kind":"stay","planned_qty":0.0},{"sku":"309","desc":"Drumsticks - Ranger 2.1 lb Avg Range: 1.8+","lot":"2025-10-16","system_qty":40.0,"kind":"stay","planned_qty":0.0},{"sku":"305","desc":"Chicken Breasts - Ranger 0.85 lb Avg Range: .77 ","lot":"2025-10-16","system_qty":19.0,"kind":"take","planned_qty":19.0,"dest":"F1-B7","why":{"on_f1_now":"112","target":"413","cover_after":"7.8","fifo":""}}],"pallet_id":"P-53","goes_back_to":"F2-E-01-2","spoil":false}],"putback":[{"pos":2,"loc":"F2-E-01-2","pallet_id":"P-53","items":[{"sku":"671","qty":87.0,"disposition":"stay","from_position":"2"},{"sku":"FPrep6550TCF","qty":35.0,"disposition":"stay","from_position":"2"},{"sku":"306","qty":59.0,"disposition":"stay","from_position":"2"},{"sku":"309","qty":40.0,"disposition":"stay","from_position":"2"},{"sku":"305-x","qty":175.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":1,"loc":"F2-E-01-1","pallet_id":"P-52","items":[{"sku":"FPrep6553TCF","qty":106.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6519TCF","qty":66.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6599TCF","qty":46.0,"disposition":"stay","from_position":"1"},{"sku":"359","qty":125.0,"disposition":"stay","from_position":"1"},{"sku":"357","qty":21.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep9151TCF-2","qty":21.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep9155TCF","qty":19.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":18,"down":2},{"n":9,"bay":"F2-E-02","deepest":2,"est_minutes":30,"count_minutes":0,"pallets":[{"loc":"F2-E-02-1","pos":1,"lines":[{"sku":"6594","desc":"Goulash - 30oz","lot":"2026-04-14","system_qty":88.0,"kind":"take","planned_qty":12.0,"dest":"F1-C8-5","why":{"on_f1_now":"0","target":"12","cover_after":"4.0","fifo":"home recovered from movement history \u2014 confirm"}},{"sku":"FPrep6588TCF-1","desc":"Pineapple Pulled Pork Sweet - 24oz","lot":"2026-06-30","system_qty":66.0,"kind":"take","planned_qty":66.0,"dest":"F1-C8-6","why":{"on_f1_now":"14","target":"71","cover_after":"80.0","fifo":"swept the last 9 from this position \u2014 not worth a return trip"}},{"sku":"FPrep6589TCF","desc":"Thai Peanut Pork - 24oz","lot":"2026-01-29","system_qty":66.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6590TCF","desc":"Gov Walz's Turkey Tater TotDish - 28oz","lot":"2025-12-09","system_qty":31.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6552TCF","desc":"Chicken Corn Chowder Soup - 30oz 2-3 servings","lot":"2026-01-15","system_qty":26.0,"kind":"stay","planned_qty":0.0},{"sku":"651","desc":"Curried Apple Butternut Soup","lot":"2025-03-26","system_qty":22.0,"kind":"stay","planned_qty":0.0},{"sku":"659","desc":"Soup Wild Rice","lot":"2026-01-26","system_qty":22.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6613TCF","desc":"Creamy Turkey and Wild Rice Soup - 30oz 2-3 serv","lot":"2026-02-20","system_qty":22.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6902TCF","desc":"Braised Pork Ragu - 23oz","lot":"2026-07-07","system_qty":14.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-48","goes_back_to":"F2-E-02-1","spoil":false},{"loc":"F2-E-02-2","pos":2,"lines":[{"sku":"357","desc":"Chicken Wing Sous Vide","lot":"2025-09-12","system_qty":113.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6555TCF","desc":"Booyah - 30oz 2-3 servings","lot":"2026-03-16","system_qty":66.0,"kind":"take","planned_qty":66.0,"dest":"F1-C9-5","why":{"on_f1_now":"16","target":"83","cover_after":"27.3","fifo":""}},{"sku":"173","desc":"Pepperoni","lot":"2025-09-12","system_qty":55.0,"kind":"take","planned_qty":55.0,"dest":"F1-AB12-1","why":{"on_f1_now":"53","target":"102","cover_after":"6.8","fifo":"swept the last 6 from this position \u2014 not worth a return trip"}},{"sku":"657","desc":"Soup Sweet Potato Chili","lot":"2026-03-20","system_qty":44.0,"kind":"stay","planned_qty":0.0},{"sku":"650","desc":"Roasted Cauliflower Turmeric Soup","lot":"2026-03-11","system_qty":40.0,"kind":"take","planned_qty":3.0,"dest":"F1-C4-3","why":{"on_f1_now":"10","target":"13","cover_after":"6.4","fifo":""}},{"sku":"FPrep6522TCF","desc":"Heritage Chicken Broth - Low Sodium - 30oz","lot":"2026-03-17","system_qty":18.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-49","goes_back_to":"F2-E-02-2","spoil":false}],"putback":[{"pos":2,"loc":"F2-E-02-2","pallet_id":"P-49","items":[{"sku":"650","qty":37.0,"disposition":"stay","from_position":"2"},{"sku":"FPrep6522TCF","qty":18.0,"disposition":"stay","from_position":"2"},{"sku":"657","qty":44.0,"disposition":"stay","from_position":"2"},{"sku":"357","qty":113.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":1,"loc":"F2-E-02-1","pallet_id":"P-48","items":[{"sku":"6594","qty":76.0,"disposition":"stay","from_position":"1"},{"sku":"659","qty":22.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6589TCF","qty":66.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6590TCF","qty":31.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6552TCF","qty":26.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6613TCF","qty":22.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6902TCF","qty":14.0,"disposition":"stay","from_position":"1"},{"sku":"651","qty":22.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":20,"down":2},{"n":10,"bay":"F2-E-03","deepest":2,"est_minutes":30,"count_minutes":0,"pallets":[{"loc":"F2-E-03-1","pos":1,"lines":[{"sku":"F3010NGF","desc":"Whole Chicken - 3.8lb Ave","lot":"","system_qty":45.0,"kind":"stay","planned_qty":0.0},{"sku":"F1703NGF","desc":"Smoked Cottage Bacon - .7lb Ave","lot":"","system_qty":27.0,"kind":"stay","planned_qty":0.0},{"sku":"F1780NGF","desc":"Garlic Herb Bratwurst - .8lb Ave","lot":"","system_qty":25.0,"kind":"stay","planned_qty":0.0},{"sku":"F1770NGF","desc":"Pork Mild Italian Sausage - 1.2lb Ave","lot":"","system_qty":18.0,"kind":"stay","planned_qty":0.0},{"sku":"F3452NGF","desc":"Bone-In Chicken Breast - 2.6 Ave","lot":"","system_qty":6.0,"kind":"take","planned_qty":2.0,"dest":"F1-B5-1","why":{"on_f1_now":"2","target":"4","cover_after":"4.0","fifo":""}}],"pallet_id":"P-46","goes_back_to":"F2-E-03-1","spoil":false},{"loc":"F2-E-03-2","pos":2,"lines":[{"sku":"208","desc":"Beef Patties","lot":"2026-07-08","system_qty":383.0,"kind":"stay","planned_qty":0.0},{"sku":"202-8","desc":"Ribeye 0.8lb Avg. Range: 0.76-0.9","lot":"2026-02-17","system_qty":136.0,"kind":"stay","planned_qty":0.0},{"sku":"203-8","desc":"NY Strip Steak 0.8lb Avg. Range: 0.76-0.9","lot":"2026-02-20","system_qty":107.0,"kind":"stay","planned_qty":0.0},{"sku":"203-6","desc":"NY Strip Steak 0.69lb Avg. Range: 0.63-0.75","lot":"2026-02-20","system_qty":68.0,"kind":"stay","planned_qty":0.0},{"sku":"7-204","desc":"Beef Tenderloin Filet 0.75lb Range: 0.7-0.8","lot":"2026-02-18","system_qty":41.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6559TCF","desc":"Italian Pasta Bake - 30oz","lot":"2026-07-27","system_qty":26.0,"kind":"stay","planned_qty":0.0},{"sku":"204-2","desc":"Tenderloin Filet 0.9lb Avg. Range: 0.85-0.95","lot":"2026-02-18","system_qty":17.0,"kind":"stay","planned_qty":0.0},{"sku":"203-5","desc":"NY Strip Steak 0.56lb Avg. Range: 0.5-0.62","lot":"2026-02-20","system_qty":14.0,"kind":"take","planned_qty":14.0,"dest":"F1-AB11-3","why":{"on_f1_now":"0","target":"36","cover_after":"5.1","fifo":"home recovered from movement history \u2014 confirm"}},{"sku":"263","desc":"Beef Tri Tip 1.7lb Avg. Range: 1.5-1.9","lot":"2026-02-11","system_qty":11.0,"kind":"stay","planned_qty":0.0},{"sku":"268-2","desc":"Beef Picanha 1.85lb Avg. Range: 1.4-2lb","lot":"2026-02-11","system_qty":10.0,"kind":"stay","planned_qty":0.0},{"sku":"214-1","desc":"Beef Short Ribs <1.8lb","lot":"2026-02-11","system_qty":8.0,"kind":"stay","planned_qty":0.0},{"sku":"210-2","desc":"Beef Brisket Avg. 4.8lb Range: >4.5lb","lot":"2026-02-11","system_qty":7.0,"kind":"stay","planned_qty":0.0},{"sku":"2066-2","desc":"Beef Arm Roast 5lb Avg. Range: 4.6-5.1","lot":"2026-02-11","system_qty":6.0,"kind":"stay","planned_qty":0.0},{"sku":"215-2","desc":"Beef Back Rib 3.3lb Avg. Range: 3-3.5","lot":"2026-02-11","system_qty":3.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-47","goes_back_to":"F2-E-03-2","spoil":false}],"putback":[{"pos":2,"loc":"F2-E-03-2","pallet_id":"P-47","items":[{"sku":"202-8","qty":136.0,"disposition":"stay","from_position":"2"},{"sku":"FPrep6559TCF","qty":26.0,"disposition":"stay","from_position":"2"},{"sku":"203-6","qty":68.0,"disposition":"stay","from_position":"2"},{"sku":"208","qty":383.0,"disposition":"stay","from_position":"2"},{"sku":"203-8","qty":107.0,"disposition":"stay","from_position":"2"},{"sku":"204-2","qty":17.0,"disposition":"stay","from_position":"2"},{"sku":"2066-2","qty":6.0,"disposition":"stay","from_position":"2"},{"sku":"210-2","qty":7.0,"disposition":"stay","from_position":"2"},{"sku":"214-1","qty":8.0,"disposition":"stay","from_position":"2"},{"sku":"215-2","qty":3.0,"disposition":"stay","from_position":"2"},{"sku":"263","qty":11.0,"disposition":"stay","from_position":"2"},{"sku":"268-2","qty":10.0,"disposition":"stay","from_position":"2"},{"sku":"7-204","qty":41.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":1,"loc":"F2-E-03-1","pallet_id":"P-46","items":[{"sku":"F3452NGF","qty":4.0,"disposition":"stay","from_position":"1"},{"sku":"F3010NGF","qty":45.0,"disposition":"stay","from_position":"1"},{"sku":"F1770NGF","qty":18.0,"disposition":"stay","from_position":"1"},{"sku":"F1703NGF","qty":27.0,"disposition":"stay","from_position":"1"},{"sku":"F1780NGF","qty":25.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":22,"down":2},{"n":11,"bay":"F2-E-04","deepest":1,"est_minutes":15,"count_minutes":0,"pallets":[{"loc":"F2-E-04-1","pos":1,"lines":[{"sku":"652","desc":"Creamy Chipotle Potato Soup","lot":"2026-06-16","system_qty":132.0,"kind":"take","planned_qty":4.0,"dest":"F1-C4-3","why":{"on_f1_now":"4","target":"8","cover_after":"4.0","fifo":""}},{"sku":"6515","desc":"Beef Stew","lot":"2026-07-29","system_qty":109.0,"kind":"take","planned_qty":12.0,"dest":"F1-C9-4","why":{"on_f1_now":"0","target":"12","cover_after":"4.0","fifo":""}},{"sku":"FPrep6569TCF","desc":"Ropa Vieja","lot":"2026-03-04","system_qty":99.0,"kind":"stay","planned_qty":0.0},{"sku":"655","desc":"Soup Tuscan Tomato","lot":"2026-02-12","system_qty":44.0,"kind":"take","planned_qty":2.0,"dest":"F1-C4-1","why":{"on_f1_now":"6","target":"8","cover_after":"4.0","fifo":""}},{"sku":"660","desc":"Carrot Ginger Bisque","lot":"2026-03-10","system_qty":44.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6559TCF","desc":"Italian Pasta Bake - 30oz","lot":"2026-07-27","system_qty":39.0,"kind":"stay","planned_qty":0.0},{"sku":"305-x","desc":"1.4lb Avg. Ranger Chicken Breast","lot":"2025-10-16","system_qty":26.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6551TCF","desc":"Thai Lemongrass Chicken Soup - 30oz 2-3 servings","lot":"2026-02-17","system_qty":22.0,"kind":"take","planned_qty":22.0,"dest":"F1-C8-7","why":{"on_f1_now":"18","target":"28","cover_after":"5.7","fifo":"raised from 10 to 21 \u2014 smallest move ever made for this SKU (median move 22) | swept the last 1 from this position \u2014 not worth a return trip"}},{"sku":"FPrep6518TCF","desc":"Butternut Squash Soup with Browned Butter - 30oz","lot":"2025-10-07","system_qty":20.0,"kind":"stay","planned_qty":0.0},{"sku":"6514","desc":"Scalloped Potatoes - Avg 1.6 lbs","lot":"2026-06-02","system_qty":13.0,"kind":"stay","planned_qty":0.0},{"sku":"FPrep6572TCF","desc":"Beef Sloppy Joes - 15oz","lot":"2026-04-16","system_qty":11.0,"kind":"stay","planned_qty":0.0},{"sku":"313","desc":"Chicken Wings - Ranger 1.75 lb Avg Range: 1.55-1","lot":"2025-10-16","system_qty":8.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-56","goes_back_to":"F2-E-04-1","spoil":false}],"putback":[{"pos":1,"loc":"F2-E-04-1","pallet_id":"P-56","items":[{"sku":"655","qty":42.0,"disposition":"stay","from_position":"1"},{"sku":"652","qty":128.0,"disposition":"stay","from_position":"1"},{"sku":"6515","qty":97.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6559TCF","qty":39.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6572TCF","qty":11.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6518TCF","qty":20.0,"disposition":"stay","from_position":"1"},{"sku":"6514","qty":13.0,"disposition":"stay","from_position":"1"},{"sku":"FPrep6569TCF","qty":99.0,"disposition":"stay","from_position":"1"},{"sku":"313","qty":8.0,"disposition":"stay","from_position":"1"},{"sku":"660","qty":44.0,"disposition":"stay","from_position":"1"},{"sku":"305-x","qty":26.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":21,"down":1},{"n":12,"bay":"F2-E-06","deepest":2,"est_minutes":30,"count_minutes":0,"pallets":[{"loc":"F2-E-06-1","pos":1,"lines":[{"sku":"TC Feeds 7-63106","desc":"TC Feeds Forest Hog Pork Roast 2.8lb Avg. Range ","lot":"","system_qty":285.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 7-631755","desc":"Forest Hog Raw Brat - 1lb Avg","lot":"","system_qty":148.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 7-634","desc":"TC Feeds Forest Hog Ribeye Chop 1.2 lb Avg Range","lot":"","system_qty":127.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 7-636","desc":"TC Feeds Forest Hog Porterhouse Chop .9lb Avg Ra","lot":"","system_qty":89.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 24-63166","desc":"2024 Forest Hog Ham 2-6lbs","lot":"","system_qty":86.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds Forest Hog Bacon 7-63170","desc":"TC Feeds Forest Hog Bacon","lot":"","system_qty":63.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 170-3","desc":"TC Feeds Raspberry Bacon","lot":"","system_qty":23.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-45","goes_back_to":"F2-E-06-2","spoil":true},{"loc":"F2-E-06-2","pos":2,"lines":[{"sku":"207","desc":"Ground Beef 1lb Avg","lot":"2026-02-18","system_qty":2064.0,"kind":"take","planned_qty":173.0,"dest":"F1-A7-1","why":{"on_f1_now":"1013","target":"1486","cover_after":"13.3","fifo":""}},{"sku":"99319","desc":"Chicken - Bulk Drumsticks (Ranger) - 14.5lb Avg","lot":"","system_qty":14.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-44","goes_back_to":"F2-E-06-1","spoil":false}],"putback":[{"pos":2,"loc":"F2-E-06-2","pallet_id":"P-45","items":[{"sku":"TC Feeds 170-3","qty":23.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 24-63166","qty":86.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-63106","qty":285.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-631755","qty":148.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-634","qty":127.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds 7-636","qty":89.0,"disposition":"stay","from_position":"1"},{"sku":"TC Feeds Forest Hog Bacon 7-63170","qty":63.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":1,"loc":"F2-E-06-1","pallet_id":"P-44","items":[{"sku":"207","qty":1891.0,"disposition":"stay","from_position":"2"},{"sku":"99319","qty":14.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[],"floor":14,"down":2},{"n":13,"bay":"F3-A-03","deepest":6,"est_minutes":90,"count_minutes":0,"pallets":[{"loc":"F3-A-03-1","pos":1,"lines":[{"sku":"1712","desc":"Maple Smoked Breakfast Sausage Links - avg 1.05l","lot":"","system_qty":738.0,"kind":"stay","planned_qty":0.0},{"sku":"177","desc":"Italian Sausage","lot":"2026-01-26","system_qty":400.0,"kind":"take","planned_qty":59.0,"dest":"F1-AB12-2","why":{"on_f1_now":"49","target":"108","cover_after":"4.0","fifo":""}},{"sku":"1713","desc":"Original Breakfast Sausage Links - 1 lb","lot":"2026-06-28","system_qty":279.0,"kind":"stay","planned_qty":0.0},{"sku":"170-1","desc":"SMALL and THICK  Bacon - MIN .75lb","lot":"","system_qty":148.0,"kind":"stay","planned_qty":0.0},{"sku":"170-0","desc":"Thin Sliced Bacon - MIN .75lb","lot":"","system_qty":80.0,"kind":"stay","planned_qty":0.0},{"sku":"F1755NGF","desc":"Pork Fresh Brat - .8lb Ave","lot":"","system_qty":44.0,"kind":"stay","planned_qty":0.0},{"sku":"99102","desc":"Kitchen Bulk butterfly pork chops","lot":"2026-06-28","system_qty":6.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-7","goes_back_to":"F3-A-03-1","spoil":false},{"loc":"F3-A-03-2","pos":2,"lines":[{"sku":"TC Feeds Whole Chickens","desc":"KS - 32 lbs/case avg","lot":"","system_qty":135.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-10","goes_back_to":"F3-A-03-4","spoil":true},{"loc":"F3-A-03-3","pos":3,"lines":[{"sku":"207","desc":"Ground Beef 1lb Avg","lot":"2025-08-01","system_qty":300.0,"kind":"take","planned_qty":300.0,"dest":"F1-A7-1","why":{"on_f1_now":"1013","target":"1486","cover_after":"13.3","fifo":""}},{"sku":"170-2","desc":"Hungarian Bacon - avg 1.1lb","lot":"2025-04-08","system_qty":150.0,"kind":"stay","planned_qty":0.0},{"sku":"144","desc":"Kielbasa","lot":"2025-04-08","system_qty":100.0,"kind":"take","planned_qty":44.0,"dest":"F1-B4","why":{"on_f1_now":"15","target":"59","cover_after":"5.4","fifo":""}},{"sku":"144","desc":"Kielbasa","lot":"2025-04-08","system_qty":100.0,"kind":"aside","planned_qty":56.0,"after_take":true,"onto_pallet":"P-7","onto_bay":13},{"sku":"333","desc":"Sun-dried Tomato Basil Chicken Bratwurst - avg 1","lot":"2025-05-23","system_qty":67.0,"kind":"stay","planned_qty":0.0},{"sku":"170-2","desc":"Hungarian Bacon - avg 1.1lb","lot":"","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"335","desc":"Chicken Bratwurst - avg 1.03lb","lot":"2025-05-23","system_qty":46.0,"kind":"stay","planned_qty":0.0},{"sku":"165","desc":"Lamb Gyro","lot":"2025-05-23","system_qty":38.0,"kind":"aside","planned_qty":38.0,"after_take":false,"onto_pallet":"P-7","onto_bay":13},{"sku":"9304","desc":"Pet Treat - Dried Pork Trotters x2","lot":"","system_qty":32.0,"kind":"stay","planned_qty":0.0},{"sku":"603","desc":"Salmon Burgers - 2 pack","lot":"2025-08-26","system_qty":16.0,"kind":"take","planned_qty":16.0,"dest":"F1-C3-2","why":{"on_f1_now":"72","target":"146","cover_after":"9.7","fifo":""}},{"sku":"268-2","desc":"Beef Picanha 1.85lb Avg. Range: 1.4-2lb","lot":"2026-06-16","system_qty":3.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-8","goes_back_to":"F3-A-03-3","spoil":false},{"loc":"F3-A-03-5","pos":5,"lines":[{"sku":"144","desc":"Kielbasa","lot":"2025-04-08","system_qty":200.0,"kind":"stay","planned_qty":0.0},{"sku":"186","desc":"Sliced Emusified Ham","lot":"2025-04-08","system_qty":150.0,"kind":"stay","planned_qty":0.0},{"sku":"170-2","desc":"Hungarian Bacon - avg 1.1lb","lot":"2025-04-08","system_qty":100.0,"kind":"stay","planned_qty":0.0},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-04-08","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"167-4","desc":"Sliced Rustic Ham - Jalape\u00f1o  - avg 1.05lb","lot":"2025-04-08","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"9302","desc":"Pet Treats - Dried Turkey Gizzards","lot":"","system_qty":14.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-11","goes_back_to":"F3-A-03-2","spoil":true},{"loc":"F3-A-03-6","pos":6,"lines":[{"sku":"107","desc":"Ground Pork","lot":"2026-05-01","system_qty":722.0,"kind":"take","planned_qty":35.0,"dest":"F1-A8-1","why":{"on_f1_now":"97","target":"148","cover_after":"5.5","fifo":"raised from 51 to 86 \u2014 smallest move ever made for this SKU (median move 182)"}},{"sku":"107","desc":"Ground Pork","lot":"2026-05-01","system_qty":722.0,"kind":"aside","planned_qty":687.0,"after_take":true,"onto_pallet":"P-8","onto_bay":13}],"pallet_id":"P-9","goes_back_to":null,"spoil":false}],"putback":[{"pos":4,"loc":"F3-A-03-4","pallet_id":"P-10","items":[{"sku":"TC Feeds Whole Chickens","qty":135.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":3,"loc":"F3-A-03-3","pallet_id":"P-8","items":[{"sku":"107","qty":687.0,"disposition":"move","from_position":"6"},{"sku":"333","qty":67.0,"disposition":"stay","from_position":"3"},{"sku":"335","qty":46.0,"disposition":"stay","from_position":"3"},{"sku":"170-2","qty":200.0,"disposition":"stay","from_position":"3"},{"sku":"268-2","qty":3.0,"disposition":"stay","from_position":"3"},{"sku":"9304","qty":32.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":2,"loc":"F3-A-03-2","pallet_id":"P-11","items":[{"sku":"144","qty":200.0,"disposition":"stay","from_position":"5"},{"sku":"167","qty":50.0,"disposition":"stay","from_position":"5"},{"sku":"167-4","qty":50.0,"disposition":"stay","from_position":"5"},{"sku":"170-2","qty":100.0,"disposition":"stay","from_position":"5"},{"sku":"186","qty":150.0,"disposition":"stay","from_position":"5"},{"sku":"9302","qty":14.0,"disposition":"stay","from_position":"5"}],"waits_for":[]},{"pos":1,"loc":"F3-A-03-1","pallet_id":"P-7","items":[{"sku":"1713","qty":279.0,"disposition":"stay","from_position":"1"},{"sku":"177","qty":341.0,"disposition":"stay","from_position":"1"},{"sku":"170-1","qty":148.0,"disposition":"stay","from_position":"1"},{"sku":"165","qty":38.0,"disposition":"move","from_position":"3"},{"sku":"144","qty":56.0,"disposition":"move","from_position":"3"},{"sku":"170-0","qty":80.0,"disposition":"stay","from_position":"1"},{"sku":"F1755NGF","qty":44.0,"disposition":"stay","from_position":"1"},{"sku":"1712","qty":738.0,"disposition":"stay","from_position":"1"},{"sku":"99102","qty":6.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":20,"down":5},{"n":14,"bay":"F3-A-04","deepest":4,"est_minutes":60,"count_minutes":0,"pallets":[{"loc":"F3-A-04-1","pos":1,"lines":[{"sku":"343","desc":"Whole Cornish Chicken - 3.3-4 lbs","lot":"2026-04-17","system_qty":166.0,"kind":"take","planned_qty":36.0,"dest":"F1-B7","why":{"on_f1_now":"36","target":"72","cover_after":"6.6","fifo":""}}],"pallet_id":"P-34","goes_back_to":"F3-A-04-2","spoil":false},{"loc":"F3-A-04-2","pos":2,"lines":[{"sku":"307-2","desc":"Lean Ground Chicken - avg 1.07lb","lot":"2026-03-26","system_qty":350.0,"kind":"stay","planned_qty":0.0},{"sku":"170-1","desc":"SMALL and THICK  Bacon - MIN .75lb","lot":"","system_qty":175.0,"kind":"stay","planned_qty":0.0},{"sku":"307","desc":"Ground Chicken -Dark meat","lot":"2026-03-26","system_qty":59.0,"kind":"take","planned_qty":19.0,"dest":"F1-B7-3","why":{"on_f1_now":"87","target":"106","cover_after":"8.8","fifo":""}},{"sku":"3477","desc":"Cut Chicken Wings - Cornish - avg 1.13lb","lot":"2026-03-26","system_qty":52.0,"kind":"take","planned_qty":52.0,"dest":"F1-B6","why":{"on_f1_now":"69","target":"125","cover_after":"11.0","fifo":""}},{"sku":"120-2","desc":"Retail Pork Back Fat Avg 2lb","lot":"2026-01-26","system_qty":43.0,"kind":"stay","planned_qty":0.0},{"sku":"101-1","desc":"Thin boneless Pork Sirloin 1.3 Avg Range 1.2-1.8","lot":"2026-01-26","system_qty":38.0,"kind":"stay","planned_qty":0.0},{"sku":"106-1","desc":"Boston Pork Roast 3.4 Avg Range 3-3.6","lot":"2026-01-26","system_qty":16.0,"kind":"stay","planned_qty":0.0},{"sku":"120-1","desc":"Bulk Pork Leaf Fat- 35lb cs","lot":"2026-01-26","system_qty":3.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-35","goes_back_to":"F3-A-04-1","spoil":false},{"loc":"F3-A-04-3","pos":3,"lines":[{"sku":"305","desc":"Chicken Breasts - Ranger 0.85 lb Avg Range: .77 ","lot":"2025-10-16","system_qty":478.0,"kind":"take","planned_qty":282.0,"dest":"F1-B7","why":{"on_f1_now":"112","target":"413","cover_after":"7.8","fifo":""}},{"sku":"305","desc":"Chicken Breasts - Ranger 0.85 lb Avg Range: .77 ","lot":"2025-10-16","system_qty":478.0,"kind":"aside","planned_qty":196.0,"after_take":true,"onto_pallet":"P-34","onto_bay":14},{"sku":"306","desc":"Chicken Thighs - Ranger 0.9 lb Avg Range: 0.8-1.","lot":"2025-10-16","system_qty":374.0,"kind":"aside","planned_qty":374.0,"after_take":false,"onto_pallet":"P-34","onto_bay":14},{"sku":"305-x","desc":"1.4lb Avg. Ranger Chicken Breast","lot":"2025-10-16","system_qty":75.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-36","goes_back_to":"F3-A-04-3","spoil":false},{"loc":"F3-A-04-4","pos":4,"lines":[{"sku":"147","desc":"Bockwurst","lot":"2024-10-29","system_qty":380.0,"kind":"aside","planned_qty":380.0,"after_take":false,"onto_pallet":"P-35","onto_bay":14},{"sku":"166","desc":"BONELESS Ham Roast ","lot":"2025-05-20","system_qty":48.0,"kind":"take","planned_qty":11.0,"dest":"F1-AB13-1","why":{"on_f1_now":"1","target":"12","cover_after":"5.8","fifo":""}},{"sku":"166","desc":"BONELESS Ham Roast ","lot":"2025-05-20","system_qty":48.0,"kind":"aside","planned_qty":37.0,"after_take":true,"onto_pallet":"P-34","onto_bay":14},{"sku":"9910800","desc":"Kitchen Fresh Ham - Bulk","lot":"2025-05-23","system_qty":2.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-37","goes_back_to":"F3-A-04-4","spoil":false}],"putback":[{"pos":4,"loc":"F3-A-04-4","pallet_id":"P-37","items":[{"sku":"9910800","qty":2.0,"disposition":"stay","from_position":"4"}],"waits_for":[]},{"pos":3,"loc":"F3-A-04-3","pallet_id":"P-36","items":[{"sku":"305-x","qty":75.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":2,"loc":"F3-A-04-2","pallet_id":"P-34","items":[{"sku":"166","qty":37.0,"disposition":"move","from_position":"4"},{"sku":"306","qty":374.0,"disposition":"move","from_position":"3"},{"sku":"343","qty":130.0,"disposition":"stay","from_position":"1"},{"sku":"305","qty":196.0,"disposition":"move","from_position":"3"}],"waits_for":[]},{"pos":1,"loc":"F3-A-04-1","pallet_id":"P-35","items":[{"sku":"170-1","qty":175.0,"disposition":"stay","from_position":"2"},{"sku":"307","qty":40.0,"disposition":"stay","from_position":"2"},{"sku":"307-2","qty":350.0,"disposition":"stay","from_position":"2"},{"sku":"147","qty":380.0,"disposition":"move","from_position":"4"},{"sku":"101-1","qty":38.0,"disposition":"stay","from_position":"2"},{"sku":"106-1","qty":16.0,"disposition":"stay","from_position":"2"},{"sku":"120-1","qty":3.0,"disposition":"stay","from_position":"2"},{"sku":"120-2","qty":43.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[],"floor":20,"down":4},{"n":15,"bay":"F3-A-05","deepest":6,"est_minutes":90,"count_minutes":0,"pallets":[{"loc":"F3-A-05-1","pos":1,"lines":[{"sku":"170-0","desc":"Thin Sliced Bacon - MIN .75lb","lot":"2026-05-01","system_qty":287.0,"kind":"stay","planned_qty":0.0},{"sku":"140","desc":"Raw Ham Steak Avg. 0.9lb Range: 0.8lbs-1.1","lot":"2026-01-26","system_qty":94.0,"kind":"stay","planned_qty":0.0},{"sku":"112-1","desc":"Sous Vide Ribs 2.4lb Avg Range 2-2.75","lot":"2026-01-26","system_qty":11.0,"kind":"stay","planned_qty":0.0},{"sku":"112-2","desc":"Sous Vide Ribs 3.2lb Avg Range: 3-4lb ","lot":"2026-01-26","system_qty":10.0,"kind":"stay","planned_qty":0.0},{"sku":"106-11","desc":"Small Boston Pork Roast 2.75 Avg Range 2.65-2.9","lot":"2026-01-26","system_qty":5.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-4","goes_back_to":"F3-A-05-3","spoil":true},{"loc":"F3-A-05-2","pos":2,"lines":[{"sku":"FProd3160SPF","desc":"Midwest Soup Mix - 16oz","lot":"","system_qty":84.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd0273SPF","desc":"SNP Shredded Hashbrowns - 16oz","lot":"","system_qty":82.0,"kind":"take","planned_qty":10.0,"dest":"F1-A3-5","why":{"on_f1_now":"6","target":"16","cover_after":"4.0","fifo":""}},{"sku":"FProd1102SPF","desc":"Sliced Carrots - 10oz","lot":"","system_qty":72.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd7109SPF","desc":"Diced Butternut Squash - 10oz","lot":"","system_qty":72.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd8211SPF","desc":"Southern Style Hashbrowns - 16oz","lot":"","system_qty":72.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd0266SPF","desc":"Tri-Colored Peppers - 10oz","lot":"","system_qty":60.0,"kind":"take","planned_qty":19.0,"dest":"F1-A3-3","why":{"on_f1_now":"5","target":"24","cover_after":"4.0","fifo":""}},{"sku":"FProd8800SPF","desc":"Bulk Sweet Corn - 5lb","lot":"","system_qty":15.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd1802SPF","desc":"Bulk Green Peas - 5lb","lot":"","system_qty":8.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd2803SPF","desc":"Bulk Cut Green Beans - 5lb","lot":"","system_qty":4.0,"kind":"stay","planned_qty":0.0},{"sku":"FProd4808SPF","desc":"Bulk Mixed Vegetables - 5lb","lot":"","system_qty":4.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-1","goes_back_to":"F3-A-05-1","spoil":false},{"loc":"F3-A-05-3","pos":3,"lines":[{"sku":"304","desc":"Whole Ranger Chicken 5.37 lb Avg Range: > 4.6","lot":"2025-07-31","system_qty":131.0,"kind":"stay","planned_qty":0.0},{"sku":"303","desc":"Whole Ranger Chicken 4.23 lb Avg Range: 3.75 - 4","lot":"2025-07-31","system_qty":72.0,"kind":"stay","planned_qty":0.0},{"sku":"309","desc":"Drumsticks - Ranger 2.1 lb Avg Range: 1.8+","lot":"2025-07-31","system_qty":30.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-5","goes_back_to":"F3-A-05-2","spoil":true},{"loc":"F3-A-05-4","pos":4,"lines":[{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-01-01","system_qty":246.0,"kind":"take","planned_qty":246.0,"dest":"F1-B2","why":{"on_f1_now":"37","target":"275","cover_after":"9.1","fifo":"swept the last 8 from this position \u2014 not worth a return trip"}},{"sku":"290","desc":"Bacon Burgers (!)","lot":"2025-05-06","system_qty":89.0,"kind":"take","planned_qty":89.0,"dest":"F1-A9-1","why":{"on_f1_now":"79","target":"192","cover_after":"13.5","fifo":""}},{"sku":"170-2","desc":"Hungarian Bacon - avg 1.1lb","lot":"2025-02-18","system_qty":85.0,"kind":"stay","planned_qty":0.0},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-05-20","system_qty":72.0,"kind":"stay","planned_qty":0.0},{"sku":"144","desc":"Kielbasa","lot":"2025-05-06","system_qty":50.0,"kind":"aside","planned_qty":50.0,"after_take":false,"onto_pallet":"P-1","onto_bay":15},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-04-08","system_qty":50.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-2","goes_back_to":"F3-A-05-5","spoil":false},{"loc":"F3-A-05-5","pos":5,"lines":[{"sku":"104-5","desc":"Thick Cut Bone-in Ribeye Pork Chop - avg 1.6 lb","lot":"2025-05-20","system_qty":246.0,"kind":"stay","planned_qty":0.0},{"sku":"178","desc":"Rosemary Brats","lot":"2025-02-18","system_qty":64.0,"kind":"stay","planned_qty":0.0},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-03-11","system_qty":54.0,"kind":"stay","planned_qty":0.0},{"sku":"292","desc":"Bacon Burgers (!) - Cajun Style - avg 1.38lb","lot":"2025-05-06","system_qty":48.0,"kind":"stay","planned_qty":0.0},{"sku":"170-2","desc":"Hungarian Bacon - avg 1.1lb","lot":"2025-02-18","system_qty":40.0,"kind":"stay","planned_qty":0.0},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-05-20","system_qty":23.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-6","goes_back_to":"F3-A-05-4","spoil":true},{"loc":"F3-A-05-6","pos":6,"lines":[{"sku":"130","desc":"48hr Pulled Pork","lot":"2024-01-31","system_qty":814.0,"kind":"aside","planned_qty":814.0,"after_take":false,"onto_pallet":"P-2","onto_bay":15},{"sku":"290","desc":"Bacon Burgers (!)","lot":"","system_qty":48.0,"kind":"take","planned_qty":48.0,"dest":"F1-A9-1","why":{"on_f1_now":"79","target":"192","cover_after":"13.5","fifo":"swept the last 24 from this position \u2014 not worth a return trip"}},{"sku":"120","desc":"Needs to be sorted into 120-2","lot":"2024-01-31","system_qty":30.0,"kind":"aside","planned_qty":30.0,"after_take":false,"onto_pallet":"P-1","onto_bay":15},{"sku":"120-1","desc":"Bulk Pork Leaf Fat- 35lb cs","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-3","goes_back_to":"F3-A-05-6","spoil":false}],"putback":[{"pos":6,"loc":"F3-A-05-6","pallet_id":"P-3","items":[{"sku":"120-1","qty":1.0,"disposition":"stay","from_position":"6"}],"waits_for":[]},{"pos":5,"loc":"F3-A-05-5","pallet_id":"P-2","items":[{"sku":"130","qty":814.0,"disposition":"move","from_position":"6"},{"sku":"106","qty":72.0,"disposition":"stay","from_position":"4"},{"sku":"170-2","qty":85.0,"disposition":"stay","from_position":"4"}],"waits_for":[]},{"pos":4,"loc":"F3-A-05-4","pallet_id":"P-6","items":[{"sku":"104-5","qty":246.0,"disposition":"stay","from_position":"5"},{"sku":"106","qty":23.0,"disposition":"stay","from_position":"5"},{"sku":"167","qty":54.0,"disposition":"stay","from_position":"5"},{"sku":"170-2","qty":40.0,"disposition":"stay","from_position":"5"},{"sku":"178","qty":64.0,"disposition":"stay","from_position":"5"},{"sku":"292","qty":48.0,"disposition":"stay","from_position":"5"}],"waits_for":[]},{"pos":3,"loc":"F3-A-05-3","pallet_id":"P-4","items":[{"sku":"106-11","qty":5.0,"disposition":"stay","from_position":"1"},{"sku":"112-1","qty":11.0,"disposition":"stay","from_position":"1"},{"sku":"112-2","qty":10.0,"disposition":"stay","from_position":"1"},{"sku":"140","qty":94.0,"disposition":"stay","from_position":"1"},{"sku":"170-0","qty":287.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":2,"loc":"F3-A-05-2","pallet_id":"P-5","items":[{"sku":"303","qty":72.0,"disposition":"stay","from_position":"3"},{"sku":"304","qty":131.0,"disposition":"stay","from_position":"3"},{"sku":"309","qty":30.0,"disposition":"stay","from_position":"3"}],"waits_for":[]},{"pos":1,"loc":"F3-A-05-1","pallet_id":"P-1","items":[{"sku":"120","qty":30.0,"disposition":"move","from_position":"6"},{"sku":"FProd0273SPF","qty":72.0,"disposition":"stay","from_position":"2"},{"sku":"FProd0266SPF","qty":41.0,"disposition":"stay","from_position":"2"},{"sku":"FProd3160SPF","qty":84.0,"disposition":"stay","from_position":"2"},{"sku":"FProd7109SPF","qty":72.0,"disposition":"stay","from_position":"2"},{"sku":"144","qty":50.0,"disposition":"move","from_position":"4"},{"sku":"FProd1102SPF","qty":72.0,"disposition":"stay","from_position":"2"},{"sku":"FProd1802SPF","qty":8.0,"disposition":"stay","from_position":"2"},{"sku":"FProd2803SPF","qty":4.0,"disposition":"stay","from_position":"2"},{"sku":"FProd4808SPF","qty":4.0,"disposition":"stay","from_position":"2"},{"sku":"FProd8211SPF","qty":72.0,"disposition":"stay","from_position":"2"},{"sku":"FProd8800SPF","qty":15.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[],"floor":27,"down":6},{"n":16,"bay":"F3-A-06","deepest":5,"est_minutes":75,"count_minutes":0,"pallets":[{"loc":"F3-A-06-1","pos":1,"lines":[{"sku":"749","desc":"Sea Salt - Pink Himalayan 2lb","lot":"","system_qty":5.0,"kind":"stay","planned_qty":0.0},{"sku":"798","desc":"Cocoa Powder Dutched 20/22 fat","lot":"","system_qty":5.0,"kind":"stay","planned_qty":0.0},{"sku":"719","desc":"Granola - Just Granola - 1.5lb","lot":"","system_qty":3.0,"kind":"stay","planned_qty":0.0},{"sku":"705","desc":"Cashew - Roasted Sea Salt - 1.5lb","lot":"","system_qty":2.0,"kind":"stay","planned_qty":0.0},{"sku":"710","desc":"Nut Mix - Roasted and Salted - 1.25lb","lot":"","system_qty":2.0,"kind":"stay","planned_qty":0.0},{"sku":"732","desc":"Mango - Dried - 1.5lb","lot":"","system_qty":2.0,"kind":"stay","planned_qty":0.0},{"sku":"704","desc":"Almonds - Cocoa Dusted 1lb","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0},{"sku":"7051","desc":"Cashew - Roasted Unsalted - 1.25lb","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0},{"sku":"7080","desc":"Raw Walnuts - 1.25lb","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0},{"sku":"7090","desc":"Raw Pumpkin Seeds (EU) - 1.5lb","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0},{"sku":"714","desc":"Trail Mix - 1.5lb","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0},{"sku":"718","desc":"Cinnamon Maple Granola - 1.5lb","lot":"","system_qty":1.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-27","goes_back_to":"F3-A-06-1","spoil":true},{"loc":"F3-A-06-2","pos":2,"lines":[{"sku":"99345","desc":"Kitchen Use Only -Chicken Breasts - Cornish 1lb ","lot":"2025-01-01","system_qty":1256.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-28","goes_back_to":"F3-A-06-4","spoil":true},{"loc":"F3-A-06-3","pos":3,"lines":[{"sku":"601","desc":"Skin-On Boneless Salmon Fillets - 6oz","lot":"","system_qty":2151.0,"kind":"take","planned_qty":434.0,"dest":"F1-B7-4","why":{"on_f1_now":"7","target":"441","cover_after":"10.5","fifo":""}}],"pallet_id":"P-25","goes_back_to":"F3-A-06-2","spoil":false},{"loc":"F3-A-06-4","pos":4,"lines":[{"sku":"170-3","desc":"Raspberry Chipotle Bacon - avg .85lb","lot":"2025-03-11","system_qty":225.0,"kind":"stay","planned_qty":0.0},{"sku":"144","desc":"Kielbasa","lot":"2025-03-11","system_qty":190.0,"kind":"stay","planned_qty":0.0},{"sku":"167","desc":"Sliced Rustic Ham Pork","lot":"2025-03-11","system_qty":120.0,"kind":"stay","planned_qty":0.0},{"sku":"170-55","desc":"Cajun Bacon - avg .85lb","lot":"2025-03-11","system_qty":90.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds 106","desc":"TC Feeds Pork Roast","lot":"","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-03-11","system_qty":19.0,"kind":"stay","planned_qty":0.0},{"sku":"TC Feeds Whole Chickens","desc":"KS - 32 lbs/case avg","lot":"","system_qty":4.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-29","goes_back_to":"F3-A-06-3","spoil":true},{"loc":"F3-A-06-5","pos":5,"lines":[{"sku":"7-105","desc":"Old 104-5 Thick Bone in Ribeye (?) Pork chop ","lot":"2024-10-22","system_qty":140.0,"kind":"stay","planned_qty":0.0},{"sku":"170-3","desc":"Raspberry Chipotle Bacon - avg .85lb","lot":"2025-03-11","system_qty":50.0,"kind":"aside","planned_qty":50.0,"after_take":false,"onto_pallet":"P-25","onto_bay":16},{"sku":"106","desc":"Pork Picnic Roasts","lot":"2025-02-18","system_qty":40.0,"kind":"aside","planned_qty":40.0,"after_take":false,"onto_pallet":"P-25","onto_bay":16},{"sku":"119","desc":"Sliced Pork Liver","lot":"2024-10-22","system_qty":23.0,"kind":"take","planned_qty":7.0,"dest":"F1-B1-1","why":{"on_f1_now":"4","target":"11","cover_after":"5.5","fifo":""}},{"sku":"119","desc":"Sliced Pork Liver","lot":"2024-10-22","system_qty":23.0,"kind":"aside","planned_qty":16.0,"after_take":true,"onto_pallet":"P-25","onto_bay":16}],"pallet_id":"P-26","goes_back_to":"F3-A-06-5","spoil":false}],"putback":[{"pos":5,"loc":"F3-A-06-5","pallet_id":"P-26","items":[{"sku":"7-105","qty":140.0,"disposition":"stay","from_position":"5"}],"waits_for":[]},{"pos":4,"loc":"F3-A-06-4","pallet_id":"P-28","items":[{"sku":"99345","qty":1256.0,"disposition":"stay","from_position":"2"}],"waits_for":[]},{"pos":3,"loc":"F3-A-06-3","pallet_id":"P-29","items":[{"sku":"106","qty":19.0,"disposition":"stay","from_position":"4"},{"sku":"144","qty":190.0,"disposition":"stay","from_position":"4"},{"sku":"167","qty":120.0,"disposition":"stay","from_position":"4"},{"sku":"170-3","qty":225.0,"disposition":"stay","from_position":"4"},{"sku":"170-55","qty":90.0,"disposition":"stay","from_position":"4"},{"sku":"TC Feeds 106","qty":50.0,"disposition":"stay","from_position":"4"},{"sku":"TC Feeds Whole Chickens","qty":4.0,"disposition":"stay","from_position":"4"}],"waits_for":[]},{"pos":2,"loc":"F3-A-06-2","pallet_id":"P-25","items":[{"sku":"119","qty":16.0,"disposition":"move","from_position":"5"},{"sku":"601","qty":1717.0,"disposition":"stay","from_position":"3"},{"sku":"170-3","qty":50.0,"disposition":"move","from_position":"5"},{"sku":"106","qty":40.0,"disposition":"move","from_position":"5"}],"waits_for":[]},{"pos":1,"loc":"F3-A-06-1","pallet_id":"P-27","items":[{"sku":"704","qty":1.0,"disposition":"stay","from_position":"1"},{"sku":"705","qty":2.0,"disposition":"stay","from_position":"1"},{"sku":"7051","qty":1.0,"disposition":"stay","from_position":"1"},{"sku":"7080","qty":1.0,"disposition":"stay","from_position":"1"},{"sku":"7090","qty":1.0,"disposition":"stay","from_position":"1"},{"sku":"710","qty":2.0,"disposition":"stay","from_position":"1"},{"sku":"714","qty":1.0,"disposition":"stay","from_position":"1"},{"sku":"718","qty":1.0,"disposition":"stay","from_position":"1"},{"sku":"719","qty":3.0,"disposition":"stay","from_position":"1"},{"sku":"732","qty":2.0,"disposition":"stay","from_position":"1"},{"sku":"749","qty":5.0,"disposition":"stay","from_position":"1"},{"sku":"798","qty":5.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":28,"down":5},{"n":17,"bay":"F3-E-01","deepest":1,"est_minutes":15,"count_minutes":30,"pallets":[{"loc":"F3-E-01-1","pos":1,"lines":[{"sku":"3066","desc":"Boneless Chicken Thighs - Ranger 1.1 lb Avg Rang","lot":"","system_qty":139.0,"kind":"stay","planned_qty":0.0},{"sku":"1713","desc":"Original Breakfast Sausage Links - 1 lb","lot":"2026-05-01","system_qty":114.0,"kind":"take","planned_qty":13.0,"dest":"F1-B3-3","why":{"on_f1_now":"25","target":"52","cover_after":"4.0","fifo":""}},{"sku":"100-1","desc":"Thick Cut Boneless Pork Chop - 1 1/4\" thick 7oz-","lot":"2026-04-29","system_qty":90.0,"kind":"stay","planned_qty":0.0},{"sku":"102","desc":"Thin Boneless Pork Chops - 0.8 lb","lot":"2026-04-28","system_qty":70.0,"kind":"stay","planned_qty":0.0},{"sku":"100","desc":"Thick Boneless Pork Chops 0.75 Avg. Range .65-.8","lot":"2026-04-29","system_qty":56.0,"kind":"stay","planned_qty":0.0},{"sku":"101","desc":"Thin boneless Pork Sirloin 1.1 Avg Range 1-1.4","lot":"2026-04-28","system_qty":56.0,"kind":"take","planned_qty":13.0,"dest":"F1-AB12-3","why":{"on_f1_now":"10","target":"20","cover_after":"4.6","fifo":"raised from 10 to 13 \u2014 smallest move ever made for this SKU (median move 24)"}},{"sku":"140","desc":"Raw Ham Steak Avg. 0.9lb Range: 0.8lbs-1.1","lot":"2026-04-28","system_qty":52.0,"kind":"stay","planned_qty":0.0},{"sku":"142","desc":"Fajita Sliced Pork - 1 lb","lot":"2026-04-28","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"106-1","desc":"Boston Pork Roast 3.4 Avg Range 3-3.6","lot":"2026-04-28","system_qty":34.0,"kind":"stay","planned_qty":0.0},{"sku":"102-2","desc":"Large Thin Boneless Pork Chops - 1 lb","lot":"2026-04-28","system_qty":27.0,"kind":"take","planned_qty":27.0,"dest":"F1-B4-4","why":{"on_f1_now":"1","target":"20","cover_after":"5.6","fifo":"swept the last 8 from this position \u2014 not worth a return trip"}},{"sku":"101-1","desc":"Thin boneless Pork Sirloin 1.3 Avg Range 1.2-1.8","lot":"2026-04-28","system_qty":25.0,"kind":"stay","planned_qty":0.0},{"sku":"1092","desc":"Thin Sliced Side Pork - 0.8 lb","lot":"2026-04-30","system_qty":24.0,"kind":"stay","planned_qty":0.0},{"sku":"110","desc":"Pork Tenderloin 1.1 Avg Range .9-1.3","lot":"2026-04-28","system_qty":22.0,"kind":"take","planned_qty":22.0,"dest":"F1-B4","why":{"on_f1_now":"17","target":"28","cover_after":"5.6","fifo":"raised from 11 to 12 \u2014 smallest move ever made for this SKU (median move 19) | swept the last 10 from this position \u2014 not worth a return trip"}},{"sku":"111-2","desc":"Loin Baby Back Ribs - 1.8 lb Range 1.8-2.6","lot":"2026-04-28","system_qty":20.0,"kind":"stay","planned_qty":0.0},{"sku":"1713","desc":"Original Breakfast Sausage Links - 1 lb","lot":"2026-04-30","system_qty":14.0,"kind":"take","planned_qty":14.0,"dest":"F1-B3-3","why":{"on_f1_now":"25","target":"52","cover_after":"4.0","fifo":""}},{"sku":"110-1","desc":"Pork Tenderloin Avg 1.4 lb. Range 1.3-1.6","lot":"2026-04-28","system_qty":10.0,"kind":"stay","planned_qty":0.0},{"kind":"count","serial":"","sku":"3066","desc":"","lot":"","system_qty":139.0,"minutes":30.0}],"pallet_id":"P-54","goes_back_to":"F3-E-01-1","spoil":false}],"putback":[{"pos":1,"loc":"F3-E-01-1","pallet_id":"P-54","items":[{"sku":"1713","qty":87.0,"disposition":"stay","from_position":"1"},{"sku":"101","qty":43.0,"disposition":"stay","from_position":"1"},{"sku":"3066","qty":139.0,"disposition":"stay","from_position":"1"},{"sku":"100","qty":56.0,"disposition":"stay","from_position":"1"},{"sku":"100-1","qty":90.0,"disposition":"stay","from_position":"1"},{"sku":"101-1","qty":25.0,"disposition":"stay","from_position":"1"},{"sku":"102","qty":70.0,"disposition":"stay","from_position":"1"},{"sku":"106-1","qty":34.0,"disposition":"stay","from_position":"1"},{"sku":"1092","qty":24.0,"disposition":"stay","from_position":"1"},{"sku":"110-1","qty":10.0,"disposition":"stay","from_position":"1"},{"sku":"111-2","qty":20.0,"disposition":"stay","from_position":"1"},{"sku":"140","qty":52.0,"disposition":"stay","from_position":"1"},{"sku":"142","qty":50.0,"disposition":"stay","from_position":"1"}],"waits_for":[]}],"orphan_pulls":[],"floor":19,"down":1},{"n":18,"bay":"F3-E-02","deepest":2,"est_minutes":30,"count_minutes":0,"pallets":[{"loc":"F3-E-02-1","pos":1,"lines":[{"sku":"313","desc":"Chicken Wings - Ranger 1.75 lb Avg Range: 1.55-1","lot":"2025-10-16","system_qty":200.0,"kind":"stay","planned_qty":0.0},{"sku":"309","desc":"Drumsticks - Ranger 2.1 lb Avg Range: 1.8+","lot":"2025-10-16","system_qty":185.0,"kind":"stay","planned_qty":0.0},{"sku":"305-x","desc":"1.4lb Avg. Ranger Chicken Breast","lot":"2025-10-16","system_qty":50.0,"kind":"stay","planned_qty":0.0},{"sku":"FMeat9980NSB-1","desc":"Chicken Pet Blend Raw - 1lb","lot":"","system_qty":48.0,"kind":"stay","planned_qty":0.0},{"sku":"321","desc":"Chicken Hearts - 1lb avg","lot":"2025-09-01","system_qty":41.0,"kind":"stay","planned_qty":0.0}],"pallet_id":"P-51","goes_back_to":"F3-E-02-2","spoil":true},{"loc":"F3-E-02-2","pos":2,"lines":[{"sku":"209","desc":"Whole Ground Beef","lot":"2026-07-08","system_qty":792.0,"kind":"stay","planned_qty":0.0},{"sku":"407","desc":"Ground Lamb 1lb Avg","lot":"2026-07-13","system_qty":434.0,"kind":"stay","planned_qty":0.0},{"sku":"293","desc":"Ground Beef Extra Lean 1lb Avg","lot":"2026-07-08","system_qty":234.0,"kind":"take","planned_qty":91.0,"dest":"F1-AB13-2","why":{"on_f1_now":"309","target":"400","cover_after":"7.4","fifo":""}}],"pallet_id":"P-50","goes_back_to":"F3-E-02-1","spoil":false}],"putback":[{"pos":2,"loc":"F3-E-02-2","pallet_id":"P-51","items":[{"sku":"305-x","qty":50.0,"disposition":"stay","from_position":"1"},{"sku":"309","qty":185.0,"disposition":"stay","from_position":"1"},{"sku":"313","qty":200.0,"disposition":"stay","from_position":"1"},{"sku":"321","qty":41.0,"disposition":"stay","from_position":"1"},{"sku":"FMeat9980NSB-1","qty":48.0,"disposition":"stay","from_position":"1"}],"waits_for":[]},{"pos":1,"loc":"F3-E-02-1","pallet_id":"P-50","items":[{"sku":"209","qty":792.0,"disposition":"stay","from_position":"2"},{"sku":"293","qty":143.0,"disposition":"stay","from_position":"2"},{"sku":"407","qty":434.0,"disposition":"stay","from_position":"2"}],"waits_for":[]}],"orphan_pulls":[],"floor":16,"down":2}]};
+const KEY = 'freezer.exec.' + (PAYLOAD.plan_date || 'x');
+
+/* ---- STATE -----------------------------------------------------------------
+   ⭐ WRITE ON EVERY KEYSTROKE, NEVER ON "NEXT". A cold battery can cut out with
+   no warning, so anything held in memory until a save button is data we lose. */
+let S = load();
+function blank(){
+  return {v:2, started:null, bay:0, screen:'review',
+          opened:{},          // review: which lines a human actually opened
+          lines:{},           // id -> {actual, approved, state, reason, left, note, ts}
+          pallets:{},         // loc -> {done:true, ts}
+          bays:{},            // n -> {closed, putback_done}
+          events:[],          // ⭐ RAW TIMESTAMPS ONLY — never a computed duration
+          breaks:[]};
+}
+function load(){
+  try{ const r = localStorage.getItem(KEY); if(r){ const o = JSON.parse(r);
+        if(o && o.v === 2) return o; } }catch(e){}
+  return blank();
+}
+/* ⛔⛔ IF WE CANNOT PERSIST, WE MUST NOT PRETEND TO.
+   The whole promise of this app is "every keystroke survives a dead battery". When
+   localStorage is unavailable — a `data:` URL, a private window, storage disabled — the
+   first version caught the error and showed a 3-SECOND TOAST, then carried on happily
+   losing everything. This is strictly worse than refusing to start: the crew would work a
+   whole bay and discover the loss at the end, in a freezer. Found 2026-09-05 by loading
+   the built file from a data: URL, where every write throws.
+   So: probe once at boot, and if it fails BLOCK with a persistent banner. */
+let STORAGE_OK = null;
+function probeStorage(){
+  try{
+    const k = KEY + '.probe';
+    localStorage.setItem(k, '1');
+    if(localStorage.getItem(k) !== '1') throw new Error('read-back mismatch');
+    localStorage.removeItem(k);
+    return {ok:true};
+  }catch(e){ return {ok:false, why:e.message||String(e)}; }
+}
+let saveT = null, saveFailed = false;
+function save(){
+  // debounce only the WRITE, never the state change itself
+  if(saveT) clearTimeout(saveT);
+  saveT = setTimeout(()=>{
+    try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; }
+    catch(e){
+      // A WRITE THAT FAILS MID-SESSION IS AS BAD AS ONE THAT NEVER WORKED (full disk, or
+      // eviction). Same persistent banner, never a toast that scrolls away.
+      if(!saveFailed){ saveFailed = true; blockStorage(e.message||String(e), true); }
+    }
+  }, 60);
+}
+function blockStorage(why, midSession){
+  let el = document.getElementById('storagebad');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'storagebad';
+    el.style.cssText = 'position:fixed;inset:0;background:#2d0f0dfa;z-index:300;display:flex;'+
+      'flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:26px;'+
+      'text-align:center';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<div style="font-size:52px">&#9940;</div>'+
+    '<h1 style="font-size:24px;margin:0">This device cannot save your work</h1>'+
+    '<p class="dim" style="max-width:420px">'+
+      (midSession ? 'Saving stopped working part-way through. Anything since the last save may be lost.'
+                  : 'Nothing you record here would survive closing the app or the battery dying.')+
+      '</p>'+
+    '<p class="sm dim" style="max-width:420px">Reason: '+esc(why)+'</p>'+
+    '<p class="sm" style="max-width:440px">Open this file from the SharePoint link (or add it to '+
+    'the Home Screen) rather than from a preview, a private window, or an email attachment. '+
+    'Do not work a bay until this is fixed.</p>'+
+    '<button class="big" style="max-width:320px" onclick="location.reload()">Try again</button>';
+}
+function ev(kind, extra){
+  // ⭐ STORE THE EVENT, DERIVE THE SPAN LATER. A duration decided at capture time
+  // cannot be re-judged; a log can. (ruling: Jack, 2026-09-04)
+  S.events.push(Object.assign({ts:new Date().toISOString(), kind:kind}, extra||{}));
+  save();
+}
+
+/* ---- BREAK -----------------------------------------------------------------
+   ⛔ A FIXED IDLE CUTOFF WAS WITHDRAWN (Jack, 2026-09-04): "it's possible it takes
+   an hour to work on a pallet, especially if you're doing cycle counting." A
+   threshold that cannot tell a long count from a coffee break throws away real
+   work. ⭐ A break is a RECORDED FACT, and the screen goes inert so no accidental
+   tap lands in the log — which is what makes the remaining stamps trustworthy. */
+let breakStart = null, breakTimer = null;
+function startBreak(){
+  breakStart = Date.now(); ev('break_start');
+  document.getElementById('breakveil').classList.add('on');
+  const tick = ()=>{ const s = Math.floor((Date.now()-breakStart)/1000);
+    document.getElementById('breakclock').textContent =
+      String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); };
+  tick(); breakTimer = setInterval(tick, 1000);
+}
+function endBreak(){
+  ev('break_end'); S.breaks.push({start:breakStart, end:Date.now()}); save();
+  clearInterval(breakTimer); breakStart = null;
+  document.getElementById('breakveil').classList.remove('on');
+}
+
+/* ---- WAKE LOCK: they are wearing gloves and the screen must not sleep ------- */
+let wl = null;
+async function keepAwake(){
+  try{ if('wakeLock' in navigator) wl = await navigator.wakeLock.request('screen'); }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible') keepAwake();
+});
+
+/* ---- helpers --------------------------------------------------------------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const n = x => (Math.round(Number(x||0)*100)/100);
+const lid = (bay, loc, ln, i) => bay+'|'+loc+'|'+(ln.sku||ln.serial||'')+'|'+(ln.lot||'')+'|'+ln.kind+'|'+i;
+function st(id){ return S.lines[id] || null; }
+/* ⛔⛔ THREE TERMINAL STATES, AND CONFLATING TWO OF THEM WOULD CORRUPT THE LEARNER.
+   Jack, 2026-09-05: *"there was never a skip option. There was only 'as planned'. What if
+   I skip that and then put the bay back early?"* — and he is right that the flow blocked
+   on it.
+     done    — it happened (as planned, or with a recorded correction)
+     missing — the stock WAS NOT THERE. ⭐ A fact about INVENTORY: Finale is wrong.
+     skipped — we CHOSE not to do it now. ⭐ A fact about the SHIFT: ran out of time,
+               too heavy, deferred. Finale is not wrong and nothing should be adjusted.
+   ⛔ Never merge `skipped` into `missing`: one triggers a stock correction and the other
+   must not, and planned-vs-moved is what `infer_pull_increments.py` learns case size from.
+   A skipped line is not evidence the target was wrong. */
+const TERMINAL = ['done', 'missing', 'skipped'];
+function isFinished(s){ return !!(s && TERMINAL.indexOf(s.state) >= 0); }
+/* ⛔ A `stay` IS NOT WORK, SO IT CANNOT BE "NOT DONE". "Reload as it was" needs no action:
+   the pallet goes back up with that stock on it whatever the crew do. ⭐ Counting stays as
+   skipped made a test bay report "14 not done" when 12 of them were non-actions — which
+   buries the ONE number that matters (a restock pick that never reached the floor) in
+   noise. Only take / aside / count can meaningfully be skipped. */
+const ACTIONABLE = ['take', 'aside', 'count'];
+function isActionable(l){ return ACTIONABLE.indexOf(l.kind) >= 0; }
+function setLine(id, patch){
+  S.lines[id] = Object.assign({ts:new Date().toISOString()}, S.lines[id]||{}, patch);
+  S.lines[id].ts = new Date().toISOString();
+  save();
+}
+function toast(m){
+  const d = document.createElement('div');
+  d.textContent = m;
+  d.style.cssText = 'position:fixed;left:50%;bottom:110px;transform:translateX(-50%);'+
+    'background:#22272e;border:1px solid #30363d;padding:12px 18px;border-radius:12px;'+
+    'z-index:200;max-width:90vw;text-align:center';
+  document.body.appendChild(d); setTimeout(()=>d.remove(), 3200);
+}
+
+/* ---- the four dispositions, in the order the job is done -------------------
+   Jack: "these first three I'm taking off, these next four I'm setting aside,
+   the final eight stay." ⛔ A list in SKU order makes the crew re-sort it in
+   their heads on every pallet. */
+const ORDER = ['take','aside','count','stay'];
+const LABEL = {take:'Take off', aside:'Set aside', count:'Cycle count', stay:'Stays — reload as it was'};
+
+function navArrows(){
+  const pv = $('#navprev'), nx = $('#navnext');
+  const on = S.screen === 'bay';
+  [pv,nx].forEach(el => { if(el) el.hidden = !on; });
+  if(!on) return;
+  pv.disabled = S.bay <= 0;
+  nx.disabled = S.bay >= PAYLOAD.bays.length - 1;
+}
+
+function render(){
+  const a = $('#app');
+  navArrows();
+  if(S.screen === 'review') return renderReview(a);
+  if(S.screen === 'done')   return renderDone(a);
+  renderBay(a);
+}
+
+/* ======================= REVIEW (warm, before entry) ======================= */
+function renderReview(a){
+  const t = PAYLOAD.totals || {};
+  const allLines = [];
+  PAYLOAD.bays.forEach(b => b.pallets.forEach(p => p.lines.forEach((l,i) => {
+    if(l.kind === 'take' || l.kind === 'aside') allLines.push({b:b, p:p, l:l, id:lid(b.n,p.loc,l,i)});
+  })));
+  const opened = allLines.filter(x => S.opened[x.id]).length;
+  const takes = allLines.filter(x => x.l.kind === 'take');
+  const asides = allLines.filter(x => x.l.kind === 'aside');
+  const units = takes.reduce((s,x) => s + Number(x.l.planned_qty||0), 0);
+  const orph = PAYLOAD.bays.flatMap(b => b.orphan_pulls || []);
+
+  $('#hdr').textContent = 'Review the plan';
+  navArrows();
+  $('#sub').textContent = (PAYLOAD.plan_date||'') + ' · snapshot ' + (PAYLOAD.snapshot_as_of||'').slice(0,16);
+  $('#progbar').style.width = (allLines.length ? opened/allLines.length*100 : 0) + '%';
+
+  /* ⭐ THE SUMMARY COMES FIRST, NOT A LIST. The reviewer's first question is
+     "is this week the right size?" and a list of lines cannot answer it. */
+  let h = '<div class="card"><div class="pad">'+
+    '<h2>Is this week the right size?</h2><div>'+
+    chip('Bays to open', t.bays) + chip('Pallets down', t.pallets_down) +
+    chip('Units to the floor', Math.round(units)) +
+    chip('Rearranging', asides.length + ' SKU') +
+    chip('Retrieval', hrs(t.retrieval_min)) + chip('Counting', hrs(t.count_min)) +
+    chip('SKU-lots to count', (PAYLOAD.bays.reduce((s,b)=>s+b.pallets.reduce((q,p)=>q+p.lines.filter(l=>l.kind==='count').length,0),0))) +
+    '</div></div></div>';
+
+  if(orph.length){
+    h += '<div class="warnbox"><b>⚠️ '+orph.length+' planned pull(s) may have moved</b>'+
+      '<div class="sm dim" style="margin-top:6px">The plan was built from an earlier snapshot. '+
+      'These are still in the work list — take them if they are there, or mark not found.</div>'+
+      orph.map(o=>'<div class="sm" style="margin-top:8px">• <b>'+esc(o.sku)+'</b> ×'+n(o.planned_qty)+
+        ' from '+esc(o.from_location)+'</div>').join('')+'</div>';
+  }
+
+  /* ⛔ TO THE FLOOR and REARRANGING are different questions — mandatory restock
+     versus optional optimisation. Two sections, biggest first inside each. */
+  h += section('To the floor — or we run out', takes, 'take');
+  h += section('Rearranging for later — optional', asides, 'aside');
+
+  a.innerHTML = h;
+
+  /* ⛔ DO NOT CLAIM A REVIEW THAT DID NOT HAPPEN. The button states the default
+     out loud rather than implying it. (Jack, 2026-09-04) */
+  const btn = $('#mainbtn');
+  btn.textContent = opened === allLines.length && allLines.length
+    ? 'Start bay 1' : 'Approve rest as planned · start bay 1';
+  btn.onclick = () => {
+    if(!S.started){ S.started = new Date().toISOString(); ev('session_start'); }
+    S.screen = 'bay'; S.bay = 0; ev('bay_open', {bay: PAYLOAD.bays[0].bay}); save(); render();
+  };
+  $('#sub').textContent = opened + ' of ' + allLines.length + ' opened — the rest go in as planned';
+}
+function chip(k,v){ return '<span class="chip"><b>'+esc(v==null?'—':v)+'</b> '+esc(k)+'</span>'; }
+function hrs(m){ return m ? (Math.round(Number(m)/6)/10) + ' h' : '—'; }
+function section(title, rows, kind){
+  if(!rows.length) return '';
+  const sorted = rows.slice().sort((x,y)=>Number(y.l.planned_qty||0)-Number(x.l.planned_qty||0));
+  return '<div class="card"><div class="pad"><h3>'+esc(title)+' <span class="dim sm">('+rows.length+')</span></h3></div>'+
+    '<div class="body">'+sorted.map(x=>{
+      const s = st(x.id); const q = s && s.approved!=null ? s.approved : x.l.planned_qty;
+      const changed = s && s.approved!=null && Number(s.approved)!==Number(x.l.planned_qty);
+      return '<div class="ln" onclick="openWhy(\''+x.id+'\')">'+
+        '<span class="tag t-'+kind+'">'+(S.opened[x.id]?'✓':'?')+'</span>'+
+        '<div class="grow"><div class="sku">'+esc(x.l.sku)+'</div>'+
+        '<div class="sub">'+esc(x.l.desc||'')+' · '+esc(x.p.loc)+'</div></div>'+
+        '<div class="qty" style="'+(changed?'color:var(--aside)':'')+'">'+n(q)+'</div></div>';
+    }).join('')+'</div></div>';
+}
+function openWhy(id){
+  const f = find(id); if(!f) return;
+  const l = f.l, w = l.why || {};
+  S.opened[id] = true; ev('review_open', {line:id}); save();
+  const s = st(id); const cur = s && s.approved!=null ? s.approved : l.planned_qty;
+  dlg('Why ' + l.sku + '?',
+    '<table>'+
+      row('On F1 now', w.on_f1_now) + row('Target', w.target) +
+      row('Cover after this pull', w.cover_after ? w.cover_after+' wk' : '') +
+      row('Source pallet', f.p ? f.p.loc : (l.from_location||'')) +
+      row('Lot', l.lot) + row('On that pallet', l.system_qty) +
+      row('Destination', l.dest) + row('FIFO note', w.fifo) +
+      (l.kind==='aside' ? row('Goes onto pallet', l.onto_pallet + ' (bay '+l.onto_bay+')') : '')+
+    '</table>'+
+    '<div style="margin-top:14px"><b>Approve a different amount?</b>'+
+    '<div class="sm dim">Planned '+n(l.planned_qty)+'. Changing it here records your INTENT, '+
+    'which is kept apart from what physically moves.</div>'+
+    '<input type="number" inputmode="numeric" id="apq" value="'+n(cur)+'" style="margin-top:8px"></div>',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Save', c:'pri', f:()=>{
+        const v = Number($('#apq').value);
+        if(!isFinite(v) || v < 0) return toast('⛔ not a quantity');
+        setLine(id, {approved:v, approved_explicitly:true});
+        ev('approve', {line:id, approved:v}); render(); }}]);
+}
+function row(k,v){ return (v===''||v==null) ? '' : '<tr><td class="dim">'+esc(k)+'</td><td class="num">'+esc(v)+'</td></tr>'; }
+function find(id){
+  for(const b of PAYLOAD.bays){
+    for(const p of b.pallets){
+      for(let i=0;i<p.lines.length;i++) if(lid(b.n,p.loc,p.lines[i],i)===id) return {b:b,p:p,l:p.lines[i],i:i};
+    }
+    for(let i=0;i<(b.orphan_pulls||[]).length;i++){
+      const o=b.orphan_pulls[i]; if(lid(b.n,'ORPHAN',o,i)===id) return {b:b,p:null,l:o,i:i};
+    }
+  }
+  return null;
+}
+
+/* ⭐ PROGRESS ACROSS THE WHOLE JOB, NOT JUST THIS BAY (Jack, 2026-09-05): *"it might be
+   nice if there's a percent of work, so it tells me how much I've got done and how much is
+   remaining on the top title bar."* ⛔ The bar previously showed only progress WITHIN the
+   open bay, which reads as 100% eleven times over a shift and never answers "how far in am
+   I?". ⭐ Counted in ACTIONABLE lines — a `stay` is not work, so including it would inflate
+   the number with things nobody does. */
+function jobProgress(){
+  let done = 0, total = 0;
+  PAYLOAD.bays.forEach(b => b.pallets.forEach(p => p.lines.forEach((l,i) => {
+    if(!isActionable(l)) return;
+    total++;
+    if(isFinished(st(lid(b.n, p.loc, l, i)))) done++;
+  })));
+  return {done: done, total: total, pct: total ? Math.round(done / total * 100) : 0};
+}
+
+/* ⭐ FREE MOVEMENT BETWEEN BAYS (Jack, 2026-09-05): *"I'm missing the way to go back and
+   forth."* ⛔ The only way through was the footer's forward-only close. Real work is not
+   forward-only — you go back to a bay you left something on, or look ahead at what is
+   coming. ⭐ Navigation records a `bay_open` and NOTHING else: it never closes a bay, never
+   marks a line, and never fabricates work. Same rule as the pallet browse — navigation is
+   CONTEXT, actions are the measurement. */
+function goBay(d){
+  if(S.screen !== 'bay'){ S.screen = 'bay'; }
+  const nx = S.bay + d;
+  if(nx < 0 || nx >= PAYLOAD.bays.length) return;
+  S.bay = nx;
+  ev('bay_open', {bay: PAYLOAD.bays[nx].bay, via: 'nav'});
+  save(); window.scrollTo(0,0); render();
+}
+
+/* ============================ WORK (cold) ================================== */
+function renderBay(a){
+  const b = PAYLOAD.bays[S.bay];
+  if(!b){ S.screen='done'; save(); return render(); }
+  const jp = jobProgress();
+  $('#hdr').textContent = 'Bay ' + b.bay + '  ·  ' + jp.pct + '% done';
+  $('#sub').textContent = 'Step ' + b.n + ' of ' + PAYLOAD.bays.length +
+      ' · dig to position ' + b.deepest + ' · ' + b.pallets.length + ' pallets down' +
+      ' · ' + (jp.total - jp.done) + ' of ' + jp.total + ' lines left overall';
+  // ⭐ the bar tracks the WHOLE job; the footer still speaks for this bay
+  $('#progbar').style.width = jp.pct + '%';
+  navArrows();
+
+  let h = '';
+  if((b.orphan_pulls||[]).length){
+    h += '<div class="warnbox"><b>⚠️ Planned here, but may have moved</b>' +
+      (b.orphan_pulls||[]).map((o,i)=>{
+        const id = lid(b.n,'ORPHAN',o,i), s = st(id);
+        return '<div class="ln" style="border:0;padding-left:0">'+
+          '<div class="grow"><div class="sku">'+esc(o.sku)+'</div>'+
+          '<div class="sub">'+esc(o.from_location)+' → '+esc(o.dest)+'</div></div>'+
+          '<div class="qty">'+n(o.planned_qty)+'</div>'+
+          '<button onclick="orphanDone(\''+id+'\',true)" class="'+(s&&s.state==='done'?'ok':'')+'">Took it</button>'+
+          '<button onclick="orphanDone(\''+id+'\',false)" class="'+(s&&s.state==='missing'?'warn':'')+'">Not here</button>'+
+          '</div>';
+      }).join('') + '</div>';
+  }
+
+  b.pallets.forEach(p => { h += pallet(b, p); });
+  h += putbackCard(b);
+  a.innerHTML = h;
+
+  const allDone = b.pallets.every(p => (S.pallets[p.loc]||{}).done);
+  const pb = (S.bays[b.n]||{}).putback_done;
+  const btn = $('#mainbtn');
+
+  /* ⛔⛔ NEVER TRAP THE CREW IN A BAY. Jack, 2026-09-05: *"put the bay back is grayed out
+     unless I completed everything that was planned."* ⭐ The pallets are ON THE FLOOR — the
+     physically urgent thing is getting them back up, and an app that refuses to let you do
+     that until every optional line is ticked is telling the warehouse it knows better.
+     ⛔ The floor allowance is HARD; the worklist is not.
+     ⭐ So the button always advances. What it must NOT do is pretend the work happened:
+     unfinished lines are recorded as `skipped` explicitly, and the button says the number
+     out loud rather than hiding it. Same principle as the review screen's
+     "Approve rest as planned" — state the default, never imply it. */
+  const advance = () => {
+    ev('bay_close', {bay:b.bay});
+    S.bays[b.n] = Object.assign(S.bays[b.n]||{}, {closed:true});
+    S.bay++;
+    if(S.bay >= PAYLOAD.bays.length) S.screen = 'done';
+    else ev('bay_open', {bay:PAYLOAD.bays[S.bay].bay});
+    save(); window.scrollTo(0,0); render();
+  };
+  const openLines = () => {
+    const out = [];
+    b.pallets.forEach(p => p.lines.forEach((l,i) => {
+      const id = lid(b.n, p.loc, l, i);
+      if(isActionable(l) && !isFinished(st(id))) out.push({id:id, l:l, loc:p.loc});
+    }));
+    return out;
+  };
+  // ⭐ close out the non-actions silently — the pallet went back, so they happened.
+  const settleStays = () => {
+    b.pallets.forEach(p => p.lines.forEach((l,i) => {
+      if(isActionable(l)) return;
+      const id = lid(b.n, p.loc, l, i);
+      if(!isFinished(st(id))) setLine(id, {state:'done', as_planned:true, no_action:true});
+    }));
+  };
+
+  if(!pb){
+    const left = openLines().length;
+    btn.className = 'big warn';
+    btn.textContent = left ? 'Putback — ' + left + ' line(s) not done'
+                           : 'Putback — load ' + b.putback.length + ' pallet(s) back';
+    btn.onclick = () => { const c = document.getElementById('pbcard');
+                          if(c) c.scrollIntoView({behavior:'smooth'}); };
+  } else {
+    const left = openLines();
+    const nxt = S.bay + 1 < PAYLOAD.bays.length ? 'go to ' + PAYLOAD.bays[S.bay+1].bay : 'finish';
+    btn.className = left.length ? 'big warn' : 'big ok';
+    btn.textContent = left.length ? 'Close bay — ' + left.length + ' not done · ' + nxt
+                                  : 'Close bay · ' + nxt;
+    btn.onclick = () => {
+      settleStays();
+      if(!left.length) return advance();
+      dlg('Close ' + b.bay + ' with ' + left.length + ' line(s) not done?',
+        '<p class="dim">These will be recorded as <b>skipped</b> — we did not do them. '+
+        '⛔ That is different from "the stock was not there", and nothing will be '+
+        'corrected in Finale.</p>'+
+        '<div class="sm" style="margin:10px 0">'+
+          left.slice(0,10).map(x=>'• <b>'+esc(x.l.sku)+'</b> <span class="dim">'+
+            esc(x.l.kind)+' · '+esc(x.loc)+'</span>').join('<br>')+
+          (left.length>10?'<br><span class="dim">…and '+(left.length-10)+' more</span>':'')+
+        '</div>'+
+        '<label class="sm dim">Why?</label>'+
+        '<select id="skw"><option value="ran out of time">ran out of time</option>'+
+        '<option value="pallets had to go back up">pallets had to go back up</option>'+
+        '<option value="doing it later today">doing it later today</option>'+
+        '<option value="other">other</option></select>',
+        [{t:'Go back',c:'ghost'},
+         {t:'Record and close',c:'warn',f:()=>{
+            const w=$('#skw'); const why=w?w.value:'skipped';
+            left.forEach(x => skipLine(x.id, why));
+            settleStays();
+            b.pallets.forEach(p => { S.pallets[p.loc] =
+              Object.assign(S.pallets[p.loc]||{}, {done:true, open:false}); });
+            ev('bay_closed_incomplete', {bay:b.bay, skipped:left.length, why:why});
+            save(); advance(); }}]);
+    };
+  }
+}
+
+function pallet(b, p){
+  const ps = S.pallets[p.loc] || {};
+  const open = ps.open && !ps.done;
+  const groups = {};
+  p.lines.forEach((l,i) => { (groups[l.kind] = groups[l.kind] || []).push({l:l, i:i}); });
+  const counts = ORDER.filter(k=>groups[k]).map(k => groups[k].length + ' ' +
+      (k==='take'?'to floor':k==='aside'?'set aside':k==='count'?'to count':'stay')).join(' · ');
+  // ⭐ the prototype's header line: how much WORK is on this pallet, and how much STOCK.
+  const todo = p.lines.filter(x => isActionable(x)).length;
+  const units = p.lines.reduce((t,x) => t + Number(x.system_qty||0), 0);
+  const head = (todo ? todo + ' to do' : 'nothing to do') + ' · ' + p.lines.length +
+               ' SKU on it · ' + n(units) + ' units';
+
+  /* ⭐⭐ THE `P-` CARD IS THE FIRST THING THE CREW DO, SO IT IS THE FIRST THING SHOWN.
+     Jack, 2026-09-05: *"I don't see an indicator to know when I pull a pallet down if it's
+     gonna be a P-1, P-2, P-3."* ⛔ Every later instruction ("set aside onto P-12", "load
+     P-38 back") is unusable unless the pallet was labelled on the way down.
+     ⚠️ TWO DIFFERENT CARDS — do not conflate them:
+       P-38        temporary pallet identity, attached NOW, app-only, never a Finale bin.
+       F2-A-02-3   the Finale PLACARD, attached at putback, a real scannable location. */
+  let h = '<div class="card"><div class="ph" onclick="togglePallet(\''+p.loc+'\')">'+
+    '<span class="tag '+(ps.done?'t-stay':'t-take')+'">'+(ps.done?'✓':'pos '+p.pos)+'</span>'+
+    '<div class="grow"><b>'+esc(p.loc)+'</b>'+
+      (p.pallet_id ? ' <span class="tag t-count">card '+esc(p.pallet_id)+'</span>' : '')+
+      '<small><b>'+esc(head)+'</b></small>'+
+      '<small>'+esc(counts)+
+      (p.spoil?' · <b>SPOIL — nothing to take, goes straight back</b>':'')+'</small></div>'+
+    '<span class="dim">'+(open?'▾':'▸')+'</span></div>';
+  if(open){
+    if(p.pallet_id){
+      h += '<div class="pad" style="border-top:1px solid var(--line);padding-bottom:0">'+
+        '<div class="okbox" style="margin:0 0 10px"><b>① Put temporary card '+
+        esc(p.pallet_id)+' on this pallet now.</b>'+
+        '<div class="sm dim" style="margin-top:4px">It came from '+esc(p.loc)+'. '+
+        (p.goes_back_to
+          ? 'When it goes back up it gets the Finale placard <b>'+esc(p.goes_back_to)+'</b> '+
+            '— that may not be where it came from.'
+          : '⛔ <b>This one does NOT go back up</b> — everything moves off it and the deck '+
+            'is freed. Leave it empty.')+
+        '</div></div></div>';
+    }
+    h += '<div class="body">';
+    ORDER.forEach(k => {
+      if(!groups[k]) return;
+      h += '<div class="grp">'+esc(LABEL[k])+' — '+groups[k].length+'</div>';
+      groups[k].forEach(g => { h += line(b, p, g.l, g.i); });
+    });
+    h += '</div><div class="pad row">'+
+      '<button class="ok" onclick="allAsPlanned(\''+p.loc+'\')">✓ All as planned</button>'+
+      (groups.count ? '<button onclick="chainCounts(\''+p.loc+'\')">⊙ Count these '+groups.count.length+'</button>' : '')+
+      '<button onclick="skipRest(\''+p.loc+'\')">↷ Skip the rest</button>'+
+      '</div>';
+  }
+  return h + '</div>';
+}
+
+function line(b, p, l, i){
+  const id = lid(b.n, p.loc, l, i), s = st(id);
+  const done = isFinished(s);
+  const skipped = s && s.state === 'skipped';
+  const q = s && s.actual != null ? s.actual
+          : (s && s.approved != null ? s.approved : l.planned_qty);
+  /* ⛔ RESTORED FROM THE PROTOTYPE (Jack, 2026-09-05): *"I like before that you had the way
+     that things expanded, and you could see a little bit more data, like how many items were
+     expected to be found in that location and how many are expected to be moved. I feel like
+     I'm missing that data on the new one."*
+     ⭐ Two DIFFERENT numbers and the crew need both:
+        system_qty  — what Finale says is ON this pallet  (what you expect to FIND)
+        planned_qty — how many of them move               (what you expect to TAKE)
+     ⛔ Showing only the second is what made the rebuild feel thinner than the sketch, and it
+     is also the number you need to spot a wrong count before you start lifting. */
+  const onPallet = n(l.system_qty);
+  let sub = '';
+  if(l.kind === 'take')  sub = '→ ' + esc(l.dest || 'F1');
+  if(l.kind === 'aside') sub = '→ pallet ' + esc(l.onto_pallet) + (l.onto_bay!==b.n?' (bay '+l.onto_bay+')':'') +
+                               (l.after_take?' · the REMAINDER after the pick':'') + ' · do NOT reload here';
+  if(l.kind === 'count') sub = 'serial ' + esc(l.serial) + ' · system says ' + n(l.system_qty);
+  if(l.kind === 'stay')  sub = 'reload as it was';
+  const note = s && s.reason ? ' · <b style="color:var(--aside)">'+esc(s.reason||'')+'</b>' : '';
+  const mark = skipped ? '↷' : (s && s.state === 'missing') ? '∅' : '✓';
+  return '<div class="ln '+(done?'done':'')+'">'+
+    '<span class="tag t-'+l.kind+'">'+(done?mark:l.kind==='take'?'▼':l.kind==='aside'?'⇢':l.kind==='count'?'⊙':'—')+'</span>'+
+    '<div class="grow" onclick="openLine(\''+id+'\')">'+
+      '<div class="sku">'+esc(l.sku)+(l.lot?' <span class="dim sm">'+esc(l.lot)+'</span>':'')+
+        ' <span class="dim sm">· '+onPallet+' on this pallet</span></div>'+
+      '<div class="sub">'+esc(l.desc||'')+'</div>'+
+      '<div class="sub">'+sub+note+'</div></div>'+
+    (l.kind==='stay'||l.kind==='count' ? '' : '<div class="qty">'+n(q)+'</div>')+
+    (l.kind==='count' ? '<button onclick="doCount(\''+id+'\')">'+(done?mark:'Count')+'</button>'
+                      : '<button onclick="openLine(\''+id+'\')">'+(done?mark:'…')+'</button>')+
+    '</div>';
+}
+
+function togglePallet(loc){
+  const ps = S.pallets[loc] = S.pallets[loc] || {};
+  // ⭐ OPENING A PALLET IS THE START OF ITS SPAN — no "start" button. But a pallet
+  // opened and never acted on is a BROWSE worth zero, and the span is bounded by
+  // the first and last ACTION, never by when it was opened. (Jack, 2026-09-04)
+  ps.open = !ps.open;
+  Object.keys(S.pallets).forEach(k => { if(k !== loc) S.pallets[k].open = false; });
+  if(ps.open) ev('pallet_open', {pallet:loc}); else ev('pallet_close', {pallet:loc});
+  save(); render();
+}
+function allAsPlanned(loc){
+  const f = PAYLOAD.bays[S.bay].pallets.find(p => p.loc === loc);
+  f.lines.forEach((l,i) => {
+    const id = lid(PAYLOAD.bays[S.bay].n, loc, l, i);
+    if(l.kind === 'count') return;        // ⛔ a count is never "as planned" — it is a measurement
+    const s = st(id);
+    if(isFinished(s)) return;
+    setLine(id, {state:'done', actual: (s && s.approved!=null) ? s.approved : l.planned_qty,
+                 as_planned:true});
+  });
+  ev('all_as_planned', {pallet:loc});
+  const left = f.lines.filter((l,i) => l.kind==='count' &&
+      !(st(lid(PAYLOAD.bays[S.bay].n,loc,l,i))||{}).state).length;
+  if(left){ toast(left + ' cycle count(s) still to do on this pallet'); }
+  else { S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false}); }
+  save(); render();
+}
+function maybeDone(loc){
+  const f = PAYLOAD.bays[S.bay].pallets.find(p => p.loc === loc);
+  const all = f.lines.every((l,i) => { const s = st(lid(PAYLOAD.bays[S.bay].n,loc,l,i));
+    return isFinished(s); });
+  if(all){ S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false}); }
+  save();
+}
+
+/* ---- the exception dialog --------------------------------------------------
+   ⛔⛔ "MOVED A DIFFERENT AMOUNT" HAS TWO CAUSES AND THEY ARE NOT THE SAME
+   FINALE TRANSACTION (Jack, 2026-09-04). ⭐ Do not make the crew do the
+   arithmetic: ask two numbers and derive it.
+        adjustment = (moved + left_on_pallet) − system_qty
+   Sign gives shrink vs found, and "how many are left?" is itself a count. */
+function openLine(id){
+  const f = find(id); if(!f) return;
+  const l = f.l, s = st(id) || {};
+  const planned = s.approved != null ? s.approved : l.planned_qty;
+  if(l.kind === 'stay'){
+    return dlg('Stays — ' + l.sku,
+      '<p class="dim">Nothing to do: reload this exactly as it was.</p>'+
+      '<p class="sm dim">Finale says <b>'+n(l.system_qty)+'</b> on this pallet. If that is wrong, '+
+      'correct it — a pallet that is already open is the cheapest time to fix a count.</p>'+
+      '<label class="sm dim">Actually on the pallet</label>'+
+      '<input type="number" inputmode="numeric" id="q1" value="'+n(l.system_qty)+'">',
+      [{t:'Cancel',c:'ghost'},
+       {t:'Correct the count',c:'warn',f:()=>{
+          const v=Number($('#q1').value);
+          if(!isFinite(v)||v<0) return toast('⛔ not a quantity');
+          setLine(id,{state:'done', left:v, adjustment:v-Number(l.system_qty), corrected:true});
+          ev('qty_corrected',{line:id, was:l.system_qty, now:v}); maybeDone(f.p.loc); render(); }},
+       {t:'It is right',c:'ok',f:()=>{ setLine(id,{state:'done', as_planned:true});
+          ev('line_done',{line:id}); maybeDone(f.p.loc); render(); }}]);
+  }
+  const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
+  dlg(l.sku + ' — planned ' + n(planned),
+    '<div class="row"><div><label class="sm dim">How many '+esc(verb)+'?</label>'+
+      '<input type="number" inputmode="numeric" id="q1" value="'+n(planned)+'"></div>'+
+      '<div><label class="sm dim">How many LEFT on '+esc(f.p?f.p.loc:'the pallet')+'?</label>'+
+      '<input type="number" inputmode="numeric" id="q2" value="'+n(Math.max(0,Number(l.system_qty)-Number(planned)))+'"></div></div>'+
+    '<div class="sm dim" style="margin-top:8px">Finale says <b>'+n(l.system_qty)+'</b> was on this pallet. '+
+    'If moved + left does not equal that, we record the difference as a correction — '+
+    'you do not have to work it out.</div>'+
+    '<div id="calc" style="margin-top:10px"></div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Not here at all',c:'',f:()=>{ setLine(id,{state:'missing', actual:0,
+        reason:'not found'}); ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }},
+     {t:'Skip',c:'',f:()=>{ skipLine(id); }},
+     {t:'Save',c:'pri',f:()=>{
+        const mv=Number($('#q1').value), lf=Number($('#q2').value);
+        if(!isFinite(mv)||mv<0||!isFinite(lf)||lf<0) return toast('⛔ not a quantity');
+        const adj = (mv+lf) - Number(l.system_qty);
+        const patch = {state:'done', actual:mv, left:lf, adjustment:adj};
+        if(Math.abs(adj) > 0.001){
+          const sel = $('#rsn'); patch.reason = sel ? sel.value : '';
+          patch.direction = adj < 0 ? 'shrink' : 'found';
+        }
+        setLine(id, patch);
+        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj});
+        maybeDone(f.p.loc); render(); }}],
+    ()=>{ // live recalc + reason picker, only when it is actually needed
+      const upd = ()=>{
+        const mv=Number($('#q1').value)||0, lf=Number($('#q2').value)||0;
+        const adj=(mv+lf)-Number(l.system_qty); const c=$('#calc');
+        if(Math.abs(adj)<0.001){ c.innerHTML='<div class="okbox sm">Adds up — nothing to correct.</div>'; return; }
+        const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
+        c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
+          '<div class="sm dim" style="margin:6px 0">We will record a '+(adj<0?'decrease':'increase')+
+          ' at '+esc(f.p?f.p.loc:'source')+' as well as the move.</div>'+
+          '<select id="rsn">'+list.map(r=>'<option value="'+esc(r)+'">'+
+            esc(r||'(no reason — found stock has no agreed code yet)')+'</option>').join('')+'</select></div>';
+      };
+      $('#q1').addEventListener('input',upd); $('#q2').addEventListener('input',upd); upd();
+    });
+}
+/* ⛔ SKIPPING IS A RECORDED DECISION, NOT AN ABSENCE. It must never look like the line
+   was simply never reached, because "we ran out of time" and "nobody opened the app" are
+   different facts and only one of them is the crew telling us something. */
+function skipLine(id, bulk){
+  const f = find(id); if(!f) return;
+  const done = () => { if(!bulk){ maybeDone(f.p ? f.p.loc : ''); render(); } };
+  if(bulk){ setLine(id, {state:'skipped', actual:0, reason:bulk});
+            ev('line_skipped',{line:id, why:bulk}); return; }
+  dlg('Skip ' + f.l.sku + '?',
+    '<p class="dim">This records that you DID NOT do it — not that the stock is missing. '+
+    'Nothing will be transferred and Finale will not be corrected.</p>'+
+    '<label class="sm dim">Why? (optional, but it is the most useful thing you can tell us)</label>'+
+    '<select id="skw"><option value="ran out of time">ran out of time</option>'+
+    '<option value="too heavy / awkward">too heavy / awkward</option>'+
+    '<option value="no room on the destination">no room on the destination</option>'+
+    '<option value="doing it later today">doing it later today</option>'+
+    '<option value="other">other</option></select>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Skip it',c:'warn',f:()=>{ const w=$('#skw'); const why=w?w.value:'skipped';
+        setLine(id,{state:'skipped', actual:0, reason:why});
+        ev('line_skipped',{line:id, why:why}); done(); }}]);
+}
+/* ⭐ SKIP THE REST OF A PALLET — one tap, the mirror of "All as planned". Without it the
+   only way out of a half-worked pallet was to touch every remaining line. */
+function skipRest(loc){
+  const b = PAYLOAD.bays[S.bay];
+  const p = b.pallets.find(x => x.loc === loc);
+  const left = [];
+  p.lines.forEach((l,i) => { const id = lid(b.n, loc, l, i);
+    if(isFinished(st(id))) return;
+    if(isActionable(l)) left.push({id:id, l:l});
+    else setLine(id, {state:'done', as_planned:true, no_action:true});  // a stay is not work
+  });
+  if(!left.length){
+    S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false});
+    save(); render();
+    return toast('Nothing left to do on this pallet.');
+  }
+  dlg('Skip the rest of ' + loc + '?',
+    '<p class="dim">'+left.length+' line(s) will be recorded as NOT DONE. The pallet still '+
+    'goes back up — this only says the work on it did not happen.</p>'+
+    '<div class="sm dim" style="margin:8px 0">'+
+      left.slice(0,8).map(x=>'• '+esc(x.l.sku)+' <span class="dim">('+esc(x.l.kind)+')</span>').join('<br>')+
+      (left.length>8?'<br>…and '+(left.length-8)+' more':'')+'</div>'+
+    '<label class="sm dim">Why?</label>'+
+    '<select id="skw"><option value="ran out of time">ran out of time</option>'+
+    '<option value="too heavy / awkward">too heavy / awkward</option>'+
+    '<option value="doing it later today">doing it later today</option>'+
+    '<option value="other">other</option></select>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Skip '+left.length,c:'warn',f:()=>{ const w=$('#skw'); const why=w?w.value:'skipped';
+        left.forEach(x => skipLine(x.id, why));
+        S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false});
+        ev('pallet_skipped',{pallet:loc, lines:left.length, why:why});
+        save(); render(); }}]);
+}
+function orphanDone(id, took){
+  const f = find(id);
+  setLine(id, took ? {state:'done', actual:f.l.planned_qty} : {state:'missing', actual:0, reason:'not found'});
+  ev(took?'line_done':'line_missing', {line:id, orphan:true}); render();
+}
+
+/* ---- cycle counts CHAIN: record one, the pad opens on the next ------------- */
+function chainCounts(loc){
+  const b = PAYLOAD.bays[S.bay];
+  const p = b.pallets.find(x => x.loc === loc);
+  const q = [];
+  p.lines.forEach((l,i)=>{ if(l.kind==='count'){ const id=lid(b.n,loc,l,i);
+    if(!(st(id)||{}).state) q.push(id); } });
+  if(!q.length) return toast('All counted on this pallet.');
+  doCount(q[0], q.slice(1));
+}
+function doCount(id, rest){
+  const f = find(id); if(!f) return;
+  const l = f.l;
+  dlg('Count ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+    '<p class="sm dim">'+esc(l.desc||'')+'<br>Serial <b>'+esc(l.serial)+'</b> · on '+esc(f.p.loc)+
+    '<br>Finale says <b>'+n(l.system_qty)+'</b>.</p>'+
+    '<label class="sm dim">Counted</label>'+
+    '<input type="number" inputmode="numeric" id="cq" value="">'+
+    (rest && rest.length ? '<p class="sm dim" style="margin-top:8px">'+rest.length+' more on this pallet after this one.</p>' : ''),
+    [{t:'Cancel',c:'ghost'},
+     {t:'Matches',c:'ok',f:()=>{ setLine(id,{state:'done', counted:l.system_qty, variance:0});
+        ev('count_recorded',{line:id, counted:l.system_qty, variance:0});
+        maybeDone(f.p.loc); render(); if(rest&&rest.length) setTimeout(()=>doCount(rest[0],rest.slice(1)),260); }},
+     {t:'Save count',c:'pri',f:()=>{ const v=Number($('#cq').value);
+        if(!isFinite(v)||v<0) return toast('⛔ enter the counted quantity');
+        setLine(id,{state:'done', counted:v, variance:v-Number(l.system_qty)});
+        ev('count_recorded',{line:id, counted:v, variance:v-Number(l.system_qty)});
+        maybeDone(f.p.loc); render(); if(rest&&rest.length) setTimeout(()=>doCount(rest[0],rest.slice(1)),260); }}],
+    ()=>{ setTimeout(()=>{ const e=$('#cq'); if(e) e.focus(); }, 80); });
+}
+
+/* ---- putback ---------------------------------------------------------------
+   ⛔ POSITION 1 IS THE FRONT. A pushback lane fills from the front, so the pallet
+   that ends up DEEPEST goes in FIRST. The order below is already correct — it is
+   derived by lane_packing.py, never by this file. */
+function putbackCard(b){
+  const st_ = S.bays[b.n] || {};
+  let h = '<div class="card" id="pbcard"><div class="pad"><h3>Putback — load in this order</h3>'+
+    '<div class="sm dim">Deepest first. The LAST pallet you push in is the one at the front '+
+    '(position 1). Put the placard on each pallet as it goes in.</div></div><div class="body">';
+  b.putback.forEach((pb, i) => {
+    const waiting = (pb.waits_for||[]).length;
+    h += '<div class="ln"><span class="tag '+(pb.pos===1?'t-take':'t-stay')+'">'+(i+1)+'</span>'+
+      '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
+        '</b> → placard <b>'+esc(pb.loc)+'</b>'+
+        (pb.pos===1?' <span class="dim sm">FRONT</span>':'')+'</div>'+
+      '<div class="sub">'+pb.items.length+' SKU · '+
+        pb.items.slice(0,4).map(x=>esc(x.sku)).join(', ')+(pb.items.length>4?'…':'')+'</div>'+
+      (waiting?'<div class="sub" style="color:var(--aside)">stays on the floor — still waiting for stock from a later bay</div>':'')+
+      '</div></div>';
+  });
+  h += '</div><div class="pad"><button class="big '+(st_.putback_done?'ok':'warn')+'" onclick="putbackDone('+b.n+')">'+
+    (st_.putback_done?'✓ Putback recorded':'✓ Loaded back in this order')+'</button></div></div>';
+  return h;
+}
+function putbackDone(nn){
+  // ⚠️ PUTBACK IS TIMED PER BAY, NOT PER PALLET (Jack): "they're just gonna put them
+  // all back and then go tap tap tap tap close the bay."
+  S.bays[nn] = Object.assign(S.bays[nn]||{}, {putback_done:true});
+  ev('putback_done', {bay: PAYLOAD.bays.find(b=>b.n===nn).bay}); save(); render();
+}
+
+/* ============================== FINISH ===================================== */
+function renderDone(a){
+  $('#hdr').textContent = 'Finished';
+  $('#sub').textContent = 'Export the moves for Finale';
+  $('#progbar').style.width = '100%';
+  const m = moves();
+  a.innerHTML = '<div class="okbox"><b>All '+PAYLOAD.bays.length+' bays closed.</b></div>'+
+    '<div class="card"><div class="pad"><h3>What will go to Finale</h3>'+
+    '<div>'+chip('Transfers', m.transfers.length)+chip('Corrections', m.adjustments.length)+
+    chip('Counts', m.counts.length)+chip('Not found', m.missing.length)+
+    chip('Skipped', m.skipped.length)+'</div>'+
+    (m.skipped.length ? '<div class="warnbox" style="margin-top:10px"><b>⚠️ '+
+      m.skipped.length+' line(s) were not done</b><div class="sm dim" style="margin-top:4px">'+
+      'Recorded as skipped, not as missing stock — nothing will be corrected in Finale. '+
+      (m.skipped.filter(x=>x.kind==='take').length
+        ? '<b>'+m.skipped.filter(x=>x.kind==='take').length+' of them were restock picks</b>, '+
+          'so those SKUs did not reach the floor.' : '')+
+      '</div></div>' : '')+
+    '<div class="sm dim" style="margin-top:8px">⚠️ Nothing is in Finale until the CSV is '+
+    'imported. This stays marked as pending until the next movement export confirms it.</div>'+
+    '</div></div>'+
+    '<div class="card"><div class="pad row">'+
+    '<button class="pri" onclick="dl(\'transfers\')">Transfers CSV</button>'+
+    '<button class="warn" onclick="dl(\'adjustments\')">Corrections CSV</button>'+
+    '<button onclick="dl(\'counts\')">Counts CSV</button>'+
+    '<button onclick="dl(\'skipped\')">Not done CSV</button>'+
+    '<button onclick="dl(\'events\')">Event log</button></div></div>'+
+    '<div class="card"><div class="pad">'+
+    '<div class="sm dim">Started the wrong plan, or want a clean run?</div>'+
+    '<button class="ghost" style="margin-top:8px" onclick="startOver()">Start this session over</button>'+
+    '</div></div>';
+  const btn = $('#mainbtn');
+  btn.className='big'; btn.textContent='Back to bay 1';
+  btn.onclick=()=>{ S.screen='bay'; S.bay=0; save(); render(); };
+}
+function openFinish(){ S.screen='done'; save(); render(); }
+/* ⛔ A DESTRUCTIVE RESET NEEDS A HARD CONFIRM THAT NAMES WHAT IT DESTROYS.
+   Operationally this is the way out of starting the wrong plan; ⚠️ it also wipes real
+   recorded work, so it counts the lines out loud and never sits next to a common action.
+   ⚠️ `beforeunload` re-saves in-memory state on the way out, so clearing storage alone is
+   undone by the reload — the in-memory session has to be blanked FIRST. */
+function startOver(){
+  const n = Object.keys(S.lines).length, e = S.events.length;
+  dlg('Start over?',
+    '<p class="dim">This permanently deletes <b>'+n+'</b> recorded line(s) and <b>'+e+
+    '</b> logged event(s) for plan '+esc(PAYLOAD.plan_date)+'.</p>'+
+    '<p class="sm dim">⛔ Export anything you still need first — this cannot be undone.</p>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Delete and start over',c:'warn',f:()=>{
+        S = blank();
+        try{ localStorage.removeItem(KEY); }catch(err){}
+        save(); window.scrollTo(0,0); render();
+        toast('Session reset.'); }}]);
+}
+
+/* ---- the Finale writer -----------------------------------------------------
+   ⛔ THE EXACT IMPORT SPEC IS STILL WITH JACK (blocking question 4), so these are
+   the FIELDS the transactions need, in a flat CSV, not a validated Finale
+   template. ⭐ Column names are kept literal and obvious so remapping is a rename,
+   never a re-derivation. */
+function moves(){
+  const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[]};
+  PAYLOAD.bays.forEach(b => {
+    const push = (p, l, i, loc) => {
+      const id = lid(b.n, loc, l, i), s = S.lines[id];
+      if(!s) return;
+      if(s.state === 'missing'){ out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot,
+        planned:l.planned_qty, note:s.reason||'not found'}); return; }
+      /* ⛔ SKIPPED IS NOT A TRANSFER AND NOT AN ADJUSTMENT — it is the absence of both,
+         recorded on purpose. ⭐ It still leaves the planner a fact: this line was planned,
+         reached, and deliberately not done. Objective 1 says a skipped TAKE is the one
+         that can cost a stockout, so it carries the planned quantity and the reason. */
+      if(s.state === 'skipped'){ out.skipped.push({bay:b.bay, location:loc, sku:l.sku,
+        lot:l.lot||'', kind:l.kind, planned_qty:l.planned_qty,
+        approved_qty:(s.approved!=null?s.approved:l.planned_qty),
+        reason:s.reason||'', ts:s.ts}); return; }
+      if(l.kind === 'count' && s.counted != null){
+        out.counts.push({serial:l.serial, location:loc, sku:l.sku, lot:l.lot,
+          system_qty:l.system_qty, counted:s.counted, variance:s.variance, ts:s.ts});
+        return;
+      }
+      const act = s.actual != null ? s.actual : null;
+      if(act != null && act > 0){
+        out.transfers.push({from_location:loc,
+          to_location: l.kind==='take' ? (l.dest||'') : ('PALLET '+(l.onto_pallet||'')),
+          sku:l.sku, lot:l.lot||'', quantity:act,
+          planned_qty:l.planned_qty, approved_qty:(s.approved!=null?s.approved:l.planned_qty),
+          kind:l.kind, bay:b.bay, ts:s.ts});
+      }
+      if(s.adjustment && Math.abs(s.adjustment) > 0.001){
+        out.adjustments.push({location:loc, sku:l.sku, lot:l.lot||'',
+          change:s.adjustment, direction:s.adjustment<0?'decrease':'increase',
+          reason:s.reason||'', system_qty:l.system_qty,
+          moved:(s.actual!=null?s.actual:0), left_on_pallet:(s.left!=null?s.left:''), ts:s.ts});
+      }
+    };
+    b.pallets.forEach(p => p.lines.forEach((l,i) => push(p,l,i,p.loc)));
+    (b.orphan_pulls||[]).forEach((o,i) => push(null,o,i,'ORPHAN'));
+  });
+  return out;
+}
+function csv(rows){
+  if(!rows.length) return '';
+  const k = Object.keys(rows[0]);
+  const q = v => { v = v==null?'':String(v);
+    return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
+  return k.join(',')+'\n'+rows.map(r=>k.map(x=>q(r[x])).join(',')).join('\n')+'\n';
+}
+function dl(which){
+  const m = moves();
+  let rows = which==='events' ? S.events : m[which];
+  if(which==='events'){
+    rows = S.events.map(e=>({ts:e.ts, kind:e.kind, bay:e.bay||'', pallet:e.pallet||'',
+      line:e.line||'', actual:e.actual==null?'':e.actual, counted:e.counted==null?'':e.counted}));
+  }
+  if(!rows || !rows.length) return toast('Nothing to export in ' + which + '.');
+  const blob = new Blob([csv(rows)], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'freezer_' + which + '_' + (PAYLOAD.plan_date||'') + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  ev('export', {what:which, rows:rows.length});
+}
+
+/* ---- dialog ---------------------------------------------------------------- */
+function dlg(title, bodyHtml, buttons, after){
+  const d = $('#dlg');
+  $('#dlgh').textContent = title; $('#dlgb').innerHTML = bodyHtml;
+  const f = $('#dlgf'); f.innerHTML = '';
+  buttons.forEach(b => {
+    const el = document.createElement('button');
+    el.textContent = b.t; el.className = b.c || '';
+    el.onclick = (e) => { if(b.f){ e.preventDefault(); b.f(); d.close(); } };
+    f.appendChild(el);
+  });
+  d.showModal(); if(after) after();
+}
+
+/* ---- boot ------------------------------------------------------------------ */
+window.addEventListener('load', () => {
+  if(!PAYLOAD.bays || !PAYLOAD.bays.length){
+    document.getElementById('app').innerHTML =
+      '<div class="badbox"><b>⛔ No work loaded.</b> This file was built without a payload. '+
+      'Rebuild with <code>build_execution_payload.py</code>.</div>';
+    return;
+  }
+  const probe = probeStorage();
+  STORAGE_OK = probe.ok;
+  if(!STORAGE_OK){ blockStorage(probe.why, false); return; }   // refuse to start
+  keepAwake(); render();
+});
+window.addEventListener('beforeunload', () => { try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} });
+</script>
+</body>
+</html>
