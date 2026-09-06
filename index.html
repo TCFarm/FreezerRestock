@@ -153,13 +153,190 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
    arrives in PAYLOAD. Re-deriving any of it here is the defect that put 72
    phantom restacks on a crew sheet on 2026-09-05.
    ============================================================================ */
-const PAYLOAD = /*__PAYLOAD__*/{};
-const KEY = 'freezer.exec.' + (PAYLOAD.plan_date || 'x');
+/* ⛔⛔ THE PAGE IS PUBLIC. NO PLAN DATA MAY BE BAKED INTO IT.
+   Ruling: Jack, 2026-09-03 (via `review_list.py`) and restated 2026-09-05: *"be sure you
+   don't put anything private on the Github - that has to all be fetched like the P&M
+   application… behind the login."*
+   ⛔ The first build inlined the whole plan and was live at a public URL for a few minutes.
+   ⭐ What ships now is CODE plus a CONFIG BLOCK — a client id, a tenant id and a site path.
+   ⚠️ Those are not secrets: they IDENTIFY the app, they authorize nothing, and this is a PKCE
+   public client with no client secret (the same reasoning `receiving_app.json` records).
+   ⭐ THE PLAN ARRIVES AFTER SIGN-IN AND IS CACHED ON THE DEVICE — which is what keeps the
+   offline promise. Inlining was never required for offline; it was the lazy route to it. */
+const CFG = {"entra":{"client_id":"PASTE_THE_APPLICATION_CLIENT_ID_HERE","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
+let PAYLOAD = null;                       // ⬅ filled from cache, or fetched after sign-in
+let KEY = 'freezer.exec.pending';         // ⬅ re-keyed once we know the plan date
+const CACHE_KEY = 'freezer.plan.cache';
+const TOK_KEY   = 'freezer.tok';
+
+/* ============================================================================
+   SIGN-IN AND THE PLAN FETCH
+   ⭐ Entra authorization-code + PKCE, as the SIGNED-IN USER. ⛔ Never an app-only secret:
+   this page is public, so anything embedded in it is published. The unattended tooling on
+   the Mac uses the app-only board credential instead — two identities on the same data,
+   exactly as `Procurement & Merchandising/lib/review_list.py` does it.
+   ⭐ THE OFFLINE CONTRACT: sign in WARM, the plan is cached on the device, then the freezer
+   never needs signal. A cached plan renders with no network at all.
+   ============================================================================ */
+const AUTHZ = () => `https://login.microsoftonline.com/${CFG.entra.tenant_id}/oauth2/v2.0`;
+const GRAPH = 'https://graph.microsoft.com/v1.0';
+const REDIRECT = () => location.origin + location.pathname;   // ⛔ must EXACTLY match Entra
+
+function b64u(buf){
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function sha256(str){
+  return b64u(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)));
+}
+function tokStore(v){
+  try{ if(v === undefined) return JSON.parse(localStorage.getItem(TOK_KEY) || 'null');
+       if(v === null) localStorage.removeItem(TOK_KEY);
+       else localStorage.setItem(TOK_KEY, JSON.stringify(v)); }catch(e){ return null; }
+}
+function haveToken(){
+  const t = tokStore();
+  return !!(t && t.access_token && Date.now() < (t.exp || 0) - 60000);
+}
+
+async function signIn(){
+  const verifier = b64u(crypto.getRandomValues(new Uint8Array(48)));
+  sessionStorage.setItem('fz.v', verifier);
+  const q = new URLSearchParams({
+    client_id: CFG.entra.client_id, response_type: 'code', redirect_uri: REDIRECT(),
+    response_mode: 'query',
+    scope: 'https://graph.microsoft.com/Sites.ReadWrite.All offline_access openid profile',
+    code_challenge: await sha256(verifier), code_challenge_method: 'S256'});
+  location.href = `${AUTHZ()}/authorize?${q}`;
+}
+
+async function completeSignIn(){
+  const qs = new URLSearchParams(location.search);
+  const code = qs.get('code');
+  if(!code){
+    // ⭐ Surface the Entra error rather than looping silently on a blank screen.
+    if(qs.get('error')) throw new Error(qs.get('error_description') || qs.get('error'));
+    return false;
+  }
+  const verifier = sessionStorage.getItem('fz.v') || '';
+  const body = new URLSearchParams({
+    client_id: CFG.entra.client_id, grant_type: 'authorization_code', code: code,
+    redirect_uri: REDIRECT(), code_verifier: verifier});
+  const r = await fetch(`${AUTHZ()}/token`, {
+    method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
+  const j = await r.json();
+  history.replaceState({}, '', location.pathname);        // strip ?code= from the URL
+  if(!r.ok) throw new Error(j.error_description || j.error || ('token exchange HTTP ' + r.status));
+  j.exp = Date.now() + (Number(j.expires_in || 3600) * 1000);
+  tokStore(j);
+  return true;
+}
+
+async function graph(path){
+  const t = tokStore();
+  if(!t) throw new Error('not signed in');
+  const r = await fetch(GRAPH + path, {headers: {Authorization: 'Bearer ' + t.access_token}});
+  if(r.status === 401){ tokStore(null); throw new Error('sign-in expired — sign in again'); }
+  if(!r.ok) throw new Error(`Graph ${path} -> HTTP ${r.status}`);
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : r.text();
+}
+
+/* ⭐ THE PLAN LIVES IN THE SITE'S DOCUMENTS LIBRARY, WHICH REQUIRES A SIGN-IN TO READ.
+   ⛔ Never an anonymous sharing link — that would put the plan back in public reach by a
+   different route than the one we just closed. */
+async function fetchPlan(){
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const txt = await graph(
+    `/sites/${site.id}/drive/root:/${sp.doc_folder}/plan_latest.json:/content`);
+  const p = (typeof txt === 'string') ? JSON.parse(txt) : txt;
+  if(!p || !p.bays || !p.bays.length) throw new Error('the plan file has no bays');
+  try{ localStorage.setItem(CACHE_KEY, JSON.stringify({fetched: new Date().toISOString(), plan: p})); }
+  catch(e){ toast('⚠️ plan loaded but too large to cache — it will need signal again'); }
+  return p;
+}
+function cachedPlan(){
+  try{ const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+       return c && c.plan && c.plan.bays ? c : null; }catch(e){ return null; }
+}
+
+/* ⛔ KEY depends on the plan date, so it CANNOT be fixed at load time any more. Setting the
+   plan re-keys the session store and re-reads whatever was already recorded for that plan. */
+function setPlan(p){
+  PAYLOAD = p;
+  KEY = 'freezer.exec.' + (p.plan_date || 'x');
+  S = load();
+}
+
+function renderGate(msg, busy){
+  const c = cachedPlan();
+  $('#hdr').textContent = 'Freezer restock';
+  $('#sub').textContent = CFG.entra.client_id.startsWith('PASTE_')
+      ? 'not configured yet' : 'sign in to load the plan';
+  $('#progbar').style.width = '0%';
+  navArrows();
+  $('#app').innerHTML =
+    (CFG.entra.client_id.startsWith('PASTE_')
+      ? '<div class="badbox"><b>⛔ Not configured.</b> This build has no Entra client id yet, '+
+        'so it cannot sign in. Rebuild once <code>config/freezer_app.json</code> has one.</div>'
+      : '') +
+    '<div class="card"><div class="pad">'+
+      '<h2>Sign in to load the plan</h2>'+
+      '<p class="dim">Nothing about the plan is stored in this page — it is fetched from '+
+      'SharePoint after you sign in with your TC Farm account, then kept on this device so '+
+      'the freezer does not need signal.</p>'+
+      (msg ? '<div class="warnbox">'+esc(msg)+'</div>' : '')+
+      (c ? '<div class="okbox">A plan for <b>'+esc(c.plan.plan_date)+'</b> is already on this '+
+           'device (loaded '+esc(String(c.fetched).slice(0,16))+'). You can work offline.</div>' : '')+
+    '</div></div>';
+  const btn = $('#mainbtn');
+  if(c){
+    btn.className = 'big ok'; btn.textContent = 'Work offline — open ' + c.plan.plan_date;
+    btn.onclick = () => { setPlan(c.plan); S.screen = S.screen || 'review'; save(); render(); };
+  } else {
+    btn.className = 'big pri';
+    btn.textContent = busy ? 'Loading…' : 'Sign in with Microsoft';
+    btn.onclick = busy ? (()=>{}) : (() => signIn());
+  }
+}
+
+async function boot(){
+  try{
+    if(new URLSearchParams(location.search).has('code') ||
+       new URLSearchParams(location.search).has('error')){
+      await completeSignIn();
+    }
+  }catch(e){ return renderGate('Sign-in failed: ' + e.message); }
+
+  const c = cachedPlan();
+  if(c){ setPlan(c.plan); render();
+         if(haveToken()) refreshPlanQuietly();          // ⭐ never blocks the crew
+         return; }
+  if(!haveToken()) return renderGate();
+  renderGate(null, true);
+  try{ const p = await fetchPlan(); setPlan(p); render(); }
+  catch(e){ renderGate('Could not load the plan: ' + e.message); }
+}
+
+/* ⚠️ A NEWER PLAN MUST NEVER OVERWRITE WORK IN PROGRESS. If anything has been recorded
+   against the cached plan, the refresh is offered, never applied. */
+async function refreshPlanQuietly(){
+  try{
+    const p = await fetchPlan();
+    if(p.plan_date !== PAYLOAD.plan_date){
+      const dirty = Object.keys(S.lines).length;
+      toast(dirty ? `⚠️ a newer plan (${p.plan_date}) is available — finish and sync first`
+                  : `newer plan ${p.plan_date} loaded`);
+      if(!dirty){ setPlan(p); render(); }
+    }
+  }catch(e){ /* offline or expired — the cached plan is what matters */ }
+}
 
 /* ---- STATE -----------------------------------------------------------------
    ⭐ WRITE ON EVERY KEYSTROKE, NEVER ON "NEXT". A cold battery can cut out with
    no warning, so anything held in memory until a save button is data we lose. */
-let S = load();
+let S = blank();   // ⬅ re-read by setPlan() once the plan date is known
 function blank(){
   return {v:2, started:null, bay:0, screen:'review',
           opened:{},          // review: which lines a human actually opened
@@ -322,6 +499,7 @@ function navArrows(){
 }
 
 function render(){
+  if(!PAYLOAD || !PAYLOAD.bays){ return renderGate(); }
   const a = $('#app');
   navArrows();
   if(S.screen === 'review') return renderReview(a);
@@ -929,6 +1107,18 @@ function renderDone(a){
     '<button onclick="dl(\'skipped\')">Not done CSV</button>'+
     '<button onclick="dl(\'events\')">Event log</button></div></div>'+
     '<div class="card"><div class="pad">'+
+      '<h3>Send to SharePoint</h3>'+
+      (S.synced
+        ? '<div class="okbox">✅ Synced '+esc(String(S.synced.at).slice(0,16))+' — '+
+          esc(S.synced.transfers)+' transfer(s), '+esc(S.synced.counts)+' count(s).'+
+          '<div class="sm dim" style="margin-top:4px">Re-syncing updates the same session row.</div></div>'
+        : '<div class="warnbox">Not sent yet. Everything is on this iPad until you sync.</div>')+
+      '<button class="big pri" style="margin-top:8px" onclick="syncNow()">'+
+        (S.synced ? 'Sync again' : 'Sync now')+'</button>'+
+      '<div class="sm dim" style="margin-top:8px">⛔ Nothing is in Finale until the export is '+
+      'imported. Syncing records what happened; it does not move stock in Finale.</div>'+
+    '</div></div>'+
+    '<div class="card"><div class="pad">'+
     '<div class="sm dim">Started the wrong plan, or want a clean run?</div>'+
     '<button class="ghost" style="margin-top:8px" onclick="startOver()">Start this session over</button>'+
     '</div></div>';
@@ -1025,6 +1215,104 @@ function dl(which){
   ev('export', {what:which, rows:rows.length});
 }
 
+/* ============================================================================
+   SYNC — results back to SharePoint, as the signed-in user
+   ⛔ A ROW COUNTS AS SAVED ONLY WHEN THE SERVER ACKNOWLEDGES IT. That is receiving's
+   hardest-won rule and it applies unchanged: never show "sent" on a local write.
+   ⭐ THE SPLIT MATCHES THE STORE: the full per-line record is ONE JSON FILE (a list would
+   cross SharePoint's 5,000-item view threshold in ~14 weeks), and the LIST gets one small
+   mutable row per session — the dashboard a human actually reads.
+   ============================================================================ */
+function deviceId(){
+  let d = null;
+  try{ d = localStorage.getItem('freezer.device'); }catch(e){}
+  if(!d){ d = 'ipad-' + Math.random().toString(36).slice(2,8);
+          try{ localStorage.setItem('freezer.device', d); }catch(e){} }
+  return d;
+}
+function sessionKey(){ return `${PAYLOAD.plan_date}_${deviceId()}`; }
+
+async function graphWrite(path, body, method){
+  const t = tokStore();
+  if(!t) throw new Error('not signed in');
+  const r = await fetch(GRAPH + path, {
+    method: method || 'POST',
+    headers: {Authorization: 'Bearer ' + t.access_token, 'Content-Type': 'application/json'},
+    body: JSON.stringify(body)});
+  if(r.status === 401){ tokStore(null); throw new Error('sign-in expired — sign in again'); }
+  const j = await r.json().catch(() => null);
+  if(!r.ok) throw new Error((j && (j.error||{}).message) || `HTTP ${r.status}`);
+  return j;                                   // ⭐ the acknowledgement, not a local guess
+}
+
+async function syncNow(){
+  const btn = $('#mainbtn');
+  const was = btn ? btn.textContent : '';
+  if(btn){ btn.textContent = 'Syncing…'; btn.disabled = true; }
+  try{
+    if(!haveToken()){ await signIn(); return; }          // comes back through boot()
+    const sp = CFG.sharepoint;
+    const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+    const m = moves();
+
+    // 1 · the FULL record — one file, overwritten each sync for this device
+    const rec = {schema: 1, plan_date: PAYLOAD.plan_date, device: deviceId(),
+                 synced_at: new Date().toISOString(),
+                 started: S.started, bay: S.bay, screen: S.screen,
+                 lines: S.lines, pallets: S.pallets, bays: S.bays,
+                 events: S.events, breaks: S.breaks, moves: m};
+    const fname = `session_${sessionKey()}.json`;
+    const t = tokStore();
+    const up = await fetch(
+      `${GRAPH}/sites/${site.id}/drive/root:/${sp.doc_folder}/${fname}:/content`,
+      {method: 'PUT', headers: {Authorization: 'Bearer ' + t.access_token,
+                                'Content-Type': 'application/json'},
+       body: JSON.stringify(rec)});
+    if(!up.ok) throw new Error(`record upload HTTP ${up.status}`);
+    const upj = await up.json();
+
+    // 2 · the SESSION ROW — upsert by Title, so re-syncing updates rather than duplicating
+    const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
+    const lst = (lists.value || []).find(x => x.displayName === sp.list_name);
+    if(!lst) throw new Error(`list "${sp.list_name}" not found on ${sp.site_path}`);
+    const units = m.transfers.reduce((t2,x) => t2 + Number(x.quantity||0), 0);
+    const fields = {
+      Title: sessionKey(), PlanDate: PAYLOAD.plan_date, Device: deviceId(),
+      Status: S.screen === 'done' ? 'complete' : 'in_progress',
+      StartedAt: S.started || new Date().toISOString(),
+      FinishedAt: S.screen === 'done' ? new Date().toISOString() : null,
+      Transfers: m.transfers.length, UnitsMoved: Math.round(units),
+      Corrections: m.adjustments.length, Counts: m.counts.length,
+      Skipped: m.skipped.length, NotFound: m.missing.length,
+      RecordFile: `${sp.doc_folder}/${fname}`,
+      PlanFile: `${sp.doc_folder}/plan_latest.json`};
+    const found = await graph(
+      `/sites/${site.id}/lists/${lst.id}/items?$expand=fields&$top=200`);
+    const hit = (found.value || []).find(i => (i.fields||{}).Title === sessionKey());
+    let ack;
+    if(hit){ ack = await graphWrite(
+        `/sites/${site.id}/lists/${lst.id}/items/${hit.id}/fields`, fields, 'PATCH'); }
+    else   { ack = await graphWrite(
+        `/sites/${site.id}/lists/${lst.id}/items`, {fields: fields}, 'POST'); }
+    if(!ack) throw new Error('the list write returned no acknowledgement');
+
+    S.synced = {at: new Date().toISOString(), file: upj.name,
+                transfers: m.transfers.length, counts: m.counts.length};
+    ev('synced', {file: upj.name, transfers: m.transfers.length});
+    save(); render();
+    toast(`✅ synced — ${m.transfers.length} transfer(s), ${m.counts.length} count(s)`);
+  }catch(e){
+    ev('sync_failed', {why: String(e.message || e)});
+    save();
+    // ⛔ FAIL LOUDLY. A sync that quietly did nothing is how a shift's work disappears.
+    dlg('Sync failed', '<div class="badbox"><b>Nothing was sent.</b><div class="sm" '+
+      'style="margin-top:6px">'+esc(String(e.message || e))+'</div></div>'+
+      '<p class="sm dim">Your work is still saved on this iPad. Get back in signal and try '+
+      'again — ⛔ do not start another session for this plan until this succeeds.</p>',
+      [{t:'OK', c:'pri'}]);
+  }finally{ if(btn){ btn.disabled = false; btn.textContent = was; } }
+}
+
 /* ---- dialog ---------------------------------------------------------------- */
 function dlg(title, bodyHtml, buttons, after){
   const d = $('#dlg');
@@ -1041,16 +1329,11 @@ function dlg(title, bodyHtml, buttons, after){
 
 /* ---- boot ------------------------------------------------------------------ */
 window.addEventListener('load', () => {
-  if(!PAYLOAD.bays || !PAYLOAD.bays.length){
-    document.getElementById('app').innerHTML =
-      '<div class="badbox"><b>⛔ No work loaded.</b> This file was built without a payload. '+
-      'Rebuild with <code>build_execution_payload.py</code>.</div>';
-    return;
-  }
   const probe = probeStorage();
   STORAGE_OK = probe.ok;
   if(!STORAGE_OK){ blockStorage(probe.why, false); return; }   // refuse to start
-  keepAwake(); render();
+  keepAwake();
+  boot();
 });
 window.addEventListener('beforeunload', () => { try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} });
 </script>
