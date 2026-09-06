@@ -379,7 +379,28 @@ function renderGate(msg, busy){
         is uncomfortably close to that line, so the app never treats its cache as durable —
         it re-fetches whenever it has a token, and says out loud when it has not. */
 let SW_STATE = 'unknown';         // unknown | installing | ready | unsupported | failed
-function offlineReady(){ return SW_STATE === 'ready'; }
+/* ⛔⛔ ASK THE CACHE, NOT THE CONTROLLER. The first version set
+   `SW_STATE = controller ? 'ready' : 'installing'` and `renderOfflineBadge` trusted that
+   alone — so with the shell cache DELETED (which is exactly the ~7-day eviction this
+   file warns about) the badge still said "✓ Saved on this device. This will open in the
+   freezer with no signal." A false green on the one claim the crew act on before walking
+   into a place with no signal.
+   ⚠️ A second, likelier trigger from the same line: right after a deploy the OLD worker is
+   the controller, so this read 'ready' synchronously BEFORE the new version's atomic
+   `install` had run — and `sw.js` deliberately keeps serving the old shell if that install
+   fails. Its own header says a stale worker is worse than none "because nothing on screen
+   says so"; the badge IS the thing that is supposed to say so. */
+let SHELL_CACHED = null;         // null = not asked yet
+async function probeShellCache(){
+  try{
+    if(!('caches' in window)) { SHELL_CACHED = false; return; }
+    const hit = await caches.match('./index.html', {ignoreSearch:true})
+             || await caches.match('./', {ignoreSearch:true});
+    SHELL_CACHED = !!hit;
+  }catch(e){ SHELL_CACHED = false; }
+  renderOfflineBadge();
+}
+function offlineReady(){ return SW_STATE === 'ready' && SHELL_CACHED === true; }
 
 function registerSW(){
   if(!('serviceWorker' in navigator)){ SW_STATE = 'unsupported'; return; }
@@ -395,13 +416,14 @@ function registerSW(){
       const w = reg.installing;
       if(!w) return;
       w.addEventListener('statechange', () => {
-        if(w.state === 'activated'){ SW_STATE = 'ready'; renderOfflineBadge(); }
+        if(w.state === 'activated'){ SW_STATE = 'ready'; SHELL_CACHED = null;
+                                     renderOfflineBadge(); }
       });
     });
     renderOfflineBadge();
   }).catch(() => { SW_STATE = 'failed'; renderOfflineBadge(); });
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    SW_STATE = 'ready'; renderOfflineBadge();
+    SW_STATE = 'ready'; SHELL_CACHED = null; renderOfflineBadge();
   });
 }
 
@@ -412,9 +434,17 @@ function renderOfflineBadge(){
   const el = document.getElementById('offbadge');
   if(!el) return;
   const cached = !!cachedPlan();
-  if(SW_STATE === 'ready' && cached){
+  if(SHELL_CACHED === null) probeShellCache();     // ⭐ answer, then re-render
+  if(offlineReady() && cached){
     el.className = 'okbox sm';
     el.innerHTML = '✓ <b>Saved on this device.</b> This will open in the freezer with no signal.';
+  }else if(SW_STATE === 'ready' && cached && SHELL_CACHED === false){
+    /* ⛔ the worker is running and the shell is NOT in the cache — an eviction, or an
+       install that failed and left the old worker serving. Either way it is the state the
+       crew must not walk into blind. */
+    el.className = 'warnbox sm';
+    el.innerHTML = '⚠️ <b>The plan is saved but the app itself is not.</b> Reload once on '+
+      'wifi before you go in — the page needs a signal to open until this clears.';
   }else if(SW_STATE === 'unsupported'){
     el.className = 'warnbox sm';
     el.innerHTML = '⚠️ <b>This browser cannot save the app offline.</b> Open it from the ' +
@@ -603,6 +633,64 @@ function isFinished(s){ return !!(s && TERMINAL.indexOf(s.state) >= 0); }
    noise. Only take / aside / count can meaningfully be skipped. */
 const ACTIONABLE = ['take', 'aside', 'count'];
 function isActionable(l){ return ACTIONABLE.indexOf(l.kind) >= 0; }
+/* ⛔⛔ THE RECEIVING HALF OF A MOVE IGNORED EVERYTHING THE CREW HAD RECORDED.
+   `arriving` was built purely from PAYLOAD, so after skipping `1712` in bay 13 — or
+   approving 100 of 738, or marking it not-here — bay 18 still said
+   *"1712 ×738 — cross-lane, it has been waiting on the floor"*. ⭐ That sends someone
+   hunting the floor at the end of the shift for a pallet that was never brought down:
+   the unplanned single-SKU trip this whole project exists to eliminate.
+   ⛔ AND THERE WERE TWO DIFFERENT COUNTS of the same pallet's incoming stock on one
+   screen — the pallet box counted per LOT and cross-lane-plus-internal, the putback card
+   counted per MOVE and cross-lane only (P-44 said 7 and 6; P-25 said 4 and 1). ⭐ One
+   builder now answers both, so they cannot disagree. */
+function arrivalsFor(palletId){
+  const out = [];
+  if(!palletId) return out;
+  PAYLOAD.bays.forEach(bb => bb.pallets.forEach(pp => pp.lines.forEach((l2, i2) => {
+    if(l2.kind !== 'aside' || l2.onto_pallet !== palletId) return;
+    const st_ = st(lid(bb.n, pp.loc, l2, i2)) || null;
+    const state = st_ ? st_.state : null;
+    const actual = (st_ && st_.actual != null) ? Number(st_.actual) : null;
+    out.push({sku:l2.sku, lot:l2.lot||'', planned:l2.planned_qty,
+              qty:(actual != null ? actual : l2.planned_qty),
+              from:pp.loc, bay:bb.bay, n:bb.n, cross:!!l2.cross,
+              state:state, reason:(st_ && st_.reason) || '',
+              /* ⭐ the three outcomes the receiving crew must act on differently */
+              gone:(state === 'skipped' || state === 'missing'),
+              short:(state === 'done' && actual != null &&
+                     Math.abs(actual - l2.planned_qty) > 0.001)});
+  })));
+  return out;
+}
+function arrivalLine(x){
+  /* ⭐ a line that is NOT coming shows what was PLANNED, struck through — "×0" reads as a
+     zero-unit move rather than as a cancellation. */
+  const head = '<b>'+esc(x.sku)+'</b> ×'+n(x.gone ? x.planned : x.qty)+
+    (x.lot?' · lot '+esc(x.lot):'')+
+    ' — set aside from '+esc(x.from)+(x.n !== S.bay + 1 ? ' in bay '+x.n+' ('+esc(x.bay)+')' : '')+
+    (x.cross ? ' — cross-lane' : '');
+  if(x.state === 'skipped')
+    return '<div class="sm" style="margin-top:4px;opacity:.75"><s>'+head+'</s><br>'+
+      '⛔ <b>SKIPPED in bay '+x.n+'</b>'+(x.reason?' — '+esc(x.reason):'')+
+      '. It was never taken off, so do NOT go looking for it.</div>';
+  if(x.state === 'missing')
+    return '<div class="sm" style="margin-top:4px;opacity:.75"><s>'+head+'</s><br>'+
+      '⛔ <b>NOT FOUND in bay '+x.n+'</b>. Nothing is coming.</div>';
+  if(x.short)
+    return '<div class="sm" style="margin-top:4px">'+head+'<br>'+
+      '⚠️ <b>'+n(x.qty)+' actually came off</b>, not the planned '+n(x.planned)+'.</div>';
+  if(!x.state)
+    return '<div class="sm" style="margin-top:4px">'+head+
+      ' <span class="dim">· bay '+x.n+' has not been worked yet</span></div>';
+  return '<div class="sm" style="margin-top:4px">'+head+'</div>';
+}
+
+/* ⛔ THE PERCENT JACK ASKED FOR WAS THE HALF THAT GOT CUT. `#hdr` is squeezed to ~119px at
+   375px by four 48px header buttons, and it is `nowrap; text-overflow:ellipsis` — so
+   "Bay F2-A-01 · 0% of the whole job" rendered as "Bay F2-A-01 · …". ⭐ The percent is the
+   short, load-bearing half; put it FIRST so an ellipsis eats the bay name, which is also
+   printed on the pallet cards below. */
+function bayTitle(bay, pct){ return pct + '% · ' + bay; }
 function setLine(id, patch){
   S.lines[id] = Object.assign({ts:new Date().toISOString()}, S.lines[id]||{}, patch);
   S.lines[id].ts = new Date().toISOString();
@@ -627,12 +715,22 @@ function readQty(id){
    the app already uses. ⭐ They step by 1 under 50 and by 5 above, so a 300-unit line is
    not 300 taps. */
 function qtyField(id, val){
-  return '<div style="display:flex;gap:8px;align-items:stretch;margin-top:4px">'+
-    '<button type="button" style="flex:0 0 62px;font-size:26px" '+
-      'onclick="qtyStep(\''+id+'\',-1)">−</button>'+
-    '<input type="number" inputmode="numeric" id="'+id+'" value="'+val+'" style="flex:1">'+
-    '<button type="button" style="flex:0 0 62px;font-size:26px" '+
-      'onclick="qtyStep(\''+id+'\',1)">+</button></div>';
+  /* ⛔⛔ THE FIELD WAS 28px OF USABLE WIDTH AT 375px — about one and a half digits.
+     Two 62px buttons plus two 8px gaps is 140px of a ~172px column in the two-up `.row`,
+     and what was left went to the input. So the crew could step the number and not READ
+     it: "738" measured scrollWidth 80 against clientWidth 28. ⭐ Same blind spot as the
+     iOS-spinner finding — on a wide iPad it looks fine, and 375px is the real device.
+     ⭐ The fix is to stop competing for one line: the field gets the full width and the
+     buttons sit under it, still 62px tall and still thumb-sized in gloves. */
+  return '<div style="margin-top:4px">'+
+    '<input type="number" inputmode="numeric" id="'+id+'" value="'+val+'" '+
+      'style="width:100%;font-size:30px;text-align:center;min-height:62px">'+
+    '<div style="display:flex;gap:8px;margin-top:6px">'+
+      '<button type="button" style="flex:1;font-size:26px;min-height:62px" '+
+        'onclick="qtyStep(\''+id+'\',-1)">−</button>'+
+      '<button type="button" style="flex:1;font-size:26px;min-height:62px" '+
+        'onclick="qtyStep(\''+id+'\',1)">+</button>'+
+    '</div></div>';
 }
 function qtyStep(id, dir){
   const el = $('#' + id); if(!el) return;
@@ -779,7 +877,11 @@ function openWhy(id){
     '<div style="margin-top:14px"><b>Approve a different amount?</b>'+
     '<div class="sm dim">Planned '+n(l.planned_qty)+'. Changing it here records your INTENT, '+
     'which is kept apart from what physically moves.</div>'+
-    '<input type="number" inputmode="numeric" id="apq" value="'+n(cur)+'" style="margin-top:8px"></div>',
+    /* ⛔ THE ONE QUANTITY CONTROL THAT NEVER GOT ± BUTTONS. `type=number` renders no
+       spinners on iOS Safari, so this was keyboard-only on the target device — lower
+       stakes than the bay screens (review happens warm, at a desk) but there is no reason
+       for it to be the exception. */
+    qtyField('apq', n(cur)) + '</div>',
     [{t:'Cancel', c:'ghost'},
      {t:'Save', c:'pri', f:()=>{
         const v = readQty('apq');
@@ -844,7 +946,8 @@ function renderBay(a){
   if(!b){ S.screen='done'; save(); return render(); }
   const jp = jobProgress();
   // ⭐ label it — "1% done" on bay 1 reads as bay progress unless it says otherwise
-  $('#hdr').textContent = 'Bay ' + b.bay + '  ·  ' + jp.pct + '% of the whole job';
+  $('#hdr').textContent = bayTitle(b.bay, jp.pct);
+  $('#hdr').title = 'Bay ' + b.bay + ' · ' + jp.pct + '% of the whole job';
   /* ⚠️ "dig to position 5 · 3 pallets down" reads as impossible in a front-packed lane.
      It is correct — the positions between hold no stock — but the crew cannot know that
      from the number alone, so say it. */
@@ -1014,12 +1117,8 @@ function pallet(b, p){
     /* ⛔⛔ CLAUDE.md: "Never print one half of a move without the other." The SOURCE pallet
        says "SET ASIDE N — goes onto pallet X", but the RECEIVING pallet said nothing, so the
        crew loading it had no idea stock was due to go on before it went back up. */
-    const arriving = [];
-    PAYLOAD.bays.forEach(bb => bb.pallets.forEach(pp => pp.lines.forEach(l2 => {
-      if(l2.kind === 'aside' && l2.onto_pallet === p.pallet_id)
-        arriving.push({sku:l2.sku, qty:l2.planned_qty, from:pp.loc, bay:bb.bay, n:bb.n,
-                     cross:!!l2.cross, lot:l2.lot||''});
-    })));
+    const arriving = arrivalsFor(p.pallet_id);
+    const coming = arriving.filter(x => !x.gone);
     /* ⚠️ IS THERE ROOM? Every cross-lane destination on the 2026-09-05 plan is estimated
        OVER its deck once the arrivals land, and volumes are ~40% estimates — so this is a
        warning, never a silent drop. ⛔ The failure to avoid is the crew finding out with
@@ -1033,13 +1132,13 @@ function pallet(b, p){
           'against a <b>'+xd[0].dest_deck_m3.toFixed(2)+' m³</b> deck. Load what fits, '+
           'oldest lots first. ⛔ Do NOT force it — leave the remainder on the floor and '+
           'record it, so the next plan knows where the stock actually is.</div></div>' : '')+
-        '<div class="warnbox" style="margin:0 0 10px"><b>⊕ '+arriving.length+
-        ' also goes ON this pallet before it goes back up</b>'+
-        arriving.map(x => '<div class="sm" style="margin-top:4px">• <b>'+esc(x.sku)+
-          '</b> ×'+n(x.qty)+(x.lot?' · lot '+esc(x.lot):'')+' — set aside from '+esc(x.from)+
-          (x.n !== b.n ? ' in bay '+x.n+' ('+esc(x.bay)+')' : '')+
-          (x.cross ? ' <b>— cross-lane, it has been waiting on the floor</b>' : '')+
-          '</div>').join('')+
+        '<div class="warnbox" style="margin:0 0 10px"><b>⊕ '+coming.length+
+        ' goes ON this pallet before it goes back up</b>'+
+        (arriving.length !== coming.length
+          ? '<div class="sm dim" style="margin-top:2px">('+
+            (arriving.length - coming.length)+' more was planned and is not coming — below)</div>'
+          : '')+
+        arriving.map(arrivalLine).join('')+
         '</div></div>';
     }
     if(p.pallet_id){
@@ -1276,25 +1375,50 @@ function openLine(id){
      /* ⛔ one tap, no confirmation, and it asserts FINALE IS WRONG about the whole
         `system_qty`. Re-opening the line then showed a perfectly normal dialog with no sign
         it was marked missing. Confirm it, and say what it means. */
+     /* ⛔⛔ AND THIS PATH NEVER GOT THE SIBLING-AWARE BASELINE. The Save path was fixed on
+        2026-09-05 (the fabricated −248 / −687 shrinks); `missing` kept using the raw
+        `system_qty`, so marking BOTH halves of a sibling pair "not here" proposed a
+        decrease of the FULL quantity TWICE — measured 176 against a system 88. And the
+        dialog said the wrong number out loud before the crew confirmed it.
+        ⭐ A line's share is what is on the pallet MINUS what its sibling takes. */
      {t:'Not here at all',c:'',f:()=>{ setTimeout(() => dlg(
-        'Not here at all — ' + l.sku,
+        'Not here at all — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
         '<div class="warnbox"><b>This says Finale is WRONG.</b><div class="sm" '+
         'style="margin-top:6px">Finale believes <b>'+n(l.system_qty)+'</b> of '+esc(l.sku)+
         (l.lot?' (lot '+esc(l.lot)+')':'')+' is on '+esc(f.p?f.p.loc:'this pallet')+
-        '. Recording this proposes a decrease of the whole amount.</div></div>'+
+        (sib ? ', <b>'+n(sibTook)+'</b> of which is the other line — so this line is about '+
+               'the <b>'+n(baseline)+'</b> that are not part of that' : '')+
+        '. Recording this proposes a decrease of <b>'+n(baseline)+'</b>.</div></div>'+
         '<p class="sm dim">⛔ Not the same as <b>Skip</b> — skip means we did not do it and '+
         'Finale stays as it is.</p>',
         [{t:'Cancel',c:'ghost'},
          {t:'Yes — it is not there',c:'warn',f:()=>{
-            setLine(id,{state:'missing', actual:0, reason:'not found'});
+            setLine(id,{state:'missing', actual:0, reason:'not found',
+                        baseline:baseline, sibling_took:sibTook});
             ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }}]), 0); }},
      /* ⛔ never re-enter dlg() from inside a dialog button — let this one close first */
      {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
-        const mv=Number($('#q1').value), lf=Number($('#q2').value);
-        if(!isFinite(mv)||mv<0||!isFinite(lf)||lf<0) return toast('⛔ not a quantity');
+        /* ⛔ `Number('')` IS 0, SO THESE GUARDS WERE DEAD on an untouched field — the same
+           root as the count pad that recorded a 201-unit phantom variance. `readQty` tests
+           the RAW STRING before coercing. */
+        const mv=readQty('q1'), lf=readQty('q2');
+        if(mv==null||lf==null) return toast('⛔ fill in both numbers');
         const adj = (mv + lf) - baseline;      // ⭐ baseline, not raw system_qty
-        const patch = {state:'done', actual:mv, left:lf, adjustment:adj};
+        /* ⛔⛔ "MOVED 0, LEFT ALL" WAS A SILENT LOSS. It previewed "Adds up — nothing to
+           correct", ticked the line green, counted toward progress — and landed in NO
+           export bucket at all, because `moves()` gates transfers on `act > 0` and has no
+           else. Nine units of a planned restock pick existed nowhere. ⭐ And the entry is
+           not perverse: "I didn't move it, it's all still there" is exactly what someone
+           types when they decide to leave a line. ⛔ That is a SKIP — a decision about the
+           shift — and it has to be recorded as one, with a reason. */
+        if(mv === 0 && Math.abs(adj) < 0.001 && isActionable(l)){
+          toast('nothing moved and nothing missing — recording this as NOT DONE');
+          setTimeout(() => skipLine(id), 0);   // ⭐ ask for a reason, do not assume one
+          return;
+        }
+        const patch = {state:'done', actual:mv, left:lf, adjustment:adj,
+                       baseline:baseline, sibling_took:sibTook};
         if(Math.abs(adj) > 0.001){
           const sel = $('#rsn');
           if(sel && sel.value === '__none__'){
@@ -1430,8 +1554,6 @@ function putbackCard(b){
   let h = '<div class="card" id="pbcard"><div class="pad"><h3>Putback — load in this order</h3>'+
     '<div class="sm dim">Deepest first. The LAST pallet you push in is the one at the front '+
     '(position 1). Put the placard on each pallet as it goes in.</div></div><div class="body">';
-  const xin = {};
-  (b.cross_in || []).forEach(m => (xin[m.onto_pallet] = xin[m.onto_pallet] || []).push(m));
   b.putback.forEach((pb, i) => {
     const waiting = (pb.waits_for||[]).length;
     h += '<div class="ln"><span class="tag '+(pb.pos===1?'t-take':'t-stay')+'">'+(i+1)+'</span>'+
@@ -1447,10 +1569,26 @@ function putbackCard(b){
          where the pallet is physically loaded, so a card listing only the SKUs that were
          already on it is the same "one half of a move" defect one screen further on —
          the crew would push the pallet back with the arriving stock still on the floor. */
-      (xin[pb.pallet_id] ? '<div class="sub" style="color:var(--aside)">⊕ plus '+
-         xin[pb.pallet_id].length+' arriving from earlier bays — '+
-         xin[pb.pallet_id].map(m=>esc(m.sku)+' ×'+n(m.units)).join(', ')+
-         ' · put these ON before it goes up</div>' : '')+
+      /* ⭐ ONE BUILDER, so this cannot disagree with the pallet card above it — it used to
+         count cross-lane MOVES while the pallet counted per-LOT lines including internal
+         asides (P-44 read 7 and 6; P-25 read 4 and 1), with near-identical wording.
+         ⛔ And it must reflect what was RECORDED: a skipped set-aside is not arriving. */
+      (function(){
+        const arr = arrivalsFor(pb.pallet_id);
+        const live = arr.filter(x => !x.gone);
+        const lost = arr.filter(x => x.gone);
+        if(!arr.length) return '';
+        return (live.length
+            ? '<div class="sub" style="color:var(--aside)">⊕ plus '+live.length+
+              ' arriving — '+live.map(x=>esc(x.sku)+' ×'+n(x.qty)+
+                (x.lot?' (lot '+esc(x.lot)+')':'')).join(', ')+
+              ' · put these ON before it goes up</div>' : '')+
+          (lost.length
+            ? '<div class="sub" style="color:var(--bad)">⛔ '+lost.length+
+              ' planned arrival(s) are NOT coming — '+
+              lost.map(x=>esc(x.sku)+' ×'+n(x.planned)+' ('+x.state+' in bay '+x.n+')')
+                 .join(', ')+'</div>' : '');
+      })()+
       (waiting?'<div class="sub" style="color:var(--aside)">stays on the floor — still waiting for stock from a later bay</div>':'')+
       '</div></div>';
   });
@@ -1583,9 +1721,19 @@ function moves(){
         /* ⛔ `missing` MEANS FINALE IS WRONG, so the row has to be able to express the
            correction — it carried `planned` but NOT `system_qty`, and the correction is
            against what Finale believes is there, not against what we hoped to take. */
+        /* ⛔ `suggested_decrease` WAS THE RAW `system_qty`, so both halves of a sibling
+           pair each proposed the FULL amount — 176 against a system 88. The dialog now
+           computes the sibling-aware baseline and records it; fall back to `system_qty`
+           only for a line recorded before this fix. */
+        const dec = (s.baseline != null) ? s.baseline : l.system_qty;
         out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot||'',
           planned_qty:l.planned_qty, system_qty:l.system_qty,
-          suggested_decrease:l.system_qty, note:s.reason||'not found', ts:s.ts});
+          sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
+          suggested_decrease:dec, note:s.reason||'not found',
+          /* ⭐ a not-done SET ASIDE has to name the pallet left short, or whoever
+             re-plans it cannot tell which one it was. */
+          onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
+          onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''), ts:s.ts});
         return; }
       /* ⛔ SKIPPED IS NOT A TRANSFER AND NOT AN ADJUSTMENT — it is the absence of both,
          recorded on purpose. ⭐ It still leaves the planner a fact: this line was planned,
@@ -1594,6 +1742,12 @@ function moves(){
       if(s.state === 'skipped'){ out.skipped.push({bay:b.bay, location:loc, sku:l.sku,
         lot:l.lot||'', kind:l.kind, planned_qty:l.planned_qty,
         approved_qty:(s.approved!=null?s.approved:l.planned_qty),
+        /* ⭐ NAME THE PALLET LEFT SHORT. Skipping a cross-lane set-aside means a pallet in
+           a LATER bay never receives it, and the not-done list carried no destination at
+           all — the one fact needed to re-plan it. */
+        onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
+        onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''),
+        cross:!!l.cross,
         reason:s.reason||'', ts:s.ts}); return; }
       if(l.kind === 'count' && s.counted != null){
         out.counts.push({serial:l.serial, location:loc, sku:l.sku, lot:l.lot,
@@ -1620,8 +1774,14 @@ function moves(){
           kind:l.kind, bay:b.bay, ts:s.ts});
       }
       if(s.adjustment && Math.abs(s.adjustment) > 0.001){
+        /* ⛔ THE ROW CONTRADICTED ITS OWN FIELDS on every sibling pair: it carried
+           `system_qty 88, moved 6, left 0, change −2`, and (6+0)−88 is −82. The baseline
+           (8) is the number that makes −2 correct and it was the one field missing. ⭐ The
+           app already knows it — emit it so the row is self-checking. */
         out.adjustments.push({location:loc, sku:l.sku, lot:l.lot||'',
           change:s.adjustment, direction:s.adjustment<0?'decrease':'increase',
+          baseline:(s.baseline != null ? s.baseline : l.system_qty),
+          sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
           reason:s.reason||'', system_qty:l.system_qty,
           moved:(s.actual!=null?s.actual:0), left_on_pallet:(s.left!=null?s.left:''), ts:s.ts});
       }
