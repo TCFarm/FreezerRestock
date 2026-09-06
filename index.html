@@ -8,20 +8,10 @@
 <title>Freezer restock</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#0b62c4">
-<!-- ⭐ iOS ignores the manifest's icons; this is the one it uses for Add to Home Screen.
-     Inline so the page stays code-only and needs no second network round trip. -->
+
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='38' fill='%230b62c4'/%3E%3Ctext x='90' y='122' font-size='96' font-family='system-ui,sans-serif' font-weight='700' fill='white' text-anchor='middle'%3E%E2%9D%84%3C/text%3E%3C/svg%3E">
 <style>
-/* ⛔ GLOVES AND −10°F DRIVE EVERY CHOICE HERE. Targets >=60px, high contrast, no hover-only
-   affordance, no drag, no long-press. ⭐ Taps are the unit of cost. */
-/* ⛔ THIS WAS HARDCODED DARK AND JACK ASKED WHY (2026-09-05): *"this one all being black
-   dark view. And maybe that's just because I'm in dark view on Safari. I'm not sure."*
-   ⭐ It was NOT his Safari — there was no `prefers-color-scheme` at all, so the app ignored
-   the device and always rendered dark. The PROTOTYPE was theme-aware and this regressed it.
-   ⭐ Light is now the base and dark follows the device, with an explicit `data-theme`
-   override winning in both directions. ⚠️ Every colour is defined on bare `:root` first —
-   a token whose ONLY definition sits inside a media query renders as nothing in the other
-   theme. */
+
 :root{
   --bg:#f4f6f8; --card:#ffffff; --line:#d5dde3; --ink:#101a1f; --dim:#5d707a;
   --take:#0b62c4; --aside:#8a5406; --count:#6b3fa0; --stay:#6d828c; --ok:#1c6b45; --bad:#a32d24;
@@ -60,9 +50,7 @@ button[disabled]{opacity:.4}
 .bar .grow{flex:1;min-width:0}
 .bar b{display:block;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bar small{color:var(--dim);font-size:12px}
-/* ⛔ these were 34px wide with 8px gaps, four in a row, and they do very different
-   things — one changes bay, one blanks the screen, one jumps to the export. Below the
-   44px minimum is not acceptable for a gloved tap with those consequences. */
+
 .bar button{min-height:48px;min-width:48px;padding:8px 10px;font-size:16px;border-radius:10px;
   margin-left:2px}
 .prog{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:6px}
@@ -82,13 +70,7 @@ button[disabled]{opacity:.4}
 .ln .grow{flex:1;min-width:0}
 .ln .sku{font-weight:650;font-size:16px}
 .ln .sub{color:var(--dim);font-size:12.5px;white-space:normal;overflow-wrap:anywhere}
-/* ⛔⛔ THIS RULE USED TO BE `nowrap; overflow:hidden; text-overflow:ellipsis`, AND IT WAS
-   THE TRUNCATION DEFECT COMING BACK THROUGH THE CSS. The putback card's SKU list had
-   its `.slice(0,4)` removed on 2026-09-05 precisely so incoming stock could not be
-   hidden — and at 375px, which is the actual iPad/phone width, the browser then cut
-   the same line off with an ellipsis anyway. It also clipped the cross-lane
-   instruction itself ("...keep it on the floor until then · do NOT reload here").
-   ⭐ A taller row is a cost worth paying; half a move is not. */
+
 .qty{font-variant-numeric:tabular-nums;font-weight:700;font-size:18px;min-width:58px;text-align:right}
 .tag{font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;white-space:nowrap}
 .t-take{background:color-mix(in srgb,var(--take) 18%,transparent);color:var(--take)}
@@ -162,41 +144,16 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
 
 <script>
 "use strict";
-/* ============================================================================
-   FREEZER RESTOCK — EXECUTION APP
-   ⛔ THIS FILE RENDERS AND RECORDS. IT DECIDES NOTHING.
-   Every disposition, position and quantity is computed by the Python model and
-   arrives in PAYLOAD. Re-deriving any of it here is the defect that put 72
-   phantom restacks on a crew sheet on 2026-09-05.
-   ============================================================================ */
-/* ⛔⛔ THE PAGE IS PUBLIC. NO PLAN DATA MAY BE BAKED INTO IT.
-   Ruling: Jack, 2026-09-03 (via `review_list.py`) and restated 2026-09-05: *"be sure you
-   don't put anything private on the Github - that has to all be fetched like the P&M
-   application… behind the login."*
-   ⛔ The first build inlined the whole plan and was live at a public URL for a few minutes.
-   ⭐ What ships now is CODE plus a CONFIG BLOCK — a client id, a tenant id and a site path.
-   ⚠️ Those are not secrets: they IDENTIFY the app, they authorize nothing, and this is a PKCE
-   public client with no client secret (the same reasoning `receiving_app.json` records).
-   ⭐ THE PLAN ARRIVES AFTER SIGN-IN AND IS CACHED ON THE DEVICE — which is what keeps the
-   offline promise. Inlining was never required for offline; it was the lazy route to it. */
+
 const CFG = {"entra":{"client_id":"PASTE_THE_APPLICATION_CLIENT_ID_HERE","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
-let PAYLOAD = null;                       // ⬅ filled from cache, or fetched after sign-in
-let KEY = 'freezer.exec.pending';         // ⬅ re-keyed once we know the plan date
+let PAYLOAD = null;                       
+let KEY = 'freezer.exec.pending';         
 const CACHE_KEY = 'freezer.plan.cache';
 const TOK_KEY   = 'freezer.tok';
 
-/* ============================================================================
-   SIGN-IN AND THE PLAN FETCH
-   ⭐ Entra authorization-code + PKCE, as the SIGNED-IN USER. ⛔ Never an app-only secret:
-   this page is public, so anything embedded in it is published. The unattended tooling on
-   the Mac uses the app-only board credential instead — two identities on the same data,
-   exactly as `Procurement & Merchandising/lib/review_list.py` does it.
-   ⭐ THE OFFLINE CONTRACT: sign in WARM, the plan is cached on the device, then the freezer
-   never needs signal. A cached plan renders with no network at all.
-   ============================================================================ */
 const AUTHZ = () => `https://login.microsoftonline.com/${CFG.entra.tenant_id}/oauth2/v2.0`;
 const GRAPH = 'https://graph.microsoft.com/v1.0';
-const REDIRECT = () => location.origin + location.pathname;   // ⛔ must EXACTLY match Entra
+const REDIRECT = () => location.origin + location.pathname;   
 
 function b64u(buf){
   return btoa(String.fromCharCode(...new Uint8Array(buf)))
@@ -216,10 +173,6 @@ function haveToken(){
 }
 function canRefresh(){ const t = tokStore(); return !!(t && t.refresh_token); }
 
-/* ⛔ `offline_access` WAS REQUESTED, THE REFRESH TOKEN WAS STORED, AND NOTHING EVER
-   REDEEMED IT. An access token lasts ~1 hour, so the end-of-shift sync — the one moment
-   that matters — bounced to Microsoft and came back saying "Not sent yet", needing a
-   second tap. ⭐ Redeem silently; only fall back to an interactive sign-in if that fails. */
 async function ensureToken(){
   if(haveToken()) return true;
   if(!canRefresh()) return false;
@@ -234,7 +187,7 @@ async function ensureToken(){
     const j = await r.json();
     if(!r.ok) throw new Error(j.error_description || j.error || ('HTTP ' + r.status));
     j.exp = Date.now() + (Number(j.expires_in || 3600) * 1000);
-    if(!j.refresh_token) j.refresh_token = t.refresh_token;   // ⛔ do not lose it on rotation
+    if(!j.refresh_token) j.refresh_token = t.refresh_token;   
     tokStore(j);
     return true;
   }catch(e){ tokStore(null); return false; }
@@ -255,7 +208,7 @@ async function completeSignIn(){
   const qs = new URLSearchParams(location.search);
   const code = qs.get('code');
   if(!code){
-    // ⭐ Surface the Entra error rather than looping silently on a blank screen.
+    
     if(qs.get('error')) throw new Error(qs.get('error_description') || qs.get('error'));
     return false;
   }
@@ -266,7 +219,7 @@ async function completeSignIn(){
   const r = await fetch(`${AUTHZ()}/token`, {
     method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
   const j = await r.json();
-  history.replaceState({}, '', location.pathname);        // strip ?code= from the URL
+  history.replaceState({}, '', location.pathname);        
   if(!r.ok) throw new Error(j.error_description || j.error || ('token exchange HTTP ' + r.status));
   j.exp = Date.now() + (Number(j.expires_in || 3600) * 1000);
   tokStore(j);
@@ -283,9 +236,6 @@ async function graph(path){
   return ct.includes('json') ? r.json() : r.text();
 }
 
-/* ⭐ THE PLAN LIVES IN THE SITE'S DOCUMENTS LIBRARY, WHICH REQUIRES A SIGN-IN TO READ.
-   ⛔ Never an anonymous sharing link — that would put the plan back in public reach by a
-   different route than the one we just closed. */
 async function fetchPlan(){
   const sp = CFG.sharepoint;
   const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
@@ -293,15 +243,9 @@ async function fetchPlan(){
     `/sites/${site.id}/drive/root:/${sp.doc_folder}/plan_latest.json:/content`);
   const p = (typeof txt === 'string') ? JSON.parse(txt) : txt;
   if(!p || !p.bays || !p.bays.length) throw new Error('the plan file has no bays');
-  return p;                       // ⛔ the CALLER decides whether to accept it — see below
+  return p;                       
 }
 
-/* ⛔⛔ CACHING ON FETCH ORPHANED A WHOLE SHIFT. `fetchPlan` used to write the cache
-   unconditionally while `refreshPlanQuietly` guarded only the IN-MEMORY plan. So a quiet
-   refresh during a dirty session left the cache holding the NEW plan: the next load keyed
-   the session store to the new plan date, `load()` returned blank, and the crew came back
-   to 0% — their work still in localStorage under the old key with ⛔ no UI path to it.
-   ⭐ Accepting a plan is now an explicit act. */
 function acceptPlan(p){
   try{ localStorage.setItem(CACHE_KEY, JSON.stringify(
         {fetched: new Date().toISOString(), plan: p})); }
@@ -309,9 +253,6 @@ function acceptPlan(p){
   setPlan(p);
 }
 
-/* ⛔ `Object.keys(S.lines).length` WAS TOO NARROW. A crew on bay 6 with a pallet open who
-   has dug but not yet ticked a line has no lines — so the guard passed and the plan was
-   swapped LIVE, mid-bay, announced by a toast. Anything that shows work has begun counts. */
 function isDirty(){
   return !!(S.started || (S.events && S.events.length) ||
             Object.keys(S.lines || {}).length ||
@@ -323,8 +264,6 @@ function cachedPlan(){
        return c && c.plan && c.plan.bays ? c : null; }catch(e){ return null; }
 }
 
-/* ⛔ KEY depends on the plan date, so it CANNOT be fixed at load time any more. Setting the
-   plan re-keys the session store and re-reads whatever was already recorded for that plan. */
 function setPlan(p){
   PAYLOAD = p;
   KEY = 'freezer.exec.' + (p.plan_date || 'x');
@@ -364,33 +303,9 @@ function renderGate(msg, busy){
   }
 }
 
-/* ============================ OFFLINE SHELL (FR-523) ========================
-   ⛔⛔ THE PLAN SURVIVES OFFLINE AND THE PAGE DID NOT. Making the page code-only fixed the
-   public-URL leak and moved the offline problem rather than solving it: `localStorage` holds
-   the plan, but a crew member who opens the app INSIDE the freezer gets Safari's network
-   error screen, with the cached plan sitting unreachable behind it.
-   ⭐ `sw.js` caches the shell. Both halves now work with no signal, and neither is public.
+let SW_STATE = 'unknown';         
 
-   ⚠️ TWO iOS FACTS THAT DECIDE HOW THIS IS USED, AND THEY ARE NOT OPTIONAL READING:
-     1. A home-screen web app has its OWN storage, SEPARATE from Safari's. Signing in in
-        Safari and THEN adding to the home screen loses the cached plan — the app looks
-        empty for no visible reason. ⭐ ADD TO HOME SCREEN FIRST, then sign in inside it.
-     2. Storage can be evicted after ~7 days of non-use. The cadence here is weekly, which
-        is uncomfortably close to that line, so the app never treats its cache as durable —
-        it re-fetches whenever it has a token, and says out loud when it has not. */
-let SW_STATE = 'unknown';         // unknown | installing | ready | unsupported | failed
-/* ⛔⛔ ASK THE CACHE, NOT THE CONTROLLER. The first version set
-   `SW_STATE = controller ? 'ready' : 'installing'` and `renderOfflineBadge` trusted that
-   alone — so with the shell cache DELETED (which is exactly the ~7-day eviction this
-   file warns about) the badge still said "✓ Saved on this device. This will open in the
-   freezer with no signal." A false green on the one claim the crew act on before walking
-   into a place with no signal.
-   ⚠️ A second, likelier trigger from the same line: right after a deploy the OLD worker is
-   the controller, so this read 'ready' synchronously BEFORE the new version's atomic
-   `install` had run — and `sw.js` deliberately keeps serving the old shell if that install
-   fails. Its own header says a stale worker is worse than none "because nothing on screen
-   says so"; the badge IS the thing that is supposed to say so. */
-let SHELL_CACHED = null;         // null = not asked yet
+let SHELL_CACHED = null;         
 async function probeShellCache(){
   try{
     if(!('caches' in window)) { SHELL_CACHED = false; return; }
@@ -404,8 +319,7 @@ function offlineReady(){ return SW_STATE === 'ready' && SHELL_CACHED === true; }
 
 function registerSW(){
   if(!('serviceWorker' in navigator)){ SW_STATE = 'unsupported'; return; }
-  /* ⛔ file:// and any non-secure origin cannot register one. Say so rather than sitting on
-     'installing' forever, which reads as "nearly there" when it is "never". */
+
   if(location.protocol !== 'https:' && location.hostname !== 'localhost'){
     SW_STATE = 'unsupported'; return;
   }
@@ -427,21 +341,16 @@ function registerSW(){
   });
 }
 
-/* ⭐ THE CREW MUST BE ABLE TO SEE, BEFORE THEY WALK IN, WHETHER THIS WILL OPEN IN THERE.
-   ⛔ Finding out inside the freezer is the whole failure this exists to prevent, and it is
-   silent — the app looks perfectly fine right up until there is no signal. */
 function renderOfflineBadge(){
   const el = document.getElementById('offbadge');
   if(!el) return;
   const cached = !!cachedPlan();
-  if(SHELL_CACHED === null) probeShellCache();     // ⭐ answer, then re-render
+  if(SHELL_CACHED === null) probeShellCache();     
   if(offlineReady() && cached){
     el.className = 'okbox sm';
     el.innerHTML = '✓ <b>Saved on this device.</b> This will open in the freezer with no signal.';
   }else if(SW_STATE === 'ready' && cached && SHELL_CACHED === false){
-    /* ⛔ the worker is running and the shell is NOT in the cache — an eviction, or an
-       install that failed and left the old worker serving. Either way it is the state the
-       crew must not walk into blind. */
+
     el.className = 'warnbox sm';
     el.innerHTML = '⚠️ <b>The plan is saved but the app itself is not.</b> Reload once on '+
       'wifi before you go in — the page needs a signal to open until this clears.';
@@ -471,7 +380,7 @@ async function boot(){
 
   const c = cachedPlan();
   if(c){ setPlan(c.plan); render();
-         ensureToken().then(ok => { if(ok) refreshPlanQuietly(); });  // ⭐ never blocks
+         ensureToken().then(ok => { if(ok) refreshPlanQuietly(); });  
          return; }
   if(!(await ensureToken())) return renderGate();
   renderGate(null, true);
@@ -479,13 +388,10 @@ async function boot(){
   catch(e){ renderGate('Could not load the plan: ' + e.message); }
 }
 
-/* ⚠️ A NEWER PLAN MUST NEVER OVERWRITE WORK IN PROGRESS. If anything has been recorded
-   against the cached plan, the refresh is offered, never applied. */
 async function refreshPlanQuietly(){
   try{
     const p = await fetchPlan();
-    // ⭐ compare on `built`, not just the date — CLAUDE.md records that a mid-week rebuild
-    // writes ANOTHER plan for the SAME pull day, which a date test cannot see.
+
     const changed = (p.plan_date !== PAYLOAD.plan_date) || (p.built !== PAYLOAD.built);
     if(changed){
       if(isDirty()){
@@ -495,20 +401,17 @@ async function refreshPlanQuietly(){
         toast(`newer plan ${p.plan_date} loaded`);
       }
     }
-  }catch(e){ /* offline or expired — the cached plan is what matters */ }
+  }catch(e){   }
 }
 
-/* ---- STATE -----------------------------------------------------------------
-   ⭐ WRITE ON EVERY KEYSTROKE, NEVER ON "NEXT". A cold battery can cut out with
-   no warning, so anything held in memory until a save button is data we lose. */
-let S = blank();   // ⬅ re-read by setPlan() once the plan date is known
+let S = blank();   
 function blank(){
   return {v:2, started:null, bay:0, screen:'review',
-          opened:{},          // review: which lines a human actually opened
-          lines:{},           // id -> {actual, approved, state, reason, left, note, ts}
-          pallets:{},         // loc -> {done:true, ts}
-          bays:{},            // n -> {closed, putback_done}
-          events:[],          // ⭐ RAW TIMESTAMPS ONLY — never a computed duration
+          opened:{},          
+          lines:{},           
+          pallets:{},         
+          bays:{},            
+          events:[],          
           breaks:[]};
 }
 function load(){
@@ -516,14 +419,7 @@ function load(){
         if(o && o.v === 2) return o; } }catch(e){}
   return blank();
 }
-/* ⛔⛔ IF WE CANNOT PERSIST, WE MUST NOT PRETEND TO.
-   The whole promise of this app is "every keystroke survives a dead battery". When
-   localStorage is unavailable — a `data:` URL, a private window, storage disabled — the
-   first version caught the error and showed a 3-SECOND TOAST, then carried on happily
-   losing everything. This is strictly worse than refusing to start: the crew would work a
-   whole bay and discover the loss at the end, in a freezer. Found 2026-09-05 by loading
-   the built file from a data: URL, where every write throws.
-   So: probe once at boot, and if it fails BLOCK with a persistent banner. */
+
 let STORAGE_OK = null;
 function probeStorage(){
   try{
@@ -536,13 +432,12 @@ function probeStorage(){
 }
 let saveT = null, saveFailed = false;
 function save(){
-  // debounce only the WRITE, never the state change itself
+  
   if(saveT) clearTimeout(saveT);
   saveT = setTimeout(()=>{
     try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; }
     catch(e){
-      // A WRITE THAT FAILS MID-SESSION IS AS BAD AS ONE THAT NEVER WORKED (full disk, or
-      // eviction). Same persistent banner, never a toast that scrolls away.
+
       if(!saveFailed){ saveFailed = true; blockStorage(e.message||String(e), true); }
     }
   }, 60);
@@ -570,18 +465,11 @@ function blockStorage(why, midSession){
     '<button class="big" style="max-width:320px" onclick="location.reload()">Try again</button>';
 }
 function ev(kind, extra){
-  // ⭐ STORE THE EVENT, DERIVE THE SPAN LATER. A duration decided at capture time
-  // cannot be re-judged; a log can. (ruling: Jack, 2026-09-04)
+
   S.events.push(Object.assign({ts:new Date().toISOString(), kind:kind}, extra||{}));
   save();
 }
 
-/* ---- BREAK -----------------------------------------------------------------
-   ⛔ A FIXED IDLE CUTOFF WAS WITHDRAWN (Jack, 2026-09-04): "it's possible it takes
-   an hour to work on a pallet, especially if you're doing cycle counting." A
-   threshold that cannot tell a long count from a coffee break throws away real
-   work. ⭐ A break is a RECORDED FACT, and the screen goes inert so no accidental
-   tap lands in the log — which is what makes the remaining stamps trustworthy. */
 let breakStart = null, breakTimer = null;
 function startBreak(){
   breakStart = Date.now(); ev('break_start');
@@ -597,7 +485,6 @@ function endBreak(){
   document.getElementById('breakveil').classList.remove('on');
 }
 
-/* ---- WAKE LOCK: they are wearing gloves and the screen must not sleep ------- */
 let wl = null;
 async function keepAwake(){
   try{ if('wakeLock' in navigator) wl = await navigator.wakeLock.request('screen'); }catch(e){}
@@ -606,43 +493,19 @@ document.addEventListener('visibilitychange', ()=>{
   if(document.visibilityState === 'visible') keepAwake();
 });
 
-/* ---- helpers --------------------------------------------------------------- */
 const $ = s => document.querySelector(s);
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const n = x => (Math.round(Number(x||0)*100)/100);
 const lid = (bay, loc, ln, i) => bay+'|'+loc+'|'+(ln.sku||ln.serial||'')+'|'+(ln.lot||'')+'|'+ln.kind+'|'+i;
 function st(id){ return S.lines[id] || null; }
-/* ⛔⛔ THREE TERMINAL STATES, AND CONFLATING TWO OF THEM WOULD CORRUPT THE LEARNER.
-   Jack, 2026-09-05: *"there was never a skip option. There was only 'as planned'. What if
-   I skip that and then put the bay back early?"* — and he is right that the flow blocked
-   on it.
-     done    — it happened (as planned, or with a recorded correction)
-     missing — the stock WAS NOT THERE. ⭐ A fact about INVENTORY: Finale is wrong.
-     skipped — we CHOSE not to do it now. ⭐ A fact about the SHIFT: ran out of time,
-               too heavy, deferred. Finale is not wrong and nothing should be adjusted.
-   ⛔ Never merge `skipped` into `missing`: one triggers a stock correction and the other
-   must not, and planned-vs-moved is what `infer_pull_increments.py` learns case size from.
-   A skipped line is not evidence the target was wrong. */
+
 const TERMINAL = ['done', 'missing', 'skipped'];
 function isFinished(s){ return !!(s && TERMINAL.indexOf(s.state) >= 0); }
-/* ⛔ A `stay` IS NOT WORK, SO IT CANNOT BE "NOT DONE". "Reload as it was" needs no action:
-   the pallet goes back up with that stock on it whatever the crew do. ⭐ Counting stays as
-   skipped made a test bay report "14 not done" when 12 of them were non-actions — which
-   buries the ONE number that matters (a restock pick that never reached the floor) in
-   noise. Only take / aside / count can meaningfully be skipped. */
+
 const ACTIONABLE = ['take', 'aside', 'count'];
 function isActionable(l){ return ACTIONABLE.indexOf(l.kind) >= 0; }
-/* ⛔⛔ THE RECEIVING HALF OF A MOVE IGNORED EVERYTHING THE CREW HAD RECORDED.
-   `arriving` was built purely from PAYLOAD, so after skipping `1712` in bay 13 — or
-   approving 100 of 738, or marking it not-here — bay 18 still said
-   *"1712 ×738 — cross-lane, it has been waiting on the floor"*. ⭐ That sends someone
-   hunting the floor at the end of the shift for a pallet that was never brought down:
-   the unplanned single-SKU trip this whole project exists to eliminate.
-   ⛔ AND THERE WERE TWO DIFFERENT COUNTS of the same pallet's incoming stock on one
-   screen — the pallet box counted per LOT and cross-lane-plus-internal, the putback card
-   counted per MOVE and cross-lane only (P-44 said 7 and 6; P-25 said 4 and 1). ⭐ One
-   builder now answers both, so they cannot disagree. */
+
 function arrivalsFor(palletId){
   const out = [];
   if(!palletId) return out;
@@ -655,7 +518,7 @@ function arrivalsFor(palletId){
               qty:(actual != null ? actual : l2.planned_qty),
               from:pp.loc, bay:bb.bay, n:bb.n, cross:!!l2.cross,
               state:state, reason:(st_ && st_.reason) || '',
-              /* ⭐ the three outcomes the receiving crew must act on differently */
+               
               gone:(state === 'skipped' || state === 'missing'),
               short:(state === 'done' && actual != null &&
                      Math.abs(actual - l2.planned_qty) > 0.001)});
@@ -663,8 +526,7 @@ function arrivalsFor(palletId){
   return out;
 }
 function arrivalLine(x){
-  /* ⭐ a line that is NOT coming shows what was PLANNED, struck through — "×0" reads as a
-     zero-unit move rather than as a cancellation. */
+
   const head = '<b>'+esc(x.sku)+'</b> ×'+n(x.gone ? x.planned : x.qty)+
     (x.lot?' · lot '+esc(x.lot):'')+
     ' — set aside from '+esc(x.from)+(x.n !== S.bay + 1 ? ' in bay '+x.n+' ('+esc(x.bay)+')' : '')+
@@ -685,21 +547,13 @@ function arrivalLine(x){
   return '<div class="sm" style="margin-top:4px">'+head+'</div>';
 }
 
-/* ⛔ THE PERCENT JACK ASKED FOR WAS THE HALF THAT GOT CUT. `#hdr` is squeezed to ~119px at
-   375px by four 48px header buttons, and it is `nowrap; text-overflow:ellipsis` — so
-   "Bay F2-A-01 · 0% of the whole job" rendered as "Bay F2-A-01 · …". ⭐ The percent is the
-   short, load-bearing half; put it FIRST so an ellipsis eats the bay name, which is also
-   printed on the pallet cards below. */
 function bayTitle(bay, pct){ return pct + '% · ' + bay; }
 function setLine(id, patch){
   S.lines[id] = Object.assign({ts:new Date().toISOString()}, S.lines[id]||{}, patch);
   S.lines[id].ts = new Date().toISOString();
   save();
 }
-/* ⛔⛔ `Number('') === 0`, SO EVERY `if(!isFinite(v) || v < 0)` GUARD WAS DEAD.
-   Tapping Save on an untouched count pad recorded a count of ZERO — reproduced on `104-2`
-   where Finale says 201, giving a 201-unit phantom variance on the one feed whose entire
-   purpose is making the overstock figure trustworthy. ⭐ Test the RAW STRING first. */
+
 function readQty(id){
   const el = $('#' + id);
   if(!el) return null;
@@ -709,19 +563,8 @@ function readQty(id){
   return (isFinite(v) && v >= 0) ? v : null;
 }
 
-/* ⛔⛔ `<input type=number>` RENDERS NO SPINNERS ON iOS SAFARI. The ▲▼ exist only in
-   desktop Chrome, so on the actual iPad every quantity change was keyboard-only — in a
-   freezer, in gloves. ⭐ Explicit ± buttons at 62px, which is the glove target the rest of
-   the app already uses. ⭐ They step by 1 under 50 and by 5 above, so a 300-unit line is
-   not 300 taps. */
 function qtyField(id, val){
-  /* ⛔⛔ THE FIELD WAS 28px OF USABLE WIDTH AT 375px — about one and a half digits.
-     Two 62px buttons plus two 8px gaps is 140px of a ~172px column in the two-up `.row`,
-     and what was left went to the input. So the crew could step the number and not READ
-     it: "738" measured scrollWidth 80 against clientWidth 28. ⭐ Same blind spot as the
-     iOS-spinner finding — on a wide iPad it looks fine, and 375px is the real device.
-     ⭐ The fix is to stop competing for one line: the field gets the full width and the
-     buttons sit under it, still 62px tall and still thumb-sized in gloves. */
+
   return '<div style="margin-top:4px">'+
     '<input type="number" inputmode="numeric" id="'+id+'" value="'+val+'" '+
       'style="width:100%;font-size:30px;text-align:center;min-height:62px">'+
@@ -737,7 +580,7 @@ function qtyStep(id, dir){
   const cur = Number(el.value) || 0;
   const step = cur >= 50 ? 5 : 1;
   el.value = String(Math.max(0, cur + dir * step));
-  el.dispatchEvent(new Event('input'));       // ⭐ so the live correction preview updates
+  el.dispatchEvent(new Event('input'));       
 }
 
 function toast(m){
@@ -749,10 +592,6 @@ function toast(m){
   document.body.appendChild(d); setTimeout(()=>d.remove(), 3200);
 }
 
-/* ---- the four dispositions, in the order the job is done -------------------
-   Jack: "these first three I'm taking off, these next four I'm setting aside,
-   the final eight stay." ⛔ A list in SKU order makes the crew re-sort it in
-   their heads on every pallet. */
 const ORDER = ['take','aside','count','stay'];
 const LABEL = {take:'Take off', aside:'Set aside', count:'Cycle count', stay:'Stays — reload as it was'};
 
@@ -774,7 +613,6 @@ function render(){
   renderBay(a);
 }
 
-/* ======================= REVIEW (warm, before entry) ======================= */
 function renderReview(a){
   const t = PAYLOAD.totals || {};
   const allLines = [];
@@ -783,10 +621,7 @@ function renderReview(a){
       if(l.kind === 'take' || l.kind === 'aside')
         allLines.push({b:b, p:p, l:l, id:lid(b.n,p.loc,l,i)});
     }));
-    /* ⛔ ORPHAN PULLS WERE MISSING FROM THE REVIEW TOTAL TOO. The header read "3868 units
-       to the floor / 64 lines" while the plan's own totals said 3890 / 65 — the difference
-       being exactly the orphan. ⭐ Two numbers for the same thing on the same screen is how
-       a reviewer stops trusting either. */
+
     (b.orphan_pulls || []).forEach((o,i) =>
       allLines.push({b:b, p:{loc:o.from_location||'ORPHAN'}, l:o, id:lid(b.n,'ORPHAN',o,i)}));
   });
@@ -801,10 +636,6 @@ function renderReview(a){
   $('#sub').textContent = (PAYLOAD.plan_date||'') + ' · snapshot ' + (PAYLOAD.snapshot_as_of||'').slice(0,16);
   $('#progbar').style.width = (allLines.length ? opened/allLines.length*100 : 0) + '%';
 
-  /* ⭐ THE SUMMARY COMES FIRST, NOT A LIST. The reviewer's first question is
-     "is this week the right size?" and a list of lines cannot answer it. */
-  /* ⭐ FR-523: the LAST screen with a signal is the review screen, so this is where
-     "will this open in the freezer?" has to be answered. */
   let h = '<div id="offbadge" class="sm" style="margin:0 0 12px"></div>'+
     '<div class="card"><div class="pad">'+
     '<h2>Is this week the right size?</h2><div>'+
@@ -823,15 +654,11 @@ function renderReview(a){
         ' from '+esc(o.from_location)+'</div>').join('')+'</div>';
   }
 
-  /* ⛔ TO THE FLOOR and REARRANGING are different questions — mandatory restock
-     versus optional optimisation. Two sections, biggest first inside each. */
   h += section('To the floor — or we run out', takes, 'take');
   h += section('Rearranging for later — optional', asides, 'aside');
 
   a.innerHTML = h;
 
-  /* ⛔ DO NOT CLAIM A REVIEW THAT DID NOT HAPPEN. The button states the default
-     out loud rather than implying it. (Jack, 2026-09-04) */
   const btn = $('#mainbtn');
   btn.textContent = opened === allLines.length && allLines.length
     ? 'Start bay 1' : 'Approve rest as planned · start bay 1';
@@ -877,10 +704,7 @@ function openWhy(id){
     '<div style="margin-top:14px"><b>Approve a different amount?</b>'+
     '<div class="sm dim">Planned '+n(l.planned_qty)+'. Changing it here records your INTENT, '+
     'which is kept apart from what physically moves.</div>'+
-    /* ⛔ THE ONE QUANTITY CONTROL THAT NEVER GOT ± BUTTONS. `type=number` renders no
-       spinners on iOS Safari, so this was keyboard-only on the target device — lower
-       stakes than the bay screens (review happens warm, at a desk) but there is no reason
-       for it to be the exception. */
+
     qtyField('apq', n(cur)) + '</div>',
     [{t:'Cancel', c:'ghost'},
      {t:'Save', c:'pri', f:()=>{
@@ -902,12 +726,6 @@ function find(id){
   return null;
 }
 
-/* ⭐ PROGRESS ACROSS THE WHOLE JOB, NOT JUST THIS BAY (Jack, 2026-09-05): *"it might be
-   nice if there's a percent of work, so it tells me how much I've got done and how much is
-   remaining on the top title bar."* ⛔ The bar previously showed only progress WITHIN the
-   open bay, which reads as 100% eleven times over a shift and never answers "how far in am
-   I?". ⭐ Counted in ACTIONABLE lines — a `stay` is not work, so including it would inflate
-   the number with things nobody does. */
 function jobProgress(){
   let done = 0, total = 0;
   PAYLOAD.bays.forEach(b => {
@@ -916,7 +734,7 @@ function jobProgress(){
       total++;
       if(isFinished(st(lid(b.n, p.loc, l, i)))) done++;
     }));
-    // ⭐ an orphan pull is real work — it was excluded, so the header under-counted
+    
     (b.orphan_pulls || []).forEach((o,i) => {
       total++;
       if(isFinished(st(lid(b.n, 'ORPHAN', o, i)))) done++;
@@ -925,12 +743,6 @@ function jobProgress(){
   return {done: done, total: total, pct: total ? Math.round(done / total * 100) : 0};
 }
 
-/* ⭐ FREE MOVEMENT BETWEEN BAYS (Jack, 2026-09-05): *"I'm missing the way to go back and
-   forth."* ⛔ The only way through was the footer's forward-only close. Real work is not
-   forward-only — you go back to a bay you left something on, or look ahead at what is
-   coming. ⭐ Navigation records a `bay_open` and NOTHING else: it never closes a bay, never
-   marks a line, and never fabricates work. Same rule as the pallet browse — navigation is
-   CONTEXT, actions are the measurement. */
 function goBay(d){
   if(S.screen !== 'bay'){ S.screen = 'bay'; }
   const nx = S.bay + d;
@@ -940,23 +752,20 @@ function goBay(d){
   save(); window.scrollTo(0,0); render();
 }
 
-/* ============================ WORK (cold) ================================== */
 function renderBay(a){
   const b = PAYLOAD.bays[S.bay];
   if(!b){ S.screen='done'; save(); return render(); }
   const jp = jobProgress();
-  // ⭐ label it — "1% done" on bay 1 reads as bay progress unless it says otherwise
+  
   $('#hdr').textContent = bayTitle(b.bay, jp.pct);
   $('#hdr').title = 'Bay ' + b.bay + ' · ' + jp.pct + '% of the whole job';
-  /* ⚠️ "dig to position 5 · 3 pallets down" reads as impossible in a front-packed lane.
-     It is correct — the positions between hold no stock — but the crew cannot know that
-     from the number alone, so say it. */
+
   const gaps = b.deepest - b.pallets.length;
   $('#sub').textContent = 'Step ' + b.n + ' of ' + PAYLOAD.bays.length +
       ' · dig to position ' + b.deepest + ' · ' + b.pallets.length + ' pallets hold stock' +
       (gaps > 0 ? ' (' + gaps + ' position' + (gaps>1?'s are':' is') + ' empty)' : '') +
       ' · ' + (jp.total - jp.done) + ' of ' + jp.total + ' lines left overall';
-  // ⭐ the bar tracks the WHOLE job; the footer still speaks for this bay
+  
   $('#progbar').style.width = jp.pct + '%';
   navArrows();
 
@@ -983,15 +792,6 @@ function renderBay(a){
   const pb = (S.bays[b.n]||{}).putback_done;
   const btn = $('#mainbtn');
 
-  /* ⛔⛔ NEVER TRAP THE CREW IN A BAY. Jack, 2026-09-05: *"put the bay back is grayed out
-     unless I completed everything that was planned."* ⭐ The pallets are ON THE FLOOR — the
-     physically urgent thing is getting them back up, and an app that refuses to let you do
-     that until every optional line is ticked is telling the warehouse it knows better.
-     ⛔ The floor allowance is HARD; the worklist is not.
-     ⭐ So the button always advances. What it must NOT do is pretend the work happened:
-     unfinished lines are recorded as `skipped` explicitly, and the button says the number
-     out loud rather than hiding it. Same principle as the review screen's
-     "Approve rest as planned" — state the default, never imply it. */
   const advance = () => {
     ev('bay_close', {bay:b.bay});
     S.bays[b.n] = Object.assign(S.bays[b.n]||{}, {closed:true});
@@ -1006,19 +806,14 @@ function renderBay(a){
       const id = lid(b.n, p.loc, l, i);
       if(isActionable(l) && !isFinished(st(id))) out.push({id:id, l:l, loc:p.loc});
     }));
-    /* ⛔⛔ ORPHAN PULLS WERE INVISIBLE TO THE BAY CLOSE. They are the pulls the planner
-       explicitly REFUSES to drop ("a vanished pull is the worst direction to fail
-       quietly") — and closing a bay left them in no bucket at all: not done, not skipped,
-       not missing, not even counted as outstanding. A restock pick disappearing without
-       trace is an objective-1 failure by the exact mechanism the payload builder exists
-       to prevent. */
+
     (b.orphan_pulls || []).forEach((o,i) => {
       const id = lid(b.n, 'ORPHAN', o, i);
       if(!isFinished(st(id))) out.push({id:id, l:o, loc:o.from_location || 'ORPHAN'});
     });
     return out;
   };
-  // ⭐ close out the non-actions silently — the pallet went back, so they happened.
+  
   const settleStays = () => {
     b.pallets.forEach(p => p.lines.forEach((l,i) => {
       if(isActionable(l)) return;
@@ -1041,8 +836,7 @@ function renderBay(a){
     btn.textContent = left.length ? 'Close bay — ' + left.length + ' not done · ' + nxt
                                   : 'Close bay · ' + nxt;
     btn.onclick = () => {
-      // ⛔ this used to run BEFORE the confirmation, so tapping "Close bay" then "Go back"
-      // had already marked every stay done on a bay the crew did not close.
+
       if(!left.length){ settleStays(); return advance(); }
       dlg('Close ' + b.bay + ' with ' + left.length + ' line(s) not done?',
         '<p class="dim">These will be recorded as <b>skipped</b> — we did not do them. '+
@@ -1073,21 +867,13 @@ function renderBay(a){
 
 function pallet(b, p){
   const ps = S.pallets[p.loc] || {};
-  /* ⛔ WAS `ps.open && !ps.done` — and nothing ever sets `done:false`, so a pallet marked
-     done could NEVER be re-opened. A mis-tap on "All as planned" was unrecoverable except
-     by deleting the whole session. ⭐ A done pallet now expands like any other and shows
-     what was recorded, so a mistake can be corrected. */
+
   const open = !!ps.open;
   const groups = {};
   p.lines.forEach((l,i) => { (groups[l.kind] = groups[l.kind] || []).push({l:l, i:i}); });
   const counts = ORDER.filter(k=>groups[k]).map(k => groups[k].length + ' ' +
       (k==='take'?'to floor':k==='aside'?'set aside':k==='count'?'to count':'stay')).join(' · ');
-  // ⭐ the prototype's header line: how much WORK is on this pallet, and how much STOCK.
-  /* ⛔ A COUNTED SKU EMITS TWO LINES — a `count` AND the `stay`/`aside` it sits on — both
-     carrying the SAME `system_qty`. Counting lines therefore double-counted both the SKUs
-     and the units: 12 of 56 pallets were wrong, worst `F2-A-02-3` reading "34 SKU · 2834
-     units" against a truth of 17 / 1417, exactly 2×. ⭐ Count DISTINCT (sku, lot) for stock;
-     the work count is separate and is right to include the count lines. */
+
   const todo = p.lines.filter(x => isActionable(x)).length;
   const seen = new Map();
   p.lines.forEach(x => {
@@ -1098,13 +884,6 @@ function pallet(b, p){
   const head = (todo ? todo + ' to do' : 'nothing to do') + ' · ' + seen.size +
                ' SKU on it · ' + n(units) + ' units';
 
-  /* ⭐⭐ THE `P-` CARD IS THE FIRST THING THE CREW DO, SO IT IS THE FIRST THING SHOWN.
-     Jack, 2026-09-05: *"I don't see an indicator to know when I pull a pallet down if it's
-     gonna be a P-1, P-2, P-3."* ⛔ Every later instruction ("set aside onto P-12", "load
-     P-38 back") is unusable unless the pallet was labelled on the way down.
-     ⚠️ TWO DIFFERENT CARDS — do not conflate them:
-       P-38        temporary pallet identity, attached NOW, app-only, never a Finale bin.
-       F2-A-02-3   the Finale PLACARD, attached at putback, a real scannable location. */
   let h = '<div class="card"><div class="ph" onclick="togglePallet(\''+p.loc+'\')">'+
     '<span class="tag '+(ps.done?'t-stay':'t-take')+'">'+(ps.done?'✓':'pos '+p.pos)+'</span>'+
     '<div class="grow"><b>'+esc(p.loc)+'</b>'+
@@ -1114,15 +893,10 @@ function pallet(b, p){
       (p.spoil?' · <b>SPOIL — nothing to take, goes straight back</b>':'')+'</small></div>'+
     '<span class="dim">'+(open?'▾':'▸')+'</span></div>';
   if(open){
-    /* ⛔⛔ CLAUDE.md: "Never print one half of a move without the other." The SOURCE pallet
-       says "SET ASIDE N — goes onto pallet X", but the RECEIVING pallet said nothing, so the
-       crew loading it had no idea stock was due to go on before it went back up. */
+
     const arriving = arrivalsFor(p.pallet_id);
     const coming = arriving.filter(x => !x.gone);
-    /* ⚠️ IS THERE ROOM? Every cross-lane destination on the 2026-09-05 plan is estimated
-       OVER its deck once the arrivals land, and volumes are ~40% estimates — so this is a
-       warning, never a silent drop. ⛔ The failure to avoid is the crew finding out with
-       the boxes in their hands and no instruction for the remainder. */
+
     const xd = (b.cross_in || []).filter(m => m.onto_pallet === p.pallet_id && m.dest_over_deck);
     if(arriving.length){
       h += '<div class="pad" style="border-top:1px solid var(--line);padding-bottom:0">'+
@@ -1161,8 +935,7 @@ function pallet(b, p){
     });
     h += '</div><div class="pad row">'+
       '<button class="ok" onclick="allAsPlanned(\''+p.loc+'\')">✓ All as planned</button>'+
-      /* ⛔ was `groups.count.length` — it never decremented, so after 3 of 17 it still
-         said 17 while the toast correctly said 14 left. The button contradicted the app. */
+
       (groups.count ? (() => {
          const left = groups.count.filter(g => !isFinished(st(lid(b.n, p.loc, g.l, g.i)))).length;
          return left ? '<button onclick="chainCounts(\''+p.loc+'\')">⊙ Count these '+left+
@@ -1181,21 +954,11 @@ function line(b, p, l, i){
   const skipped = s && s.state === 'skipped';
   const q = s && s.actual != null ? s.actual
           : (s && s.approved != null ? s.approved : l.planned_qty);
-  /* ⛔ RESTORED FROM THE PROTOTYPE (Jack, 2026-09-05): *"I like before that you had the way
-     that things expanded, and you could see a little bit more data, like how many items were
-     expected to be found in that location and how many are expected to be moved. I feel like
-     I'm missing that data on the new one."*
-     ⭐ Two DIFFERENT numbers and the crew need both:
-        system_qty  — what Finale says is ON this pallet  (what you expect to FIND)
-        planned_qty — how many of them move               (what you expect to TAKE)
-     ⛔ Showing only the second is what made the rebuild feel thinner than the sketch, and it
-     is also the number you need to spot a wrong count before you start lifting. */
+
   const onPallet = n(l.system_qty);
   let sub = '';
   if(l.kind === 'take')  sub = '→ ' + esc(l.dest || 'F1');
-  /* ⭐ FR-530: a CROSS-LANE set-aside is the same instruction with a longer wait — the
-     pallet it joins is opened in a different BAY, in a different LANE, later in the shift.
-     ⛔ Saying only "pallet P-54" would have the crew hunting for it in this bay. */
+
   if(l.kind === 'aside') sub = '→ pallet ' + esc(l.onto_pallet) +
                                (l.cross
                                  ? ' in <b>bay '+l.onto_bay+' · '+esc(l.onto_lane||'')+
@@ -1221,9 +984,7 @@ function line(b, p, l, i){
 
 function togglePallet(loc){
   const ps = S.pallets[loc] = S.pallets[loc] || {};
-  // ⭐ OPENING A PALLET IS THE START OF ITS SPAN — no "start" button. But a pallet
-  // opened and never acted on is a BROWSE worth zero, and the span is bounded by
-  // the first and last ACTION, never by when it was opened. (Jack, 2026-09-04)
+
   ps.open = !ps.open;
   Object.keys(S.pallets).forEach(k => { if(k !== loc) S.pallets[k].open = false; });
   if(ps.open) ev('pallet_open', {pallet:loc}); else ev('pallet_close', {pallet:loc});
@@ -1233,12 +994,10 @@ function allAsPlanned(loc){
   const f = PAYLOAD.bays[S.bay].pallets.find(p => p.loc === loc);
   f.lines.forEach((l,i) => {
     const id = lid(PAYLOAD.bays[S.bay].n, loc, l, i);
-    if(l.kind === 'count') return;        // ⛔ a count is never "as planned" — it is a measurement
+    if(l.kind === 'count') return;        
     const s = st(id);
     if(isFinished(s)) return;
-    // ⛔ a `stay` is not a movement — writing `actual` onto it would emit a transfer to
-    // "PALLET undefined" the day a stay carries a quantity. `settleStays`/`skipRest`
-    // already got this right; this was the odd one out.
+
     if(!isActionable(l)){ setLine(id, {state:'done', as_planned:true, no_action:true}); return; }
     setLine(id, {state:'done', actual: (s && s.approved!=null) ? s.approved : l.planned_qty,
                  as_planned:true});
@@ -1258,19 +1017,10 @@ function maybeDone(loc){
   save();
 }
 
-/* ---- the exception dialog --------------------------------------------------
-   ⛔⛔ "MOVED A DIFFERENT AMOUNT" HAS TWO CAUSES AND THEY ARE NOT THE SAME
-   FINALE TRANSACTION (Jack, 2026-09-04). ⭐ Do not make the crew do the
-   arithmetic: ask two numbers and derive it.
-        adjustment = (moved + left_on_pallet) − system_qty
-   Sign gives shrink vs found, and "how many are left?" is itself a count. */
 function openLine(id){
   const f = find(id); if(!f) return;
   const l = f.l, s = st(id) || {};
-  /* ⛔ RE-OPENING A CORRECTED LINE USED TO DESTROY THE CORRECTION. The dialog prefilled
-     from the PLAN and ignored what was recorded, so merely looking at a line and tapping
-     Save turned {actual 251, left 0, adjustment −248} into {actual 251, left 248,
-     adjustment 0} — the correction silently gone. ⭐ Prefill what is actually recorded. */
+
   const prev = s || {};
   const planned = prev.actual != null ? prev.actual
                 : (s.approved != null ? s.approved : l.planned_qty);
@@ -1289,14 +1039,11 @@ function openLine(id){
           const v=readQty('q1');
           if(v===null){ toast('⛔ not a quantity'); return false; }
           const adj = v - Number(l.system_qty);
-          /* ⛔ TAPPING THIS WITHOUT CHANGING THE NUMBER wrote a `corrected: true` row with
-             was === now — a phantom correction in the export. */
+
           if(Math.abs(adj) < 0.001){
             setLine(id,{state:'done', as_planned:true});
             ev('line_done',{line:id}); maybeDone(f.p.loc); render(); return; }
-          /* ⛔⛔ AND IT WROTE AN UNREASONED ADJUSTMENT. The take/aside path blocks a −8
-             without a reason ("it becomes a Finale accounting code") while this path let
-             −231 through unlabelled — the same Finale correction, no code, no warning. */
+
           const sel = $('#sreason');
           if(!sel || sel.value === '__none__'){
             toast('⛔ pick a reason — this is a Finale stock correction');
@@ -1327,16 +1074,7 @@ function openLine(id){
         upd();
       });
   }
-  /* ⛔⛔ `adjustment = (moved + left) − system_qty` IS ONLY VALID WHEN THIS LINE IS THE ONLY
-     THING LEAVING THE PALLET — and it often is not. The model deliberately emits a `take`
-     AND an `aside` for the same SKU-lot when part goes to the floor and the remainder is
-     consolidated (`after_take`), ⭐ 11 such pairs in the live plan.
-     ⛔ So a crew who clears the pallet and truthfully answers "left = 0" on the take line
-     fabricated a shrink of the whole set-aside quantity — reproduced at −248 on `130`, and
-     −687 on `107` where the deck is emptied outright. A phantom Finale correction, invented
-     by the app, on stock that never went missing.
-     ⭐ THE FIX: this line's baseline is what is on the pallet MINUS whatever its sibling
-     takes. The two-cause derivation is intact; it was the baseline that was wrong. */
+
   const sib = f.p ? f.p.lines.find((x,ix) =>
         ix !== f.i && x.sku === l.sku && (x.lot||'') === (l.lot||'') &&
         (x.kind === 'take' || x.kind === 'aside')) : null;
@@ -1349,9 +1087,7 @@ function openLine(id){
   }
   const baseline = Math.max(0, Number(l.system_qty) - sibTook);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
-  /* ⛔ THE DIALOG DID NOT NAME THE LOT. `F2-A-02-2` holds `221` twice — lot 2025-08-01
-     (take 7) and lot 2026-06-16 (stay 27) — and the header read only "221 — planned 7", so
-     the crew could not tell which stock they were confirming. Directly FIFO-relevant. */
+
   dlg(l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
     (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+esc(l.sku)+'</b> is also '+
         (sib.kind === 'take' ? 'being taken to '+esc(sib.dest||'F1')
@@ -1372,15 +1108,7 @@ function openLine(id){
     'you do not have to work it out.</div>'+
     '<div id="calc" style="margin-top:10px"></div>',
     [{t:'Cancel',c:'ghost'},
-     /* ⛔ one tap, no confirmation, and it asserts FINALE IS WRONG about the whole
-        `system_qty`. Re-opening the line then showed a perfectly normal dialog with no sign
-        it was marked missing. Confirm it, and say what it means. */
-     /* ⛔⛔ AND THIS PATH NEVER GOT THE SIBLING-AWARE BASELINE. The Save path was fixed on
-        2026-09-05 (the fabricated −248 / −687 shrinks); `missing` kept using the raw
-        `system_qty`, so marking BOTH halves of a sibling pair "not here" proposed a
-        decrease of the FULL quantity TWICE — measured 176 against a system 88. And the
-        dialog said the wrong number out loud before the crew confirmed it.
-        ⭐ A line's share is what is on the pallet MINUS what its sibling takes. */
+
      {t:'Not here at all',c:'',f:()=>{ setTimeout(() => dlg(
         'Not here at all — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
         '<div class="warnbox"><b>This says Finale is WRONG.</b><div class="sm" '+
@@ -1396,25 +1124,17 @@ function openLine(id){
             setLine(id,{state:'missing', actual:0, reason:'not found',
                         baseline:baseline, sibling_took:sibTook});
             ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }}]), 0); }},
-     /* ⛔ never re-enter dlg() from inside a dialog button — let this one close first */
+      
      {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
-        /* ⛔ `Number('')` IS 0, SO THESE GUARDS WERE DEAD on an untouched field — the same
-           root as the count pad that recorded a 201-unit phantom variance. `readQty` tests
-           the RAW STRING before coercing. */
+
         const mv=readQty('q1'), lf=readQty('q2');
         if(mv==null||lf==null) return toast('⛔ fill in both numbers');
-        const adj = (mv + lf) - baseline;      // ⭐ baseline, not raw system_qty
-        /* ⛔⛔ "MOVED 0, LEFT ALL" WAS A SILENT LOSS. It previewed "Adds up — nothing to
-           correct", ticked the line green, counted toward progress — and landed in NO
-           export bucket at all, because `moves()` gates transfers on `act > 0` and has no
-           else. Nine units of a planned restock pick existed nowhere. ⭐ And the entry is
-           not perverse: "I didn't move it, it's all still there" is exactly what someone
-           types when they decide to leave a line. ⛔ That is a SKIP — a decision about the
-           shift — and it has to be recorded as one, with a reason. */
+        const adj = (mv + lf) - baseline;      
+
         if(mv === 0 && Math.abs(adj) < 0.001 && isActionable(l)){
           toast('nothing moved and nothing missing — recording this as NOT DONE');
-          setTimeout(() => skipLine(id), 0);   // ⭐ ask for a reason, do not assume one
+          setTimeout(() => skipLine(id), 0);   
           return;
         }
         const patch = {state:'done', actual:mv, left:lf, adjustment:adj,
@@ -1423,7 +1143,7 @@ function openLine(id){
           const sel = $('#rsn');
           if(sel && sel.value === '__none__'){
             toast('⛔ pick a reason — it becomes a Finale accounting code');
-            return false;                      // ⛔ never default someone into "Damaged"
+            return false;                      
           }
           patch.reason = sel ? sel.value : '';
           patch.direction = adj < 0 ? 'shrink' : 'found';
@@ -1431,17 +1151,13 @@ function openLine(id){
         setLine(id, patch);
         ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj});
         maybeDone(f.p.loc); render(); }}],
-    ()=>{ // live recalc + reason picker, only when it is actually needed
+    ()=>{ 
       const upd = ()=>{
         const mv=Number($('#q1').value)||0, lf=Number($('#q2').value)||0;
         const adj=(mv+lf)-baseline; const c=$('#calc');
         if(Math.abs(adj)<0.001){ c.innerHTML='<div class="okbox sm">Adds up — nothing to correct.</div>'; return; }
         const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
-        /* ⛔ THE FIRST OPTION USED TO BE `Damaged`, SO A REASON NOBODY CHOSE WAS WRITTEN
-           into a real Finale accounting code. `ACCOUNTING-HANDOFF.md` rules that every
-           reason is its own group — a defaulted one is not a harmless placeholder.
-           ⭐ The found list already began with a blank on purpose; the shrink list needs a
-           deliberate choice, and Save is blocked until it is made. */
+
         const ph = (adj < 0) ? '<option value="__none__" selected>— choose a reason —</option>' : '';
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
           '<div class="sm dim" style="margin:6px 0">We will record '+(adj<0?'a decrease':'an increase')+
@@ -1452,9 +1168,7 @@ function openLine(id){
       $('#q1').addEventListener('input',upd); $('#q2').addEventListener('input',upd); upd();
     });
 }
-/* ⛔ SKIPPING IS A RECORDED DECISION, NOT AN ABSENCE. It must never look like the line
-   was simply never reached, because "we ran out of time" and "nobody opened the app" are
-   different facts and only one of them is the crew telling us something. */
+
 function skipLine(id, bulk){
   const f = find(id); if(!f) return;
   const done = () => { if(!bulk){ maybeDone(f.p ? f.p.loc : ''); render(); } };
@@ -1474,8 +1188,7 @@ function skipLine(id, bulk){
         setLine(id,{state:'skipped', actual:0, reason:why});
         ev('line_skipped',{line:id, why:why}); done(); }}]);
 }
-/* ⭐ SKIP THE REST OF A PALLET — one tap, the mirror of "All as planned". Without it the
-   only way out of a half-worked pallet was to touch every remaining line. */
+
 function skipRest(loc){
   const b = PAYLOAD.bays[S.bay];
   const p = b.pallets.find(x => x.loc === loc);
@@ -1483,7 +1196,7 @@ function skipRest(loc){
   p.lines.forEach((l,i) => { const id = lid(b.n, loc, l, i);
     if(isFinished(st(id))) return;
     if(isActionable(l)) left.push({id:id, l:l});
-    else setLine(id, {state:'done', as_planned:true, no_action:true});  // a stay is not work
+    else setLine(id, {state:'done', as_planned:true, no_action:true});  
   });
   if(!left.length){
     S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false});
@@ -1514,7 +1227,6 @@ function orphanDone(id, took){
   ev(took?'line_done':'line_missing', {line:id, orphan:true}); render();
 }
 
-/* ---- cycle counts CHAIN: record one, the pad opens on the next ------------- */
 function chainCounts(loc){
   const b = PAYLOAD.bays[S.bay];
   const p = b.pallets.find(x => x.loc === loc);
@@ -1545,10 +1257,6 @@ function doCount(id, rest){
     ()=>{ setTimeout(()=>{ const e=$('#cq'); if(e) e.focus(); }, 80); });
 }
 
-/* ---- putback ---------------------------------------------------------------
-   ⛔ POSITION 1 IS THE FRONT. A pushback lane fills from the front, so the pallet
-   that ends up DEEPEST goes in FIRST. The order below is already correct — it is
-   derived by lane_packing.py, never by this file. */
 function putbackCard(b){
   const st_ = S.bays[b.n] || {};
   let h = '<div class="card" id="pbcard"><div class="pad"><h3>Putback — load in this order</h3>'+
@@ -1560,19 +1268,10 @@ function putbackCard(b){
       '<div class="grow"><div class="sku">take <b>'+esc(pb.pallet_id||'pallet')+
         '</b> → placard <b>'+esc(pb.loc)+'</b>'+
         (pb.pos===1?' <span class="dim sm">FRONT</span>':'')+'</div>'+
-      /* ⛔ truncating at four hid INCOMING stock — the crew could not see that 429 units
-         of `174` were arriving on this pallet. A pallet card is the deliverable of putback;
-         it does not get to be a summary. */
+
       '<div class="sub">'+pb.items.length+' SKU · '+
         pb.items.map(x=>esc(x.sku)).join(', ')+'</div>'+
-      /* ⛔ AND THE CROSS-LANE ARRIVALS BELONG ON THIS CARD TOO. The putback screen is
-         where the pallet is physically loaded, so a card listing only the SKUs that were
-         already on it is the same "one half of a move" defect one screen further on —
-         the crew would push the pallet back with the arriving stock still on the floor. */
-      /* ⭐ ONE BUILDER, so this cannot disagree with the pallet card above it — it used to
-         count cross-lane MOVES while the pallet counted per-LOT lines including internal
-         asides (P-44 read 7 and 6; P-25 read 4 and 1), with near-identical wording.
-         ⛔ And it must reflect what was RECORDED: a skipped set-aside is not arriving. */
+
       (function(){
         const arr = arrivalsFor(pb.pallet_id);
         const live = arr.filter(x => !x.gone);
@@ -1591,9 +1290,7 @@ function putbackCard(b){
       })()+
       (waiting?'<div class="sub" style="color:var(--aside)">stays on the floor — still waiting for stock from a later bay</div>':'')+
       '</div>'+
-      /* ⭐ FR-568: one tap, at the moment they are looking at the loaded pallet. Optional
-         by design — a crew trapped by a metrics question is a crew that stops using the
-         app. ⛔ Never show our own estimate here; `askFullness` reveals it after. */
+
       (function(){
         const src = (b.pallets.find(x => x.pallet_id === pb.pallet_id) || {});
         const k = (S.pallets[src.loc] || {}).fullness;
@@ -1610,32 +1307,18 @@ function putbackCard(b){
   return h;
 }
 function putbackDone(nn){
-  // ⚠️ PUTBACK IS TIMED PER BAY, NOT PER PALLET (Jack): "they're just gonna put them
-  // all back and then go tap tap tap tap close the bay."
+
   S.bays[nn] = Object.assign(S.bays[nn]||{}, {putback_done:true});
   ev('putback_done', {bay: PAYLOAD.bays.find(b=>b.n===nn).bay}); save();
-  askLaneRoom(nn);          // ⭐ FR-569 — one question, at the only moment anyone can answer it
+  askLaneRoom(nn);          
   render();
 }
 
-/* ============ IS THERE ACTUALLY A FREE SPACE IN THIS LANE? (FR-569) ============
-   ⛔⛔ THIS IS THE FALSE-EMPTY PROBLEM, AND NO EXPORT CAN ANSWER IT. Finale's bin export
-   lists only locations HOLDING STOCK, so a genuinely empty position and one whose stock is
-   tagged to the wrong slot look **identical**. ⭐ Counted 2026-09-04: 8 nominally free
-   positions across 22 stocked bays, of which cross-checking bay VOLUME suggested only
-   ~3 are real — and that cross-check is itself built on ~40%-estimated volumes.
-   ⛔ Everything downstream depends on the answer: `plan_wave_pallets` needs a free deck,
-   the cross-lane pass needs somewhere to put arrivals, and `lane_packing` RAISES if a lane
-   is asked to hold more pallets than it has positions.
-
-   ⭐ The crew have just emptied the lane and filled it again. They are the only source
-   that has ever actually seen it. ⛔ Asked ONCE per bay, at putback, with a "not sure"
-   that is a real answer — a forced guess is worse than a gap, because a gap is visible. */
 function askLaneRoom(nn){
   const b = PAYLOAD.bays.find(x => x.n === nn);
   if(!b) return;
   const st_ = S.bays[nn] || {};
-  if(st_.lane_room) return;                 // asked already this session
+  if(st_.lane_room) return;                 
   const backN = (b.putback || []).length;
   setTimeout(() => dlg('One question about ' + b.bay,
     '<p>You have just put <b>'+backN+'</b> pallet'+(backN===1?'':'s')+' back into '+
@@ -1656,27 +1339,6 @@ function laneRoom(nn, ans, backN){
   save(); render();
 }
 
-
-/* ============ HOW FULL IS THIS PALLET, REALLY? (FR-568, Jack 2026-09-06) ============
-   ⭐⭐ THE PROBLEM THIS EXISTS TO SOLVE, in Jack's words: *"the items in finale are not
-   stored digitally in the place they actually physically are, so you can't see. You see
-   the ones that are over a hundred percent… but there are a couple empty pallets. It's
-   hard for you to tell which pallet spaces are actually empty because of the FALSE
-   EMPTIES."*
-
-   ⛔ No export can answer this. Finale's bin export lists only locations HOLDING STOCK, so
-   an empty position and a mislabelled one look identical, and our volume model reads six
-   pallets over 100% and twenty-three under 50% with no way to tell which readings are real.
-   ⭐ The crew are standing in front of the pallet. They can just tell us.
-
-   ⛔⛔ ASK BLIND, THEN REVEAL. The model's own estimate is deliberately NOT shown until
-   after they answer. An anchored estimate is not an independent measurement, and having a
-   SECOND independent reading is the entire point — the DISAGREEMENT is the calibration
-   signal. Show it first and we learn nothing except that people agree with numbers.
-
-   ⭐ COARSE BUCKETS, NOT A KEYBOARD. Gloves, −10°F. Six taps, and the one that matters
-   most is OVERFULL — that is the reading that says our deck model is wrong, or that the
-   consolidation is routing stock onto a pallet that cannot take it. */
 const FULL_BUCKETS = [
   {k:'empty',    pct:0,   t:'Empty',      d:'nothing on it'},
   {k:'quarter',  pct:25,  t:'¼ full',     d:'lots of room'},
@@ -1714,9 +1376,7 @@ function setFullness(bayN, loc, k){
   ps_.fullness_ts = new Date().toISOString();
   ev('fullness', {bay: b ? b.bay : '', pallet: p ? p.pallet_id : loc, bucket: k});
   save();
-  /* ⭐ NOW show what we thought — after the answer is locked in, never before. It is
-     feedback for the crew and it is how a wildly wrong model gets noticed on the floor
-     rather than three weeks later in a spreadsheet. */
+
   const bk = bucketOf(k);
   const deck = p ? Number(p.deck_m3 || 0) : 0;
   const ours = p ? Number(p.est_m3 || 0) : 0;
@@ -1745,16 +1405,13 @@ function setFullness(bayN, loc, k){
   render();
 }
 
-/* ============================== FINISH ===================================== */
 function renderDone(a){
   const jp2 = jobProgress();
   $('#hdr').textContent = jobProgress().pct === 100 ? 'Finished' : 'Review / sync';
   $('#sub').textContent = 'Export the moves for Finale';
-  $('#progbar').style.width = jp2.pct + '%';   // ⛔ never a hardcoded 100%
+  $('#progbar').style.width = jp2.pct + '%';   
   const m = moves();
-  /* ⛔ THIS USED TO ASSERT "All N bays closed" UNCONDITIONALLY, and the ⇪ button is always
-     available — so tapping it on bay 1 showed a green "All 18 bays closed" and a 100% bar
-     with 114 of 114 lines outstanding. ⭐ Derive it from the work. */
+
   const closed = PAYLOAD.bays.filter(x => (S.bays[x.n]||{}).closed).length;
   const allClosed = closed === PAYLOAD.bays.length;
   a.innerHTML = (allClosed
@@ -1782,7 +1439,7 @@ function renderDone(a){
     '<button class="warn" onclick="dl(\'adjustments\')">Corrections CSV</button>'+
     '<button onclick="dl(\'counts\')">Counts CSV</button>'+
     '<button onclick="dl(\'skipped\')">Not done CSV</button>'+
-    // ⛔ `missing` had a chip on this screen and NO WAY TO EXPORT IT
+    
     '<button onclick="dl(\'missing\')">Not found CSV</button>'+
     '<button onclick="dl(\'events\')">Event log</button></div></div>'+
     '<div class="card"><div class="pad">'+
@@ -1806,11 +1463,7 @@ function renderDone(a){
   btn.onclick=()=>{ S.screen='bay'; S.bay=0; save(); render(); };
 }
 function openFinish(){ S.screen='done'; save(); render(); }
-/* ⛔ A DESTRUCTIVE RESET NEEDS A HARD CONFIRM THAT NAMES WHAT IT DESTROYS.
-   Operationally this is the way out of starting the wrong plan; ⚠️ it also wipes real
-   recorded work, so it counts the lines out loud and never sits next to a common action.
-   ⚠️ `beforeunload` re-saves in-memory state on the way out, so clearing storage alone is
-   undone by the reload — the in-memory session has to be blanked FIRST. */
+
 function startOver(){
   const n = Object.keys(S.lines).length, e = S.events.length;
   dlg('Start over?',
@@ -1825,18 +1478,6 @@ function startOver(){
         toast('Session reset.'); }}]);
 }
 
-/* ---- the Finale writer -----------------------------------------------------
-   ⛔ THE EXACT IMPORT SPEC IS STILL WITH JACK (blocking question 4), so these are
-   the FIELDS the transactions need, in a flat CSV, not a validated Finale
-   template. ⭐ Column names are kept literal and obvious so remapping is a rename,
-   never a re-derivation. */
-/* ⛔⛔ A `P-` CARD IS APP-ONLY AND MUST NEVER REACH FINALE AS A LOCATION.
-   The export wrote `to_location: "PALLET P-18"` for all 32 set-asides — the temporary
-   laminated card, which CLAUDE.md is explicit is NOT a Finale bin ("never make these real
-   Finale locations — that manufactures precisely what F9-T5 became"). A Finale import would
-   reject the row or post it against a location that does not exist.
-   ⭐ The real destination IS known: the receiving pallet's FINAL position, derived by
-   lane_packing and carried in the putback list. Resolve it. */
 function palletFinalLoc(pid){
   if(!pid) return null;
   for(const b of PAYLOAD.bays)
@@ -1847,10 +1488,7 @@ function palletFinalLoc(pid){
 
 function moves(){
   const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[],
-               /* ⭐ FR-568/569 — the two OBSERVATIONS this app can make that no Finale
-                  export ever will: how full a pallet actually is, and whether a lane
-                  actually has room. Both carry our own prediction alongside, because a
-                  reading without the thing it disagrees with calibrates nothing. */
+
                fullness:[], lane_room:[]};
   PAYLOAD.bays.forEach(b => {
     (b.pallets || []).forEach(p => {
@@ -1864,9 +1502,7 @@ function moves(){
         model_m3:ours, deck_m3:deck,
         model_pct: deck>0 ? Math.round(100*ours/deck) : null,
         no_volume_skus:(p.no_volume||[]).join(' '),
-        /* ⭐ a SPOIL pallet is the cleanest calibration point there is: nothing was taken
-           off or put on, so Finale's contents should be exactly right and the only thing
-           being tested is our SIZES. */
+
         sku_lots:(p.lines||[]).filter(l=>l.kind!=='count')
                    .map(l=>l.sku+'@'+(l.lot||'-')+'x'+n(l.system_qty)).join(' '),
         ts:ps_.fullness_ts});
@@ -1880,45 +1516,26 @@ function moves(){
     }
   });
   PAYLOAD.bays.forEach(b => {
-    /* ⛔⛔ `loc` WAS DOING TWO JOBS AND I BROKE IT BY FIXING THE OTHER ONE.
-       It is BOTH the key the UI stored state under AND the location we export. Orphan state
-       is written under the literal key `'ORPHAN'`; when I changed this call to pass the real
-       `from_location` (to stop exporting a fake Finale bin) the LOOKUP started missing, `s`
-       came back undefined, and the row was silently dropped — the crew tapped "Took it", the
-       bay closed clean, and 22 units left the rack with no export at all.
-       ⭐ I traded a visible-wrong-location bug for SILENT STOCK LOSS, which is strictly
-       worse. Two parameters now: `key` identifies the state, `loc` is what Finale is told. */
+
     const push = (p, l, i, key, loc) => {
       const id = lid(b.n, key, l, i), s = S.lines[id];
       if(!s) return;
       if(s.state === 'missing'){
-        /* ⛔ `missing` MEANS FINALE IS WRONG, so the row has to be able to express the
-           correction — it carried `planned` but NOT `system_qty`, and the correction is
-           against what Finale believes is there, not against what we hoped to take. */
-        /* ⛔ `suggested_decrease` WAS THE RAW `system_qty`, so both halves of a sibling
-           pair each proposed the FULL amount — 176 against a system 88. The dialog now
-           computes the sibling-aware baseline and records it; fall back to `system_qty`
-           only for a line recorded before this fix. */
+
         const dec = (s.baseline != null) ? s.baseline : l.system_qty;
         out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot||'',
           planned_qty:l.planned_qty, system_qty:l.system_qty,
           sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
           suggested_decrease:dec, note:s.reason||'not found',
-          /* ⭐ a not-done SET ASIDE has to name the pallet left short, or whoever
-             re-plans it cannot tell which one it was. */
+
           onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
           onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''), ts:s.ts});
         return; }
-      /* ⛔ SKIPPED IS NOT A TRANSFER AND NOT AN ADJUSTMENT — it is the absence of both,
-         recorded on purpose. ⭐ It still leaves the planner a fact: this line was planned,
-         reached, and deliberately not done. Objective 1 says a skipped TAKE is the one
-         that can cost a stockout, so it carries the planned quantity and the reason. */
+
       if(s.state === 'skipped'){ out.skipped.push({bay:b.bay, location:loc, sku:l.sku,
         lot:l.lot||'', kind:l.kind, planned_qty:l.planned_qty,
         approved_qty:(s.approved!=null?s.approved:l.planned_qty),
-        /* ⭐ NAME THE PALLET LEFT SHORT. Skipping a cross-lane set-aside means a pallet in
-           a LATER bay never receives it, and the not-done list carried no destination at
-           all — the one fact needed to re-plan it. */
+
         onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
         onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''),
         cross:!!l.cross,
@@ -1933,8 +1550,7 @@ function moves(){
         const dest = l.kind === 'take' ? (l.dest || '')
                                        : (palletFinalLoc(l.onto_pallet) || '');
         if(!dest){
-          // ⛔ never invent one. An unresolvable destination is a row a human must look at,
-          // not a row to guess — and it is exported so it cannot be lost.
+
           out.unresolved = out.unresolved || [];
           out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:act,
             onto_pallet:l.onto_pallet||'',
@@ -1948,10 +1564,7 @@ function moves(){
           kind:l.kind, bay:b.bay, ts:s.ts});
       }
       if(s.adjustment && Math.abs(s.adjustment) > 0.001){
-        /* ⛔ THE ROW CONTRADICTED ITS OWN FIELDS on every sibling pair: it carried
-           `system_qty 88, moved 6, left 0, change −2`, and (6+0)−88 is −82. The baseline
-           (8) is the number that makes −2 correct and it was the one field missing. ⭐ The
-           app already knows it — emit it so the row is self-checking. */
+
         out.adjustments.push({location:loc, sku:l.sku, lot:l.lot||'',
           change:s.adjustment, direction:s.adjustment<0?'decrease':'increase',
           baseline:(s.baseline != null ? s.baseline : l.system_qty),
@@ -1961,10 +1574,7 @@ function moves(){
       }
     };
     b.pallets.forEach(p => p.lines.forEach((l,i) => push(p, l, i, p.loc, p.loc)));
-    /* ⛔ WAS `push(..., 'ORPHAN')`, so an orphan that WAS taken exported
-       `from_location: "ORPHAN"` — a location Finale does not have. The real source is
-       right there on the line. */
-    // ⭐ keyed 'ORPHAN' (what the UI wrote), exported at its REAL source location
+
     (b.orphan_pulls||[]).forEach((o,i) =>
       push(null, o, i, 'ORPHAN', o.from_location || 'ORPHAN'));
   });
@@ -1993,14 +1603,6 @@ function dl(which){
   ev('export', {what:which, rows:rows.length});
 }
 
-/* ============================================================================
-   SYNC — results back to SharePoint, as the signed-in user
-   ⛔ A ROW COUNTS AS SAVED ONLY WHEN THE SERVER ACKNOWLEDGES IT. That is receiving's
-   hardest-won rule and it applies unchanged: never show "sent" on a local write.
-   ⭐ THE SPLIT MATCHES THE STORE: the full per-line record is ONE JSON FILE (a list would
-   cross SharePoint's 5,000-item view threshold in ~14 weeks), and the LIST gets one small
-   mutable row per session — the dashboard a human actually reads.
-   ============================================================================ */
 function deviceId(){
   let d = null;
   try{ d = localStorage.getItem('freezer.device'); }catch(e){}
@@ -2023,7 +1625,7 @@ async function graphWrite(path, body, method){
   if(r.status === 401){ tokStore(null); throw new Error('sign-in expired — sign in again'); }
   const j = await r.json().catch(() => null);
   if(!r.ok) throw new Error((j && (j.error||{}).message) || `HTTP ${r.status}`);
-  return j;                                   // ⭐ the acknowledgement, not a local guess
+  return j;                                   
 }
 
 async function syncNow(){
@@ -2032,12 +1634,11 @@ async function syncNow(){
   const was = btn ? btn.textContent : '';
   if(btn){ btn.textContent = 'Syncing…'; btn.disabled = true; }
   try{
-    if(!(await ensureToken())){ await signIn(); return; }   // silent refresh, else redirect
+    if(!(await ensureToken())){ await signIn(); return; }   
     const sp = CFG.sharepoint;
     const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
     const m = moves();
 
-    // 1 · the FULL record — one file, overwritten each sync for this device
     const rec = {schema: 1, plan_date: PAYLOAD.plan_date, device: deviceId(),
                  synced_at: new Date().toISOString(),
                  started: S.started, bay: S.bay, screen: S.screen,
@@ -2052,17 +1653,15 @@ async function syncNow(){
        body: JSON.stringify(rec)});
     if(!up.ok) throw new Error(`record upload HTTP ${up.status}`);
     const upj = await up.json();
-    fileLanded = true;      // ⭐ so a later failure does not claim nothing was sent
+    fileLanded = true;      
 
-    // 2 · the SESSION ROW — upsert by Title, so re-syncing updates rather than duplicating
     const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
     const lst = (lists.value || []).find(x => x.displayName === sp.list_name);
     if(!lst) throw new Error(`list "${sp.list_name}" not found on ${sp.site_path}`);
     const units = m.transfers.reduce((t2,x) => t2 + Number(x.quantity||0), 0);
     const fields = {
       Title: sessionKey(), PlanDate: PAYLOAD.plan_date, Device: deviceId(),
-      // ⛔ WAS `S.screen === 'done'` — so tapping ⇪ then Sync marked the SharePoint session
-      // COMPLETE with a FinishedAt while every line was still outstanding.
+
       Status: allBaysClosed() ? 'complete' : 'in_progress',
       StartedAt: S.started || new Date().toISOString(),
       FinishedAt: allBaysClosed() ? new Date().toISOString() : null,
@@ -2071,10 +1670,7 @@ async function syncNow(){
       Skipped: m.skipped.length, NotFound: m.missing.length,
       RecordFile: `${sp.doc_folder}/${fname}`,
       PlanFile: `${sp.doc_folder}/plan_latest.json`};
-    /* ⛔ WAS AN UNFILTERED `$top=200` SCAN. Past 200 rows it returns the OLDEST 200, the
-       match is never found, and every sync POSTs a NEW item — so the UI's promise
-       "re-syncing updates the same session row" silently becomes false and each mid-shift
-       sync adds a duplicate. ⭐ Filter server-side; `graph()` does not page. */
+
     const q = encodeURIComponent(`fields/Title eq '${sessionKey()}'`);
     let hit = null;
     try{
@@ -2082,7 +1678,7 @@ async function syncNow(){
         `/sites/${site.id}/lists/${lst.id}/items?$expand=fields&$filter=${q}&$top=5`);
       hit = (found.value || [])[0] || null;
     }catch(e){
-      // an unindexed Title column can make Graph refuse the filter — fall back, but say so
+      
       const found = await graph(
         `/sites/${site.id}/lists/${lst.id}/items?$expand=fields&$top=999`);
       const all = (found.value || []).filter(i => (i.fields||{}).Title === sessionKey());
@@ -2105,10 +1701,7 @@ async function syncNow(){
   }catch(e){
     ev('sync_failed', {why: String(e.message || e)});
     save();
-    // ⛔ FAIL LOUDLY. A sync that quietly did nothing is how a shift's work disappears.
-    /* ⛔ THIS SAID "Nothing was sent" EVEN WHEN THE RECORD FILE HAD LANDED — the wrong
-       direction for a rule this file states itself ("a row counts as saved only when the
-       server acknowledges it"). Report what actually happened. */
+
     dlg('Sync failed', '<div class="badbox"><b>'+
       (fileLanded ? 'The record file was saved, but the session row was NOT updated.'
                   : 'Nothing was sent.')+
@@ -2119,7 +1712,6 @@ async function syncNow(){
   }finally{ if(btn){ btn.disabled = false; btn.textContent = was; } }
 }
 
-/* ---- dialog ---------------------------------------------------------------- */
 function dlg(title, bodyHtml, buttons, after){
   const d = $('#dlg');
   $('#dlgh').textContent = title; $('#dlgb').innerHTML = bodyHtml;
@@ -2127,24 +1719,17 @@ function dlg(title, bodyHtml, buttons, after){
   buttons.forEach(b => {
     const el = document.createElement('button');
     el.textContent = b.t; el.className = b.c || '';
-    /* ⛔⛔ `d.close()` USED TO RUN UNCONDITIONALLY AFTER THE HANDLER, so every
-       `return toast('⛔ …')` READ like an abort and was not one: bad input closed the
-       dialog and threw the entry away. ⭐ A handler returning exactly `false` now keeps
-       the dialog open. ⛔ It also meant a handler that re-opened `dlg()` (Skip did) had
-       its new dialog closed immediately — the crew tapped Skip and NOTHING was recorded,
-       which is precisely the "we ran out of time" vs "nobody looked" distinction this app
-       exists to preserve. */
+
     el.onclick = (e) => { if(b.f){ e.preventDefault(); if(b.f() !== false) d.close(); } };
     f.appendChild(el);
   });
   d.showModal(); if(after) after();
 }
 
-/* ---- boot ------------------------------------------------------------------ */
 window.addEventListener('load', () => {
   const probe = probeStorage();
   STORAGE_OK = probe.ok;
-  if(!STORAGE_OK){ blockStorage(probe.why, false); return; }   // refuse to start
+  if(!STORAGE_OK){ blockStorage(probe.why, false); return; }   
   keepAwake();
   boot();
 });
