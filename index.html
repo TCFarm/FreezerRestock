@@ -436,6 +436,7 @@ function blank(){
           new_pallets:{},     
           finished:null,      
           split_contents:{},  
+          floor_fix:{},       
           events:[],          
           breaks:[]};
 }
@@ -444,7 +445,8 @@ function load(){
 
         if(o && o.v === 2){ o.putback_actual = o.putback_actual || {};
                             o.new_pallets = o.new_pallets || {};
-                            o.split_contents = o.split_contents || {}; return o; } } }catch(e){}
+                            o.split_contents = o.split_contents || {};
+                            o.floor_fix = o.floor_fix || {}; return o; } } }catch(e){}
   return blank();
 }
 
@@ -2088,32 +2090,145 @@ function floorCard(m){
   if(!FL) return '';
   const hold = (m.floor_holding || []);
   const bad  = (m.floor_unbalanced || []);
+  const orph = (m.floor_orphans || []);
+  const open_ = orph.filter(o => !o.fixed);
+  const done_ = orph.filter(o => o.fixed);
   const units = hold.reduce((a, x) => a + x.units, 0);
   let out = '';
+
+  if(open_.length){
+    out += '<div class="badbox"><b>⛔ '+open_.length+' item'+(open_.length===1?'':'s')+
+      ' ended up at '+esc(FL)+' with nowhere to go.</b>'+
+      '<div class="sm" style="margin-top:6px">These are real units. Finale will show them at '+
+      '<b>'+esc(FL)+'</b> so nothing is lost — but that is a holding spot, not where they '+
+      'belong. <b>Tell us what actually happened to each one</b> and it gets recorded '+
+      'properly; leave it and someone has to come looking tomorrow.</div>'+
+      open_.map((o, i) =>
+        '<div class="ln" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">'+
+          '<div><b>'+esc(o.sku)+'</b> ×'+n(o.units)+(o.lot?' · lot '+esc(o.lot):'')+'</div>'+
+
+          '<div class="sm dim">came off <b>'+esc(o.origin)+'</b>'+
+            (o.pallet ? ' · card <b>'+esc(o.pallet)+'</b>' : '')+
+            (o.bay ? ' · bay '+esc(o.bay) : '')+'</div>'+
+          '<div class="sm" style="margin-top:2px">'+esc(o.why)+'</div>'+
+          '<div class="row" style="margin-top:6px">'+
+            '<button class="pri" onclick="fixOrphan('+i+',\'moved\')">It went here →</button>'+
+            '<button class="warn" onclick="fixOrphan('+i+',\'lost\')">It is lost</button>'+
+          '</div>'+
+        '</div>').join('')+
+      '</div>';
+  }
+  if(done_.length){
+    out += '<div class="okbox"><b>✓ '+done_.length+' orphan'+(done_.length===1?'':'s')+
+      ' sorted out.</b><div class="sm" style="margin-top:4px">'+
+      done_.map(o => esc(o.sku)+' ×'+n(o.units)+' — '+
+        (o.fixed.action === 'moved'
+          ? 'went to <b>'+esc(o.fixed.to)+'</b>'
+          : 'written off as <b>'+esc(o.fixed.reason)+'</b>')).join('<br>')+
+      '<br><span class="dim">Tap an item again on the pallet it came from if that was wrong.'+
+      '</span></div></div>';
+  }
+
   if(bad.length){
     const worst = bad.slice().sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff)).slice(0,5);
-    out += '<div class="badbox"><b>⛔ '+esc(FL)+' does not balance — '+bad.length+
+    out += '<div class="badbox"><b>⛔ The '+esc(FL)+' numbers do not add up — '+bad.length+
       ' item'+(bad.length===1?'':'s')+'.</b>'+
-      '<div class="sm" style="margin-top:6px">This is a fault in OUR numbers, not in your '+
-      'work — nothing you can do about it here. ⛔ <b>Do not import the Finale file until '+
-      'someone has looked at it</b>, and show them this screen.<br>'+
+      '<div class="sm" style="margin-top:6px">This is a fault in OUR figures, not in your '+
+      'work, and there is nothing to fix here. ⛔ <b>Do not import the Finale file until '+
+      'someone has looked at it</b> — show them this screen.<br>'+
       worst.map(x => esc(x.key)+': recorded '+n(x.net)+', should be '+n(x.expected)+
                      ' ('+(x.diff>0?'+':'')+n(x.diff)+')').join('<br>')+
       (bad.length > worst.length ? '<br>… and '+(bad.length-worst.length)+' more' : '')+
       '</div></div>';
   }
+
   if(units > 0.001 || hold.length){
-    out += '<div class="'+(bad.length ? 'warnbox' : 'okbox')+'"><b>'+n(units)+' unit'+
-      (Math.abs(units)===1?'':'s')+' across '+hold.length+' item'+(hold.length===1?'':'s')+
-      ' are recorded as still standing at '+esc(FL)+'.</b>'+
-      '<div class="sm" style="margin-top:4px">That is correct if pallets are still down. '+
-      'Finale will show the stock there, so nobody has to go hunting for it — and the next '+
-      'plan can see it.</div></div>';
-  } else if(!bad.length){
+    out += '<div class="'+(bad.length || open_.length ? 'warnbox' : 'okbox')+'"><b>'+n(units)+
+      ' unit'+(Math.abs(units)===1?'':'s')+' across '+hold.length+' item'+
+      (hold.length===1?'':'s')+' are recorded as sitting at '+esc(FL)+'.</b>'+
+      '<div class="sm" style="margin-top:4px">'+
+      (open_.length
+        ? 'That includes the '+open_.length+' above. The rest is stock on pallets that are '+
+          'still down, which is correct — it goes back to a real position when the bay is '+
+          'put back.'
+        : 'That is correct while pallets are still down. Finale shows the stock there, so '+
+          'nobody has to go hunting for it and the next plan can see it.')+
+      ' <b>Still on the floor CSV</b> below lists every line.</div></div>';
+  } else if(!bad.length && !open_.length){
     out += '<div class="okbox"><b>Nothing left at '+esc(FL)+' — everything that came down '+
-      'went back up or to the floor.</b></div>';
+      'went back up or out to the floor.</b></div>';
   }
   return out;
+}
+
+function fixOrphan(i, action){
+  const m = moves();
+  const o = (m.floor_orphans || []).filter(x => !x.fixed)[i];
+  if(!o) return toast('That one is already sorted — reopening the list.') || render();
+  const head = '<p><b>'+esc(o.sku)+'</b> ×'+n(o.units)+(o.lot?' · lot '+esc(o.lot):'')+
+    '<br><span class="sm dim">came off '+esc(o.origin)+
+    (o.pallet ? ' · card '+esc(o.pallet) : '')+'</span></p>'+
+    '<p class="sm">'+esc(o.why)+'</p>';
+
+  if(action === 'moved'){
+    dlg('Where did it actually go?',
+      head +
+      '<p class="sm dim">Scan the placard or pick the spot. Anywhere real is fine — we just '+
+      'need the truth, because next week is planned against it.</p>'+
+      scanField('ofscan')+
+      '<label class="sm">Position it is in now</label>'+
+      '<select id="ofloc">'+
+        '<option value="__none__" selected>— choose or scan —</option>'+
+        (floorChoice().length
+          ? '<optgroup label="still on the restock floor">'+
+              floorChoice().map(x => '<option value="'+esc(x)+'">'+esc(x)+
+                ' — left on the floor</option>').join('')+'</optgroup>'
+          : '')+
+        '<optgroup label="an F1 spot">'+
+          f1Choices().map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+        '</optgroup>'+
+      '</select>'+
+      '<label class="sm" style="margin-top:10px">Anything worth saying? (optional)</label>'+
+      '<input id="ofnote" type="text" placeholder="e.g. put it with the rest of the 130">',
+      [{t:'Cancel', c:'ghost'},
+       {t:'✓ Record it', c:'pri', f:()=>{
+          const to = ($('#ofloc')||{}).value;
+          if(!to || to === '__none__') return toast('⛔ say where it went, or scan the placard');
+          S.floor_fix = S.floor_fix || {};
+          S.floor_fix[o.fixKey] = {action:'moved', to:to, note:($('#ofnote')||{}).value||'',
+                                   ts:new Date().toISOString()};
+          ev('orphan_placed', {sku:o.sku, lot:o.lot, units:o.units, to:to, from:o.origin});
+          save(); render(); toast('✓ recorded — '+o.sku+' is at '+to);
+       }}],
+
+      ()=>{ wireScan('ofscan', 'ofloc'); });
+    return;
+  }
+
+  const list = (PAYLOAD.shrink_reasons || []);
+  dlg('Write it off as lost?',
+    head +
+    '<div class="badbox"><b>This changes the books.</b><div class="sm" style="margin-top:4px">'+
+    'It removes '+n(o.units)+' unit'+(o.units===1?'':'s')+' of '+esc(o.sku)+' from Finale at '+
+    esc(floorLoc())+'. ⛔ Only do this if the stock genuinely is not there — if you just do '+
+    'not know where it went, leave it and someone will look.</div></div>'+
+    '<label class="sm" style="margin-top:10px">Why is it gone?</label>'+
+    '<select id="ofr">'+
+      (list.length > 1 ? '<option value="__none__" selected>— choose a reason —</option>' : '')+
+      list.map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+    '</select>'+
+    '<label class="sm" style="margin-top:10px">What happened? (optional)</label>'+
+    '<input id="ofnote" type="text" placeholder="e.g. box was crushed, contents unusable">',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Write it off', c:'warn', f:()=>{
+        const r = ($('#ofr')||{}).value;
+        if(!r || r === '__none__') return toast('⛔ choose a reason');
+        S.floor_fix = S.floor_fix || {};
+        S.floor_fix[o.fixKey] = {action:'lost', reason:r, note:($('#ofnote')||{}).value||'',
+                                 ts:new Date().toISOString()};
+        ev('orphan_written_off', {sku:o.sku, lot:o.lot, units:o.units, reason:r});
+        save(); render(); toast('Recorded as '+r+'.');
+     }}]);
 }
 function unplacedPallets(){
   const out = [];
@@ -2362,6 +2477,19 @@ function moves(){
   const floorHandoff = {};
 
   const floorStranded = {};
+
+  const floorOrphans = [];
+  const strand = (o) => {
+    out.unresolved = out.unresolved || [];
+    out.unresolved.push({bay:o.bay, from:o.origin, sku:o.sku, qty:o.units,
+                         onto_pallet:o.pallet || '', why:o.why});
+    if(!FLOOR) return;                        
+    const k = o.sku + ' ' + (o.lot || '');
+    floorStranded[k] = (floorStranded[k] || 0) + o.units;
+    floorOrphans.push({sku:o.sku, lot:o.lot || '', units:o.units, why:o.why, cause:o.cause,
+                       origin:o.origin, pallet:o.pallet || '', bay:o.bay,
+                       fixKey:o.sku + '|' + (o.lot || '') + '|' + o.origin});
+  };
   const downQty = {};                       
   if(FLOOR) PAYLOAD.bays.forEach(b => {
     const bs = S.bays[b.n] || {};
@@ -2441,15 +2569,17 @@ function moves(){
           if(!pdest){
 
             const pa = actualFor(pt.pallet);
-            out.unresolved = out.unresolved || [];
-            out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:pt.qty,
-              onto_pallet:pt.pallet||'',
+            strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
+              pallet:pt.pallet||'',
+              cause: pt.floor ? 'loose' : (pa && pa.state === 'floor') ? 'pallet_down'
+                                                                      : 'no_position',
               why: pt.floor
                      ? 'the crew put this part nowhere — it is loose on the floor'
                    : (pa && pa.state === 'floor')
-                     ? 'the crew could not put pallet '+(pt.pallet||'?')+' back up — it is '+
-                       'still on the floor, so this stock has not moved anywhere yet'
-                   : 'the receiving pallet has no final position in the putback list'});
+                     ? 'it was carried onto pallet '+(pt.pallet||'?')+', which never went '+
+                       'back up — so it is standing on the floor on that pallet'
+                     : 'it was carried onto pallet '+(pt.pallet||'?')+', and nobody recorded '+
+                       'where that pallet ended up'});
 
             if(fromFloor){
               floorStranded[l.sku + ' ' + (l.lot || '')] =
@@ -2582,17 +2712,15 @@ function moves(){
           const rest = Math.round((left - toOther) * 1000) / 1000;
           const oa = actualFor(otherPid), ofin = palletFinalLoc(otherPid);
           if (oa && oa.state === 'floor') {
-            out.unresolved = out.unresolved || [];
-            out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: toOther,
-              onto_pallet: otherPid,
-              why: 'moved onto ' + otherPid + ' when the pallet was split, and ' + otherPid +
-                   ' is still on the floor'});
+            strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:toOther,
+              pallet:otherPid, cause:'pallet_down',
+              why:'it went onto ' + otherPid + ' when this pallet was split in two, and ' +
+                  otherPid + ' never went back up'});
           } else if (!ofin) {
-            out.unresolved = out.unresolved || [];
-            out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: toOther,
-              onto_pallet: otherPid,
-              why: 'moved onto ' + otherPid + ' when the pallet was split, but ' + otherPid +
-                   ' has no recorded position'});
+            strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:toOther,
+              pallet:otherPid, cause:'no_position',
+              why:'it went onto ' + otherPid + ' when this pallet was split in two, and '+
+                  'nobody recorded where ' + otherPid + ' ended up'});
           } else if (ofin !== origin && toOther > 0.001) {
             out.transfers.push({from_location: origin, to_location: ofin,
               onto_pallet: otherPid, sku: it.sku, lot: it.lot, quantity: toOther,
@@ -2614,19 +2742,19 @@ function moves(){
         }
 
         if (a && a.state === 'floor') {
-          out.unresolved = out.unresolved || [];
-          out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: left,
-            onto_pallet: p.pallet_id || '',
-            why: 'the pallet is still on the floor - this stock has not gone anywhere yet'});
+          strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:left,
+            pallet:p.pallet_id || '', cause:'pallet_down',
+            why:'pallet ' + (p.pallet_id||'?') + ' never went back up — this stock is '+
+                'standing on it, wherever the crew set it down'});
           return;
         }
 
         const dest = onFloor ? (floorLoc() || final) : final;
         if (!dest) {
-          out.unresolved = out.unresolved || [];
-          out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: left,
-            onto_pallet: p.pallet_id || '',
-            why: 'the pallet has no final position, so its remaining stock cannot be moved'});
+          strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:left,
+            pallet:p.pallet_id || '', cause:'no_position',
+            why:'nobody recorded where pallet ' + (p.pallet_id||'?') + ' ended up, so this '+
+                'stock has no home'});
           return;
         }
 
@@ -2651,6 +2779,36 @@ function moves(){
   const down = [], rest = [];
   out.transfers.forEach(t => (t.kind === 'pallet_down' ? down : rest).push(t));
   out.transfers = down.concat(rest);
+
+  if(FLOOR && floorOrphans.length){
+    const fixes = S.floor_fix || {};
+    floorOrphans.forEach(o => {
+      const f = fixes[o.fixKey];
+      if(!f) return;
+      const k = o.sku + ' ' + (o.lot || '');
+      if(f.action === 'moved' && f.to){
+        o.fixed = {action:'moved', to:f.to};
+        out.transfers.push({from_location: FLOOR, to_location: f.to,
+          from_pallet_loc: o.origin, onto_pallet: o.pallet || '',
+          sku:o.sku, lot:o.lot || '', quantity:o.units,
+          planned_qty:'', approved_qty:'', as_planned:false, planned_pallet:'',
+          took_from_sibling:'', sibling_line:'', on_floor_src:true,
+
+          kind:'orphan_placed', bay:o.bay, note:f.note || '',
+          ts:f.ts || new Date().toISOString()});
+        floorStranded[k] = (floorStranded[k] || 0) - o.units;
+      } else if(f.action === 'lost' && f.reason){
+        o.fixed = {action:'lost', reason:f.reason};
+        out.adjustments.push({location: FLOOR, origin: o.origin, posted_at:'restock floor',
+          sku:o.sku, lot:o.lot || '', change: -o.units, direction:'decrease',
+          baseline:o.units, sibling_took:0, reason:f.reason, system_qty:'',
+          moved:'', left_on_pallet:'', orphan:true, note:f.note || '',
+          ts:f.ts || new Date().toISOString()});
+        floorStranded[k] = (floorStranded[k] || 0) - o.units;
+      }
+    });
+  }
+  out.floor_orphans = floorOrphans;
 
   if(FLOOR){
     const net = {}, expected = {};
