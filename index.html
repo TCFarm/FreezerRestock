@@ -2330,9 +2330,16 @@ function renderDone(a){
     '<div class="card"><div class="pad">'+
       '<h3>Send to SharePoint</h3>'+
       (S.synced
-        ? '<div class="okbox">✅ Synced '+esc(String(S.synced.at).slice(0,16))+' — '+
-          esc(S.synced.transfers)+' transfer(s), '+esc(S.synced.counts)+' count(s).'+
-          '<div class="sm dim" style="margin-top:4px">Re-syncing updates the same session row.</div></div>'
+
+        ? '<div class="okbox"><b>✅ Saved to SharePoint at '+
+          esc(String(S.synced.at).slice(11,16))+' on '+
+          esc(String(S.synced.at).slice(0,10))+'</b>'+
+          '<div class="sm" style="margin-top:4px">'+
+          esc(S.synced.transfers)+' transfer(s) and '+esc(S.synced.counts)+' count(s) are '+
+          'off this iPad'+(S.synced.file ? ' as <b>'+esc(S.synced.file)+'</b>' : '')+
+          '. The lead turns that into the Finale file — nothing else is needed from you.'+
+          '<br><span class="dim">Syncing again just updates it. Safe to do any time.</span>'+
+          '</div></div>'
         : '<div class="warnbox">Not sent yet. Everything is on this iPad until you sync.</div>')+
       '<button class="big pri" style="margin-top:8px" onclick="syncNow()">'+
         (S.synced ? 'Sync again' : 'Sync now')+'</button>'+
