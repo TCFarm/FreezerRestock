@@ -1214,15 +1214,20 @@ function openLine(id){
           const ss = st(sibId) || {};
           const had = Number(ss.actual != null ? ss.actual : sibTook) || 0;
           const now = Math.max(0, Math.round((had - realloc) * 1000) / 1000);
+
           setLine(sibId, {state:'done', actual:now, gave_to_sibling:realloc,
+                          placements:undefined,
 
                           reallocated:true,
                           as_planned:false});
           ev('reallocated', {from:sibId, to:id, units:realloc});
           toast('✓ ' + n(realloc) + ' moved from the other line — it now shows ' + n(now));
         }
+
+        const hadPlacements = !!(prev && prev.placements && prev.placements.length);
         const patch = {state:'done', actual:mv, left:lf, adjustment:adj2,
                        baseline:baseline, sibling_took:sibTook,
+                       placements: undefined,
                        took_from_sibling: realloc || undefined,
                        sibling_line: realloc ? (sib.onto_pallet || sib.dest || '') : undefined};
         if(Math.abs(adj2) > 0.001){
@@ -1235,7 +1240,10 @@ function openLine(id){
           patch.direction = adj2 < 0 ? 'shrink' : 'found';
         }
         setLine(id, patch);
-        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj2, realloc:realloc||0});
+        if(hadPlacements)
+          toast('⚠️ the quantity changed — say again where it went');
+        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj2, realloc:realloc||0,
+                        cleared_placements:hadPlacements||undefined});
         if(realloc){
           toast('Recorded — ' + n(realloc) + ' taken from the other line, no correction');
         }
@@ -1495,11 +1503,37 @@ const FULL_BUCKETS = [
   {k:'over',     pct:120, t:'OVERFULL',   d:'⛔ would not all fit — say what is left over'},
 ];
 
-function adjLoc(p){
+function adjLoc(p, line, onFloor, cameDown){
   if(!p) return '';
+
+  if(onFloor && floorLoc()) return floorLoc();
+  if(cameDown && floorLoc() && line &&
+     (line.kind === 'take' || line.kind === 'aside')) return floorLoc();
   return palletFinalLoc(p.pallet_id) || p.goes_back_to || p.loc || '';
 }
 
+function cardInUse(pid){
+  if(!pid) return '';
+  let hit = '';
+  PAYLOAD.bays.forEach(b => (b.pallets || []).forEach(p => {
+    if(p.pallet_id === pid) hit = 'the plan already uses ' + pid + ' for the pallet at ' +
+                                  p.loc + ' in bay ' + b.bay;
+  }));
+  if(!hit && (S.new_pallets || {})[pid])
+    hit = pid + ' was already given to a pallet built earlier in this job';
+  return hit;
+}
+function nextFreeCard(){
+  const used = new Set();
+  PAYLOAD.bays.forEach(b => (b.pallets || []).forEach(p => {
+    const m = /^P-(\d+)$/.exec(p.pallet_id || ''); if(m) used.add(Number(m[1]));
+  }));
+  Object.keys(S.new_pallets || {}).forEach(k => {
+    const m = /^P-(\d+)$/.exec(k); if(m) used.add(Number(m[1]));
+  });
+  let n = 1; while(used.has(n)) n++;
+  return n;
+}
 function cardOf(x){
   if(!x) return '';
   if(typeof x === 'object') return x.card || x.pallet_id || '';
@@ -1893,7 +1927,9 @@ function askSplit(id){
         }
         if(dest === '__new__'){
           const cn = ($('#spcard').value || '').trim().replace(/^P-?/i,'');
-          if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card') && false;
+          if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card');
+          const clash2 = cardInUse('P-' + cn);
+          if(clash2) return toast('⛔ ' + clash2 + ' — the next free card is P-' + nextFreeCard());
           dest = 'P-' + cn;
           S.new_pallets[dest] = {bay: f.b.bay, bay_n: f.b.n, built_ts: new Date().toISOString()};
         }
@@ -2061,8 +2097,11 @@ function askSecondPallet(bayN, fromPid){
     [{t:'Skip', c:'ghost'},
      {t:'Record it', c:'pri', f:()=>{
         const cn = ($('#s2card').value || '').trim().replace(/^P-?/i,'');
-        if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card') && false;
-        const pid = 'P-' + cn, v = $('#s2pos').value;
+        if(!/^\d{1,3}$/.test(cn)) return toast('⛔ the card number off the laminated card');
+        const pid = 'P-' + cn;
+        const clash = cardInUse(pid);
+        if(clash) return toast('⛔ ' + clash + ' — the next free card is P-' + nextFreeCard());
+        const v = $('#s2pos').value;
         const took = [];
         let badq = null;
         [...document.querySelectorAll('.splititem:checked')].forEach(c => {
@@ -2708,7 +2747,11 @@ function moves(){
       if(s.adjustment && Math.abs(s.adjustment) > 0.001){
 
         const shrinkAt = (FLOOR && floorPallets.has(loc)) ? FLOOR : loc;
-        out.adjustments.push({location: (s.adjustment > 0 ? (adjLoc(p) || loc) : shrinkAt),
+        out.adjustments.push({location: (s.adjustment > 0
+
+                                         ? (adjLoc(p, l, !(S.bays[b.n]||{}).putback_done,
+                                                    FLOOR && floorPallets.has(loc)) || loc)
+                                         : shrinkAt),
 
           origin: loc,
           posted_at: (s.adjustment > 0 ? 'final position'
@@ -2780,6 +2823,8 @@ function moves(){
       if (FLOOR && p.pallet_id) {
         arrivalsFor(p.pallet_id).forEach(x => {
           if (x.gone) return;                        
+
+          if (!x.state) return;                      
           const q = Number(x.qty || 0);
           if (!(q > 0)) return;
           const k = key(x.sku, x.lot);
@@ -2795,8 +2840,8 @@ function moves(){
 
         (rec.items || []).forEach(x => {
           const kk = key(x.sku, x.lot);
-          splitTo[kk] = splitTo[kk] || {pid: newPid, qty: 0};
-          splitTo[kk].qty += (x.qty == null ? Infinity : Number(x.qty));
+          (splitTo[kk] = splitTo[kk] || []).push(
+            {pid: newPid, qty: (x.qty == null ? Infinity : Number(x.qty))});
         });
       });
 
@@ -2806,35 +2851,40 @@ function moves(){
         if (left <= 0.001) return;
 
         const sp = splitTo[k];
-        if (sp) {
-          const otherPid = sp.pid;
-          const toOther = Math.min(left, sp.qty);
-          const rest = Math.round((left - toOther) * 1000) / 1000;
-          const oa = actualFor(otherPid), ofin = palletFinalLoc(otherPid);
-          if (oa && oa.state === 'floor') {
-            strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:toOther,
-              pallet:otherPid, cause:'pallet_down',
-              why:'it went onto ' + otherPid + ' when this pallet was split in two, and ' +
-                  otherPid + ' never went back up'});
-          } else if (!ofin) {
-            strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:toOther,
-              pallet:otherPid, cause:'no_position',
-              why:'it went onto ' + otherPid + ' when this pallet was split in two, and '+
-                  'nobody recorded where ' + otherPid + ' ended up'});
-          } else if (toOther > 0.001) {
+        if (sp && sp.length) {
 
-            out.transfers.push({
-              from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
-              on_floor_src: floorPallets.has(origin),
-              from_pallet_loc: origin,
-              to_location: ofin,
-              onto_pallet: otherPid, sku: it.sku, lot: it.lot, quantity: toOther,
-              planned_qty: '', approved_qty: '', as_planned: false,
-              planned_pallet: p.pallet_id || '', took_from_sibling: '', sibling_line: '',
-              kind: 'pallet_move', split_from: p.pallet_id || '', spoil: !!p.spoil,
-              bay: b.bay, ts: (oa && oa.ts) || new Date().toISOString()});
-          }
+          let pool = left;
+          sp.forEach(part => {
+            const toOther = Math.min(pool, part.qty);
+            if (!(toOther > 0.001)) return;
+            pool = Math.round((pool - toOther) * 1000) / 1000;
+            const otherPid = part.pid;
+            const oa = actualFor(otherPid), ofin = palletFinalLoc(otherPid);
+            if (oa && oa.state === 'floor') {
+              strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:toOther,
+                pallet:otherPid, cause:'pallet_down',
+                why:'it went onto ' + otherPid + ' when this pallet was split, and ' +
+                    otherPid + ' never went back up'});
+            } else if (!ofin) {
+              strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:toOther,
+                pallet:otherPid, cause:'no_position',
+                why:'it went onto ' + otherPid + ' when this pallet was split, and nobody '+
+                    'recorded where ' + otherPid + ' ended up'});
+            } else {
+              out.transfers.push({
+                from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
+                on_floor_src: floorPallets.has(origin),
+                from_pallet_loc: origin,
+                to_location: ofin,
+                onto_pallet: otherPid, sku: it.sku, lot: it.lot, quantity: toOther,
+                planned_qty: '', approved_qty: '', as_planned: false,
+                planned_pallet: p.pallet_id || '', took_from_sibling: '', sibling_line: '',
+                kind: 'pallet_move', split_from: p.pallet_id || '', spoil: !!p.spoil,
+                bay: b.bay, ts: (oa && oa.ts) || new Date().toISOString()});
+            }
+          });
 
+          const rest = Math.round(pool * 1000) / 1000;
           const restDest = onFloor ? (floorLoc() || final) : final;
           if (rest > 0.001 && !onFloor) {
             if (!restDest) {
@@ -2945,7 +2995,8 @@ function moves(){
       (b.pallets || []).forEach(p => {
         if(!floorPallets.has(p.loc)) return;        
 
-        const arr = p.pallet_id ? arrivalsFor(p.pallet_id).filter(x => !x.gone) : [];
+        const arr = p.pallet_id
+          ? arrivalsFor(p.pallet_id).filter(x => !x.gone && x.state) : [];
         const keySet = new Map();
         (p.lines || []).forEach(l => {
           if(l.kind === 'count') return;
