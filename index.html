@@ -434,6 +434,7 @@ function blank(){
           bays:{},            
           putback_actual:{},  
           new_pallets:{},     
+          finished:null,      
           split_contents:{},  
           events:[],          
           breaks:[]};
@@ -2159,6 +2160,12 @@ function renderDone(a){
         : '<div class="warnbox">Not sent yet. Everything is on this iPad until you sync.</div>')+
       '<button class="big pri" style="margin-top:8px" onclick="syncNow()">'+
         (S.synced ? 'Sync again' : 'Sync now')+'</button>'+
+
+      (S.finished
+        ? '<div class="okbox sm" style="margin-top:8px">✓ <b>Finished '+
+          esc(String(S.finished).slice(11,16))+'</b> — the clock stopped there.</div>'
+        : '<button class="big" style="margin-top:8px" onclick="clockOut()">'+
+          '✓ Finished for the day</button>')+
       '<div class="sm dim" style="margin-top:8px">⛔ Nothing is in Finale until the export is '+
       'imported. Syncing records what happened; it does not move stock in Finale.</div>'+
     '</div></div>'+
@@ -2171,6 +2178,38 @@ function renderDone(a){
   btn.onclick=()=>{ S.screen='bay'; S.bay=0; save(); render(); };
 }
 function openFinish(){ S.screen='done'; save(); render(); }
+
+function clockOut(){
+  const jp = jobProgress();
+  const homeless = unplacedPallets();
+  const openBays = PAYLOAD.bays.filter(b => !(S.bays[b.n]||{}).closed).length;
+  const warn = homeless.length
+      ? '<div class="badbox"><b>⛔ '+homeless.length+' pallet'+(homeless.length===1?'':'s')+
+        ' still ha'+(homeless.length===1?'s':'ve')+' no recorded location.</b>'+
+        '<div class="sm" style="margin-top:4px">You can still finish, but next week is '+
+        'planned against those positions — better to fix it now.</div></div>'
+    : openBays
+      ? '<div class="warnbox"><b>⚠️ '+openBays+' bay'+(openBays===1?'':'s')+
+        ' not closed, '+(jp.total-jp.done)+' line(s) outstanding.</b>'+
+        '<div class="sm" style="margin-top:4px">Finishing is fine — it records that the '+
+        'shift ended here, not that everything got done.</div></div>'
+      : '';
+  dlg('Finished for the day?',
+    warn +
+    '<p class="sm">This stamps the time you stopped, so we can tell how long the job '+
+    'actually took. It does not send anything on its own — sync after.</p>',
+    [{t:'Not yet'},
+     {t:'✓ Finished', c:'pri', f:()=>{
+        S.finished = new Date().toISOString();
+        ev('session_finished', {bays_closed: PAYLOAD.bays.length - openBays,
+                                lines_done: jp.done, lines_total: jp.total,
+                                homeless: homeless.length});
+        save(); render();
+
+        setTimeout(()=>{ LAST_AUTOSYNC = 0; autoSyncTick(); }, 0);
+        toast('✓ clocked out — remember to sync');
+     }}]);
+}
 
 function startOver(){
   const n = Object.keys(S.lines).length, e = S.events.length;
@@ -2347,6 +2386,21 @@ function moves(){
   });
 
   PAYLOAD.bays.forEach(b => {
+
+    const bs = S.bays[b.n] || {};
+    if(!bs.putback_done){
+
+      const touched = (b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
+        (st(lid(b.n, p2.loc, l2, i2)) || {}).state));
+      if(touched){
+        out.unresolved = out.unresolved || [];
+        out.unresolved.push({bay: b.bay, from: '', sku: '', qty: '', onto_pallet: '',
+          why: 'work was recorded in this bay but the putback was never confirmed, so no '
+             + 'pallet in it can be said to have changed position — nothing is exported for '
+             + 'it. Re-open the bay and tap "Loaded back in this order".'});
+      }
+      return;
+    }
     (b.pallets || []).forEach(p => {
       const origin = p.loc;
       const a = actualFor(p.pallet_id);
@@ -2523,7 +2577,8 @@ async function syncNow(quiet){
 
     const rec = {schema: 1, plan_date: PAYLOAD.plan_date, device: deviceId(),
                  synced_at: new Date().toISOString(),
-                 started: S.started, bay: S.bay, screen: S.screen,
+                 started: S.started, finished: S.finished || null,
+                 bay: S.bay, screen: S.screen,
                  lines: S.lines, pallets: S.pallets, bays: S.bays,
                  events: S.events, breaks: S.breaks, moves: m};
     const fname = `session_${sessionKey()}.json`;
