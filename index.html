@@ -89,8 +89,10 @@ button[disabled]{opacity:.4}
 .warnbox{border:1px solid var(--aside);background:color-mix(in srgb,var(--aside) 12%,transparent);border-radius:12px;padding:12px;margin:10px 0}
 .badbox{border:1px solid var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent);border-radius:12px;padding:12px;margin:10px 0}
 .okbox{border:1px solid var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);border-radius:12px;padding:12px;margin:10px 0}
-input[type=number],select,textarea{width:100%;background:var(--bg);color:var(--ink);
+
+input,select,textarea{width:100%;background:var(--bg);color:var(--ink);
   border:2px solid var(--line);border-radius:10px;padding:14px;font:inherit;min-height:var(--tap)}
+input[type=checkbox]{width:24px;min-height:24px;padding:0;}
 input[type=number]{font-size:26px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums}
 dialog{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:16px;
   padding:0;width:min(560px,94vw);max-height:88vh}
@@ -2580,6 +2582,8 @@ function moves(){
 
           const fromFloor = floorPallets.has(loc);
           const src = fromFloor ? FLOOR : loc;
+
+          const pdest_forced = !!(l.kind === 'aside' && pt.pallet && actualFor(pt.pallet));
           if(!pdest){
 
             const pa = actualFor(pt.pallet);
@@ -2596,14 +2600,24 @@ function moves(){
                        'where that pallet ended up'});
 
             if(fromFloor){
-              floorStranded[l.sku + ' ' + (l.lot || '')] =
-                (floorStranded[l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+
               floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
                 (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
               return;
             }
           }
 
+          if(l.kind === 'aside' && fromFloor && pt.pallet &&
+             !floorPalletIds.has(pt.pallet) && !pdest_forced){
+            strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
+              pallet:pt.pallet, cause:'awaiting_bay',
+              why:'set aside for pallet ' + pt.pallet +
+                  (l.onto_bay ? ' in bay ' + l.onto_bay : '') + ', which has not been ' +
+                  'worked yet — the stock is on the restock floor waiting for it'});
+            floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            return;
+          }
           if(l.kind === 'aside' && fromFloor && pt.pallet &&
              floorPalletIds.has(pt.pallet)){
 
@@ -2682,6 +2696,13 @@ function moves(){
       (out.missing || []).forEach(m => {
         if (m.from === origin)
           gone[key(m.sku, m.lot)] = (gone[key(m.sku, m.lot)] || 0) + Number(m.suggested_decrease || 0);
+      });
+
+      (out.adjustments || []).forEach(a => {
+        if (!FLOOR || a.location !== FLOOR) return;
+        if (a.origin !== origin) return;
+        const ch = Number(a.change || 0);
+        if (ch < 0) gone[key(a.sku, a.lot)] = (gone[key(a.sku, a.lot)] || 0) + (-ch);
       });
 
       const onIt = {};
@@ -2930,7 +2951,7 @@ function deviceId(){
 function planStamp(){
   const b = String((PAYLOAD && PAYLOAD.built) || '');
 
-  const t = b.replace(/[^0-9T]/g, '').slice(0, 13);
+  const t = b.replace(/[^0-9T]/g, '').slice(0, 15);
   return t || 'nobuild';
 }
 function sessionKey(){ return `${PAYLOAD.plan_date}_${deviceId()}`; }
@@ -2972,7 +2993,12 @@ async function syncNow(quiet){
                  started: S.started, finished: S.finished || null,
                  bay: S.bay, screen: S.screen,
                  lines: S.lines, pallets: S.pallets, bays: S.bays,
-                 events: S.events, breaks: S.breaks, moves: m};
+                 events: S.events, breaks: S.breaks,
+
+                 putback_actual: S.putback_actual, new_pallets: S.new_pallets,
+                 split_contents: S.split_contents, floor_fix: S.floor_fix,
+                 backstock: S.backstock || null, opened: S.opened,
+                 moves: m};
     const fname = sessionFile();
     const t = tokStore();
     const up = await fetch(
