@@ -1563,6 +1563,10 @@ function setFullness(bayN, loc, k, mode, ourPct){
   render();
 }
 
+function floorChoice(){
+  const f = floorLoc();
+  return f ? [f] : [];
+}
 function f1Choices(){
   if(window.__F1) return window.__F1;
   const set = new Set();
@@ -1599,6 +1603,8 @@ function camScanSupported(){
 }
 
 function nativeDetector(){ return typeof window.BarcodeDetector === 'function'; }
+
+function floorLoc(){ return (PAYLOAD && PAYLOAD.floor_location) || ''; }
 
 let ZXING_LOADING = null;
 function loadZXing(){
@@ -1889,14 +1895,21 @@ function askActual(bayN, pid){
                  '>'+esc(planned)+' — as planned</option>' : '')+
       pos.filter(x => x !== planned).map(x =>
         '<option value="'+esc(x)+'"'+(prev.loc===x?' selected':'')+'>'+esc(x)+'</option>').join('')+
-       
-      '<optgroup label="or it is not back in the rack — where in F1?">'+
+
+      (floorChoice().length
+        ? '<optgroup label="it is still on the restock floor">'+
+            floorChoice().map(x => '<option value="'+esc(x)+'"'+
+              (prev.loc===x?' selected':'')+'>'+esc(x)+' — left on the floor</option>').join('')+
+          '</optgroup>'
+        : '')+
+      '<optgroup label="or it went into an F1 spot — which?">'+
         f1Choices().map(x => '<option value="'+esc(x)+'"'+(prev.loc===x?' selected':'')+
           '>'+esc(x)+'</option>').join('')+
       '</optgroup>'+
     '</select>'+
-    '<div class="sm dim" style="margin-top:6px">Left it out for the night? That is fine — put '+
-    'it in an F1 spot and scan that, so nobody has to go looking for it tomorrow.</div>'+
+    '<div class="sm dim" style="margin-top:6px">Left it out for the night? That is fine — say '+
+    'it is on the restock floor, or put it in an F1 spot and scan that. Either way it has a '+
+    'location, so nobody has to go looking for it tomorrow.</div>'+
     '<label class="sm" style="margin-top:10px">Anything different about it?</label>'+
     '<select id="pan">'+
       '<option value="">nothing — one pallet, as it came down</option>'+
@@ -1984,7 +1997,12 @@ function askSecondPallet(bayN, fromPid){
     '<label class="sm">Position it went into</label>'+
     '<select id="s2pos">'+
       pos.map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
-      '<optgroup label="or not in the rack — where in F1?">'+
+      (floorChoice().length
+        ? '<optgroup label="it is still on the restock floor">'+
+            floorChoice().map(x => '<option value="'+esc(x)+'">'+esc(x)+
+              ' — left on the floor</option>').join('')+'</optgroup>'
+        : '')+
+      '<optgroup label="or it went into an F1 spot — which?">'+
         f1Choices().map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
       '</optgroup></select>'+
 
@@ -2065,6 +2083,38 @@ function askBackstock(){
      }}]);
 }
 
+function floorCard(m){
+  const FL = floorLoc();
+  if(!FL) return '';
+  const hold = (m.floor_holding || []);
+  const bad  = (m.floor_unbalanced || []);
+  const units = hold.reduce((a, x) => a + x.units, 0);
+  let out = '';
+  if(bad.length){
+    const worst = bad.slice().sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff)).slice(0,5);
+    out += '<div class="badbox"><b>⛔ '+esc(FL)+' does not balance — '+bad.length+
+      ' item'+(bad.length===1?'':'s')+'.</b>'+
+      '<div class="sm" style="margin-top:6px">This is a fault in OUR numbers, not in your '+
+      'work — nothing you can do about it here. ⛔ <b>Do not import the Finale file until '+
+      'someone has looked at it</b>, and show them this screen.<br>'+
+      worst.map(x => esc(x.key)+': recorded '+n(x.net)+', should be '+n(x.expected)+
+                     ' ('+(x.diff>0?'+':'')+n(x.diff)+')').join('<br>')+
+      (bad.length > worst.length ? '<br>… and '+(bad.length-worst.length)+' more' : '')+
+      '</div></div>';
+  }
+  if(units > 0.001 || hold.length){
+    out += '<div class="'+(bad.length ? 'warnbox' : 'okbox')+'"><b>'+n(units)+' unit'+
+      (Math.abs(units)===1?'':'s')+' across '+hold.length+' item'+(hold.length===1?'':'s')+
+      ' are recorded as still standing at '+esc(FL)+'.</b>'+
+      '<div class="sm" style="margin-top:4px">That is correct if pallets are still down. '+
+      'Finale will show the stock there, so nobody has to go hunting for it — and the next '+
+      'plan can see it.</div></div>';
+  } else if(!bad.length){
+    out += '<div class="okbox"><b>Nothing left at '+esc(FL)+' — everything that came down '+
+      'went back up or to the floor.</b></div>';
+  }
+  return out;
+}
 function unplacedPallets(){
   const out = [];
   const homeless = pid => { const a = actualFor(pid);
@@ -2126,6 +2176,8 @@ function renderDone(a){
         'recorded as <b>in progress</b>, not complete.</div></div>')+
 
     backstockCard()+
+
+    floorCard(m)+
     '<div class="card"><div class="pad"><h3>What will go to Finale</h3>'+
     '<div>'+chip('Transfers', m.transfers.length)+chip('Corrections', m.adjustments.length)+
     chip('Counts', m.counts.length)+chip('Not found', m.missing.length)+
@@ -2150,6 +2202,8 @@ function renderDone(a){
 
     '<button onclick="dl(\'pallet_moves\')">Pallet positions CSV</button>'+
     '<button onclick="dl(\'fullness\')">How full CSV</button>'+
+
+    '<button onclick="dl(\'floor_holding\')">Still on the floor CSV</button>'+
     '<button onclick="dl(\'events\')">Event log</button></div></div>'+
     '<div class="card"><div class="pad">'+
       '<h3>Send to SharePoint</h3>'+
@@ -2299,6 +2353,46 @@ function moves(){
       note: np.split_from ? ('split from '+np.split_from) : 'built on the floor',
       built_by_crew:true, ts: a.ts || np.built_ts || ''});
   });
+
+  const FLOOR = floorLoc();
+  const floorPallets = new Set();           
+
+  const floorPalletIds = new Set();
+   
+  const floorHandoff = {};
+
+  const floorStranded = {};
+  const downQty = {};                       
+  if(FLOOR) PAYLOAD.bays.forEach(b => {
+    const bs = S.bays[b.n] || {};
+    const bayWorked = !!(bs.putback_done || bs.closed) ||
+      (b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
+        (st(lid(b.n, p2.loc, l2, i2)) || {}).state));
+    if(!bayWorked) return;                  
+    (b.pallets || []).forEach(p => {
+      floorPallets.add(p.loc);
+      if(p.pallet_id) floorPalletIds.add(p.pallet_id);
+
+      const seen = {};
+      (p.lines || []).forEach(l => {
+        if(l.kind === 'count') return;
+        const k = l.sku + ' ' + (l.lot || '');
+        if(k in seen) return;
+        seen[k] = true;
+        const q = Number(l.system_qty || 0);
+        if(!(q > 0)) return;
+        downQty[p.loc + '|' + k] = q;
+        out.transfers.push({from_location: p.loc, to_location: FLOOR,
+          onto_pallet: p.pallet_id || '', sku: l.sku, lot: l.lot || '', quantity: q,
+          planned_qty: '', approved_qty: '', as_planned: true, planned_pallet: '',
+          took_from_sibling: '', sibling_line: '', on_floor: true,
+
+          kind: 'pallet_down', spoil: !!p.spoil, bay: b.bay,
+          ts: new Date().toISOString()});
+      });
+    });
+  });
+
   PAYLOAD.bays.forEach(b => {
 
     const push = (p, l, i, key, loc) => {
@@ -2324,9 +2418,11 @@ function moves(){
         onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''),
         cross:!!l.cross,
         reason:s.reason||'', ts:s.ts}); return; }
-      if(l.kind === 'count' && s.counted != null){
-        out.counts.push({serial:l.serial, location:loc, sku:l.sku, lot:l.lot,
-          system_qty:l.system_qty, counted:s.counted, variance:s.variance, ts:s.ts});
+
+      if(l.kind === 'count'){
+        if(s.counted != null)
+          out.counts.push({serial:l.serial, location:loc, sku:l.sku, lot:l.lot,
+            system_qty:l.system_qty, counted:s.counted, variance:s.variance, ts:s.ts});
         return;
       }
       const act = s.actual != null ? s.actual : null;
@@ -2339,6 +2435,9 @@ function moves(){
           if(!(pt.qty > 0)) return;
           const pdest = (l.kind === 'take') ? (l.dest || '')
                                             : (palletFinalLoc(pt.pallet) || '');
+
+          const fromFloor = floorPallets.has(loc);
+          const src = fromFloor ? FLOOR : loc;
           if(!pdest){
 
             const pa = actualFor(pt.pallet);
@@ -2351,9 +2450,28 @@ function moves(){
                      ? 'the crew could not put pallet '+(pt.pallet||'?')+' back up — it is '+
                        'still on the floor, so this stock has not moved anywhere yet'
                    : 'the receiving pallet has no final position in the putback list'});
+
+            if(fromFloor){
+              floorStranded[l.sku + ' ' + (l.lot || '')] =
+                (floorStranded[l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+              floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
+                (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+              return;
+            }
           }
-          out.transfers.push({from_location:loc,
+
+          if(l.kind === 'aside' && fromFloor && pt.pallet &&
+             floorPalletIds.has(pt.pallet)){
+
+            floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            return;
+          }
+          out.transfers.push({from_location: src,
             to_location: pdest,
+            on_floor_src: fromFloor,
+
+            from_pallet_loc: loc,
             onto_pallet: l.kind === 'aside' ? (pt.pallet||'') : '',
             sku:l.sku, lot:l.lot||'', quantity:pt.qty,
             planned_qty:l.planned_qty, approved_qty:(s.approved!=null?s.approved:l.planned_qty),
@@ -2368,7 +2486,8 @@ function moves(){
       }
       if(s.adjustment && Math.abs(s.adjustment) > 0.001){
 
-        out.adjustments.push({location: (s.adjustment > 0 ? (adjLoc(p) || loc) : loc),
+        const shrinkAt = (FLOOR && floorPallets.has(loc)) ? FLOOR : loc;
+        out.adjustments.push({location: (s.adjustment > 0 ? (adjLoc(p) || loc) : shrinkAt),
 
           origin: loc, posted_at: (s.adjustment > 0 ? 'final position' : 'origin'),
           sku:l.sku, lot:l.lot||'',
@@ -2388,19 +2507,11 @@ function moves(){
   PAYLOAD.bays.forEach(b => {
 
     const bs = S.bays[b.n] || {};
-    if(!bs.putback_done){
-
-      const touched = (b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
+    const bayWorked = !!(bs.putback_done || bs.closed) ||
+      (b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
         (st(lid(b.n, p2.loc, l2, i2)) || {}).state));
-      if(touched){
-        out.unresolved = out.unresolved || [];
-        out.unresolved.push({bay: b.bay, from: '', sku: '', qty: '', onto_pallet: '',
-          why: 'work was recorded in this bay but the putback was never confirmed, so no '
-             + 'pallet in it can be said to have changed position — nothing is exported for '
-             + 'it. Re-open the bay and tap "Loaded back in this order".'});
-      }
-      return;
-    }
+    if(!bayWorked) return;                  
+    const onFloor = !bs.putback_done;       
     (b.pallets || []).forEach(p => {
       const origin = p.loc;
       const a = actualFor(p.pallet_id);
@@ -2409,8 +2520,20 @@ function moves(){
 
       const gone = {};
       out.transfers.forEach(t => {
-        if (t.from_location === origin)
+
+        if (t.kind === 'pallet_down') return;
+
+        const from = t.from_location;
+        const mine = (from === origin) ||
+                     (FLOOR && from === FLOOR && t.onto_pallet === p.pallet_id) ||
+                     (FLOOR && from === FLOOR && t.from_pallet_loc === origin);
+        if (mine)
           gone[key(t.sku, t.lot)] = (gone[key(t.sku, t.lot)] || 0) + Number(t.quantity || 0);
+      });
+
+      Object.keys(floorHandoff).forEach(kk => {
+        const [oloc, sk] = kk.split('|');
+        if (oloc === origin) gone[sk] = (gone[sk] || 0) + floorHandoff[kk];
       });
       (out.missing || []).forEach(m => {
         if (m.from === origin)
@@ -2423,6 +2546,17 @@ function moves(){
         const k = key(l.sku, l.lot);
         if (!(k in onIt)) onIt[k] = {sku: l.sku, lot: l.lot || '', qty: Number(l.system_qty || 0)};
       });
+
+      if (FLOOR && p.pallet_id) {
+        arrivalsFor(p.pallet_id).forEach(x => {
+          if (x.gone) return;                        
+          const q = Number(x.qty || 0);
+          if (!(q > 0)) return;
+          const k = key(x.sku, x.lot);
+          if (onIt[k]) onIt[k].qty += q;             
+          else onIt[k] = {sku: x.sku, lot: x.lot || '', qty: q, arrived: true};
+        });
+      }
 
       const splitTo = {};
       Object.keys(S.split_contents || {}).forEach(newPid => {
@@ -2486,7 +2620,9 @@ function moves(){
             why: 'the pallet is still on the floor - this stock has not gone anywhere yet'});
           return;
         }
-        if (!final) {
+
+        const dest = onFloor ? (floorLoc() || final) : final;
+        if (!dest) {
           out.unresolved = out.unresolved || [];
           out.unresolved.push({bay: b.bay, from: origin, sku: it.sku, qty: left,
             onto_pallet: p.pallet_id || '',
@@ -2494,9 +2630,12 @@ function moves(){
           return;
         }
 
-        if (final === origin) return;
+        if (!floorPallets.has(origin) && final === origin) return;
 
-        out.transfers.push({from_location: origin, to_location: final,
+        if (onFloor) return;         
+        out.transfers.push({from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
+          to_location: dest,
+          on_floor: onFloor,         
           onto_pallet: p.pallet_id || '',
           sku: it.sku, lot: it.lot, quantity: left,
           planned_qty: '', approved_qty: '',
@@ -2508,6 +2647,71 @@ function moves(){
       });
     });
   });
+
+  const down = [], rest = [];
+  out.transfers.forEach(t => (t.kind === 'pallet_down' ? down : rest).push(t));
+  out.transfers = down.concat(rest);
+
+  if(FLOOR){
+    const net = {}, expected = {};
+    const bump = (o, k, v) => { o[k] = (o[k] || 0) + v; };
+    out.transfers.forEach(t => {
+      const k = t.sku + ' ' + (t.lot || '');
+      if(t.to_location === FLOOR) bump(net, k, Number(t.quantity || 0));
+      if(t.from_location === FLOOR) bump(net, k, -Number(t.quantity || 0));
+    });
+    (out.adjustments || []).forEach(a => {
+      if(a.location === FLOOR) bump(net, a.sku + ' ' + (a.lot || ''), Number(a.change || 0));
+    });
+
+    PAYLOAD.bays.forEach(b => {
+      const bs = S.bays[b.n] || {};
+      if(bs.putback_done) return;                   
+      (b.pallets || []).forEach(p => {
+        if(!floorPallets.has(p.loc)) return;        
+
+        const arr = p.pallet_id ? arrivalsFor(p.pallet_id).filter(x => !x.gone) : [];
+        const keySet = new Map();
+        (p.lines || []).forEach(l => {
+          if(l.kind === 'count') return;
+          const k = l.sku + ' ' + (l.lot || '');
+          if(!keySet.has(k)) keySet.set(k, Number(l.system_qty || 0));
+        });
+        arr.forEach(x => {
+          const k = x.sku + ' ' + (x.lot || '');
+          if(!keySet.has(k)) keySet.set(k, 0);      
+        });
+        keySet.forEach((base, k) => {
+          let q = base;
+          out.transfers.forEach(t => {
+            if(t.kind === 'pallet_down') return;
+            if((t.sku + ' ' + (t.lot || '')) !== k) return;
+            if(t.from_pallet_loc === p.loc || t.from_location === p.loc)
+              q -= Number(t.quantity || 0);
+          });
+          q -= (floorHandoff[p.loc + '|' + k] || 0);    
+          arr.forEach(x => {
+            if((x.sku + ' ' + (x.lot || '')) === k) q += Number(x.qty || 0);
+          });
+          (out.adjustments || []).forEach(a => {
+            if((a.sku + ' ' + (a.lot || '')) === k && a.location === FLOOR &&
+               a.origin === p.loc) q += Number(a.change || 0);
+          });
+          if(Math.abs(q) > 0.001) bump(expected, k, q);
+        });
+      });
+    });
+     
+    Object.keys(floorStranded).forEach(k => bump(expected, k, floorStranded[k]));
+    const keys = new Set(Object.keys(net).concat(Object.keys(expected)));
+    out.floor_holding = Object.keys(net)
+      .filter(k => Math.abs(net[k]) > 0.001)
+      .map(k => ({key: k, units: Math.round(net[k] * 1000) / 1000}));
+    out.floor_unbalanced = [...keys]
+      .map(k => ({key: k, net: net[k] || 0, expected: expected[k] || 0,
+                  diff: Math.round(((net[k] || 0) - (expected[k] || 0)) * 1000) / 1000}))
+      .filter(x => Math.abs(x.diff) > 0.001);
+  }
   return out;
 }
 function csv(rows){
@@ -2522,6 +2726,14 @@ function csv(rows){
 function dl(which){
   const m = moves();
   let rows = which==='events' ? S.events : m[which];
+
+  if(which === 'floor_holding'){
+    rows = (m.floor_holding || []).map(x => {
+      const i = x.key.lastIndexOf(' ');
+      return {location: floorLoc(), sku: i > 0 ? x.key.slice(0, i) : x.key,
+              lot: i > 0 ? x.key.slice(i + 1) : '', units: x.units};
+    });
+  }
   if(which==='events'){
     rows = S.events.map(e=>({ts:e.ts, kind:e.kind, bay:e.bay||'', pallet:e.pallet||'',
       line:e.line||'', actual:e.actual==null?'':e.actual, counted:e.counted==null?'':e.counted}));
