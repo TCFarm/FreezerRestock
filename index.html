@@ -668,6 +668,13 @@ function renderReview(a){
   $('#progbar').style.width = (allLines.length ? opened/allLines.length*100 : 0) + '%';
 
   let h = '<div id="offbadge" class="sm" style="margin:0 0 12px"></div>'+
+
+    '<div class="badbox"><b>⛔ Record everything HERE — not in the Finale tablet app.</b>'+
+    '<div class="sm" style="margin-top:4px">If a move goes in both, Finale counts it twice '+
+    'and next week is planned against the wrong figure. ⛔ <b>Half here and half there is '+
+    'worse than doing it all the old way</b> — if this app will not work, stop and tell Jack '+
+    'rather than switching back partway. <a href="./how.html" style="color:inherit">How this '+
+    'works →</a></div></div>'+
     '<div class="card"><div class="pad">'+
     '<h2>Is this week the right size?</h2><div>'+
     chip('Bays to open', t.bays) + chip('Pallets down', t.pallets_down) +
@@ -2912,7 +2919,15 @@ function deviceId(){
           try{ localStorage.setItem('freezer.device', d); }catch(e){} }
   return d;
 }
+
+function planStamp(){
+  const b = String((PAYLOAD && PAYLOAD.built) || '');
+
+  const t = b.replace(/[^0-9T]/g, '').slice(0, 13);
+  return t || 'nobuild';
+}
 function sessionKey(){ return `${PAYLOAD.plan_date}_${deviceId()}`; }
+function sessionFile(){ return `session_${PAYLOAD.plan_date}_${deviceId()}_${planStamp()}.json`; }
 function allBaysClosed(){
 
   return PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed) && unplacedPallets().length === 0;
@@ -2951,7 +2966,7 @@ async function syncNow(quiet){
                  bay: S.bay, screen: S.screen,
                  lines: S.lines, pallets: S.pallets, bays: S.bays,
                  events: S.events, breaks: S.breaks, moves: m};
-    const fname = `session_${sessionKey()}.json`;
+    const fname = sessionFile();
     const t = tokStore();
     const up = await fetch(
       `${GRAPH}/sites/${site.id}/drive/root:/${sp.doc_folder}/${fname}:/content`,
