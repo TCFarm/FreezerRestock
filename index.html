@@ -542,18 +542,30 @@ function arrivalsFor(palletId){
   const out = [];
   if(!palletId) return out;
   PAYLOAD.bays.forEach(bb => bb.pallets.forEach(pp => pp.lines.forEach((l2, i2) => {
-    if(l2.kind !== 'aside' || l2.onto_pallet !== palletId) return;
+    if(l2.kind !== 'aside') return;
     const st_ = st(lid(bb.n, pp.loc, l2, i2)) || null;
     const state = st_ ? st_.state : null;
     const actual = (st_ && st_.actual != null) ? Number(st_.actual) : null;
-    out.push({sku:l2.sku, lot:l2.lot||'', planned:l2.planned_qty,
-              qty:(actual != null ? actual : l2.planned_qty),
-              from:pp.loc, bay:bb.bay, n:bb.n, cross:!!l2.cross,
-              state:state, reason:(st_ && st_.reason) || '',
-               
-              gone:(state === 'skipped' || state === 'missing'),
-              short:(state === 'done' && actual != null &&
-                     Math.abs(actual - l2.planned_qty) > 0.001)});
+
+    const parts = (st_ && st_.placements && st_.placements.length)
+      ? st_.placements.filter(pt => Number(pt.qty || 0) > 0)
+                      .map(pt => ({pallet: pt.pallet || '', qty: Number(pt.qty),
+                                   deviated: !!pt.deviated, floor: !!pt.floor}))
+      : [{pallet: l2.onto_pallet || '', deviated: false, floor: false,
+          qty: (actual != null ? actual : Number(l2.planned_qty || 0))}];
+    parts.forEach(pt => {
+      if(pt.pallet !== palletId) return;
+      out.push({sku:l2.sku, lot:l2.lot||'', planned:l2.planned_qty,
+                qty:pt.qty,
+                from:pp.loc, bay:bb.bay, n:bb.n, cross:!!l2.cross,
+
+                deviated: pt.deviated || (l2.onto_pallet !== palletId),
+                state:state, reason:(st_ && st_.reason) || '',
+                 
+                gone:(state === 'skipped' || state === 'missing'),
+                short:(state === 'done' && actual != null &&
+                       Math.abs(pt.qty - Number(l2.planned_qty || 0)) > 0.001)});
+    });
   })));
   return out;
 }
@@ -1161,12 +1173,24 @@ function openLine(id){
                'the <b>'+n(baseline)+'</b> that are not part of that' : '')+
         '. Recording this proposes a decrease of <b>'+n(baseline)+'</b>.</div></div>'+
         '<p class="sm dim">⛔ Not the same as <b>Skip</b> — skip means we did not do it and '+
-        'Finale stays as it is.</p>',
+        'Finale stays as it is.</p>'+
+
+        '<label class="sm" style="margin-top:10px">Why is it not there? '+
+        '<span class="dim">(this becomes the Finale code)</span></label>'+
+        '<select id="nhr">'+
+          ((PAYLOAD.shrink_reasons||[]).length > 1
+            ? '<option value="__none__" selected>— choose a reason —</option>' : '')+
+          (PAYLOAD.shrink_reasons||[]).map(x =>
+            '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+        '</select>',
         [{t:'Cancel',c:'ghost'},
          {t:'Yes — it is not there',c:'warn',f:()=>{
-            setLine(id,{state:'missing', actual:0, reason:'not found',
+            const rsn = ($('#nhr')||{}).value;
+            if(!rsn || rsn === '__none__')
+              return toast('⛔ pick a reason — it becomes a Finale accounting code');
+            setLine(id,{state:'missing', actual:0, reason:rsn,
                         baseline:baseline, sibling_took:sibTook});
-            ev('line_missing',{line:id}); maybeDone(f.p.loc); render(); }}]), 0); }},
+            ev('line_missing',{line:id, reason:rsn}); maybeDone(f.p.loc); render(); }}]), 0); }},
       
      {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
@@ -1185,6 +1209,18 @@ function openLine(id){
 
         const realloc = (rl && rl.value === 'yes') ? adj : 0;
         if(realloc) adj2 = 0;
+
+        if(realloc > 0 && sibId){
+          const ss = st(sibId) || {};
+          const had = Number(ss.actual != null ? ss.actual : sibTook) || 0;
+          const now = Math.max(0, Math.round((had - realloc) * 1000) / 1000);
+          setLine(sibId, {state:'done', actual:now, gave_to_sibling:realloc,
+
+                          reallocated:true,
+                          as_planned:false});
+          ev('reallocated', {from:sibId, to:id, units:realloc});
+          toast('✓ ' + n(realloc) + ' moved from the other line — it now shows ' + n(now));
+        }
         const patch = {state:'done', actual:mv, left:lf, adjustment:adj2,
                        baseline:baseline, sibling_took:sibTook,
                        took_from_sibling: realloc || undefined,
@@ -2544,7 +2580,17 @@ function moves(){
       if(!s) return;
       if(s.state === 'missing'){
 
-        const dec = (s.baseline != null) ? s.baseline : l.system_qty;
+        let sibRecorded = 0;
+        if (p && p.lines) p.lines.forEach((l2, i2) => {
+          if (i2 === i) return;
+          if (l2.sku !== l.sku || (l2.lot || '') !== (l.lot || '')) return;
+          if (l2.kind !== 'take' && l2.kind !== 'aside') return;
+          const s2 = S.lines[lid(b.n, key, l2, i2)];
+          sibRecorded += Number((s2 && s2.actual != null) ? s2.actual : l2.planned_qty) || 0;
+        });
+        const ceiling = Math.max(0, Number(l.system_qty || 0) - sibRecorded);
+        const claimed = (s.baseline != null) ? Number(s.baseline) : Number(l.system_qty || 0);
+        const dec = Math.min(claimed, ceiling);
         out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot||'',
           planned_qty:l.planned_qty, system_qty:l.system_qty,
           sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
@@ -2552,6 +2598,23 @@ function moves(){
 
           onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
           onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''), ts:s.ts});
+
+        if (dec > 0.001 && s.reason && (PAYLOAD.shrink_reasons||[]).indexOf(s.reason) >= 0) {
+          out.adjustments.push({
+            location: (FLOOR && floorPallets.has(loc)) ? FLOOR : loc,
+            origin: loc, posted_at: (FLOOR && floorPallets.has(loc)) ? 'restock floor' : 'origin',
+            sku: l.sku, lot: l.lot || '', change: -dec, direction: 'decrease',
+            baseline: (s.baseline != null ? s.baseline : l.system_qty),
+            sibling_took: (s.sibling_took != null ? s.sibling_took : 0),
+            reason: s.reason, system_qty: l.system_qty, moved: 0,
+            left_on_pallet: 0, not_here: true, ts: s.ts});
+        } else if (dec > 0.001) {
+          out.unresolved = out.unresolved || [];
+          out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:dec, onto_pallet:'',
+            why:'marked "not here at all" with no Finale reason code' +
+                (s.reason ? ' ("'+s.reason+'" is not one of the accounting codes)' : '') +
+                ' — re-open the line and choose one, or Finale is never told'});
+        }
         return; }
 
       if(s.state === 'skipped'){ out.skipped.push({bay:b.bay, location:loc, sku:l.sku,
@@ -2647,7 +2710,9 @@ function moves(){
         const shrinkAt = (FLOOR && floorPallets.has(loc)) ? FLOOR : loc;
         out.adjustments.push({location: (s.adjustment > 0 ? (adjLoc(p) || loc) : shrinkAt),
 
-          origin: loc, posted_at: (s.adjustment > 0 ? 'final position' : 'origin'),
+          origin: loc,
+          posted_at: (s.adjustment > 0 ? 'final position'
+                      : ((FLOOR && floorPallets.has(loc)) ? 'restock floor' : 'origin')),
           sku:l.sku, lot:l.lot||'',
           change:s.adjustment, direction:s.adjustment<0?'decrease':'increase',
           baseline:(s.baseline != null ? s.baseline : l.system_qty),
@@ -2756,8 +2821,13 @@ function moves(){
               pallet:otherPid, cause:'no_position',
               why:'it went onto ' + otherPid + ' when this pallet was split in two, and '+
                   'nobody recorded where ' + otherPid + ' ended up'});
-          } else if (ofin !== origin && toOther > 0.001) {
-            out.transfers.push({from_location: origin, to_location: ofin,
+          } else if (toOther > 0.001) {
+
+            out.transfers.push({
+              from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
+              on_floor_src: floorPallets.has(origin),
+              from_pallet_loc: origin,
+              to_location: ofin,
               onto_pallet: otherPid, sku: it.sku, lot: it.lot, quantity: toOther,
               planned_qty: '', approved_qty: '', as_planned: false,
               planned_pallet: p.pallet_id || '', took_from_sibling: '', sibling_line: '',
@@ -2765,13 +2835,25 @@ function moves(){
               bay: b.bay, ts: (oa && oa.ts) || new Date().toISOString()});
           }
 
-          if (rest > 0.001 && final && final !== origin) {
-            out.transfers.push({from_location: origin, to_location: final,
-              onto_pallet: p.pallet_id || '', sku: it.sku, lot: it.lot, quantity: rest,
-              planned_qty: '', approved_qty: '', as_planned: !(a && a.deviated),
-              planned_pallet: '', took_from_sibling: '', sibling_line: '',
-              kind: 'pallet_move', spoil: !!p.spoil, bay: b.bay,
-              ts: (a && a.ts) || new Date().toISOString()});
+          const restDest = onFloor ? (floorLoc() || final) : final;
+          if (rest > 0.001 && !onFloor) {
+            if (!restDest) {
+              strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:rest,
+                pallet:p.pallet_id || '', cause:'no_position',
+                why:'the part left on ' + (p.pallet_id||'this pallet') + ' after the split '+
+                    'has nowhere recorded to go'});
+            } else {
+              out.transfers.push({
+                from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
+                on_floor_src: floorPallets.has(origin),
+                from_pallet_loc: origin,
+                to_location: restDest,
+                onto_pallet: p.pallet_id || '', sku: it.sku, lot: it.lot, quantity: rest,
+                planned_qty: '', approved_qty: '', as_planned: !(a && a.deviated),
+                planned_pallet: '', took_from_sibling: '', sibling_line: '',
+                kind: 'pallet_move', spoil: !!p.spoil, bay: b.bay,
+                ts: (a && a.ts) || new Date().toISOString()});
+            }
           }
           return;
         }
