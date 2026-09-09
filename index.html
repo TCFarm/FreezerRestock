@@ -276,6 +276,7 @@ function setPlan(p){
   UNDO.length = 0;
   renderUndoBar();
   claimOwner();           
+  noteOpen();             
   scanStranded();
 }
 
@@ -518,7 +519,8 @@ async function boot(){
 
   const c = cachedPlan();
   if(c){ setPlan(c.plan); render();
-         ensureToken().then(ok => { if(ok) refreshPlanQuietly(); });  
+
+         ensureToken().then(ok => { if(ok){ refreshPlanQuietly(); reconcileOnBoot(); } });
          return; }
   if(!(await ensureToken())){
 
@@ -526,7 +528,7 @@ async function boot(){
     return renderGate();
   }
   renderGate(null, true);
-  try{ const p = await fetchPlan(); acceptPlan(p); render(); }
+  try{ const p = await fetchPlan(); acceptPlan(p); render(); reconcileOnBoot(); }
   catch(e){ renderGate('Could not load the plan: ' + e.message); }
 }
 
@@ -601,10 +603,15 @@ async function doPlanSwitch(from, to, done, bays){
 
   PENDING_PLAN = null;
   dropBanner('newplan');
+  dropBanner('reconcile');        
   acceptPlan(p);                  
   ev('plan_started_after_switch', {from: from});
   save();
   render();
+
+  RECONCILED = false;
+  SERVER_REC = null;
+  reconcileOnBoot();
   scanStranded();                 
   dlg('Now on plan ' + esc(to),
     '<div class="okbox"><b>Your ' + esc(from) + ' work is on SharePoint.</b>'
@@ -824,7 +831,8 @@ function save(){
     if(UNDO.length > UNDO_MAX) UNDO.shift();
     renderUndoBar();
   }
-  
+
+  writeLocal();
   if(saveT) clearTimeout(saveT);
   saveT = setTimeout(()=>{
     saveT = null;                        
@@ -832,19 +840,24 @@ function save(){
     if(UNDO.length) UNDO[UNDO.length - 1].label = undoLabel();
     COMMITTED = undoSnapshotOf(S);
     renderUndoBar();
-
-    if(WRITE_LOCK) return;
-    try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; touchOwner(); }
-    catch(e){
-
-      if(!saveFailed){
-        saveFailed = true;
-
-        try{ syncNow(true); }catch(e2){}
-        blockStorage(e.message||String(e), true);
-      }
-    }
   }, 60);
+}
+
+let LAST_WRITE = 0;
+function writeLocal(){
+
+  if(WRITE_LOCK) return;
+  try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; touchOwner();
+       LAST_WRITE = Date.now(); }
+  catch(e){
+
+    if(!saveFailed){
+      saveFailed = true;
+
+      try{ syncNow(true); }catch(e2){}
+      blockStorage(e.message||String(e), true);
+    }
+  }
 }
 function undoLast(){
   if(!UNDO.length) return;
@@ -1189,6 +1202,7 @@ function renderReview(a){
     'rather than switching back partway. <a href="./how.html" style="color:inherit;'+
     'display:inline-block;min-height:44px;line-height:44px">How this '+
     'works →</a></div></div>'+
+    heldLine()+
     '<div class="card"><div class="pad">'+
     '<h2>Is this week the right size?</h2><div>'+
     chip('Bays to open', t.bays) + chip('Pallets down', t.pallets_down) +
@@ -1321,7 +1335,7 @@ function renderBay(a){
   $('#progbar').style.width = jp.pct + '%';
   navArrows();
 
-  let h = '';
+  let h = heldLine() + closedBox(b);
   if((b.orphan_pulls||[]).length){
     h += '<div class="warnbox"><b>⚠️ Planned here, but may have moved</b>' +
       (b.orphan_pulls||[]).map((o,i)=>{
@@ -1343,10 +1357,13 @@ function renderBay(a){
   const allDone = b.pallets.every(p => (S.pallets[p.loc]||{}).done);
   const pb = (S.bays[b.n]||{}).putback_done;
   const btn = $('#mainbtn');
+  const wasClosed = !!(S.bays[b.n]||{}).closed;
 
   const advance = () => {
     ev('bay_close', {bay:b.bay});
-    S.bays[b.n] = Object.assign(S.bays[b.n]||{}, {closed:true});
+
+    S.bays[b.n] = Object.assign(S.bays[b.n]||{},
+                                {closed:true, closed_ts:new Date().toISOString()});
     S.bay++;
     if(S.bay >= PAYLOAD.bays.length) S.screen = 'done';
     else ev('bay_open', {bay:PAYLOAD.bays[S.bay].bay});
@@ -1374,7 +1391,18 @@ function renderBay(a){
     }));
   };
 
-  if(!pb){
+  if(wasClosed){
+    const nxt = S.bay + 1 < PAYLOAD.bays.length
+              ? 'go to ' + PAYLOAD.bays[S.bay+1].bay : 'finish';
+    btn.className = 'big ok';
+    btn.textContent = 'Already closed · ' + nxt;
+    btn.onclick = () => {
+      S.bay++;
+      if(S.bay >= PAYLOAD.bays.length) S.screen = 'done';
+      else ev('bay_open', {bay:PAYLOAD.bays[S.bay].bay});
+      save(); window.scrollTo(0,0); render();
+    };
+  } else if(!pb){
     const left = openLines().length;
     btn.className = 'big warn';
     btn.textContent = left ? 'Putback — ' + left + ' line(s) not done'
@@ -4470,6 +4498,227 @@ async function graphWrite(path, body, method){
   return j;                                   
 }
 
+const META_EV = {app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1};
+function workEvents(o){
+  return (((o && o.events) || [])).filter(e => e && !META_EV[e.kind]);
+}
+function recordAge(o){
+  const w = workEvents(o), last = w.length ? w[w.length-1] : null;
+  return {n: w.length, ts: last ? String(last.ts || '') : '',
+          lines: Object.keys((o && o.lines) || {}).length,
+          bays: Object.values((o && o.bays) || {}).filter(x => x && x.closed).length};
+}
+
+function hasRecordedWork(o){
+  if(!o) return false;
+  if(Object.keys(o.lines || {}).length) return true;
+  if(Object.values(o.bays || {}).some(x => x && (x.closed || x.putback_done))) return true;
+  return ['putback_actual','new_pallets','split_contents','floor_fix','left_down','opened']
+    .some(k => Object.keys(o[k] || {}).length) || (o.temp_out || []).length > 0;
+}
+
+function isPrefix(a, b){
+  const A = workEvents(a), B = workEvents(b);
+  if(A.length > B.length) return false;
+  for(let i = 0; i < A.length; i++){
+    if(String(A[i].ts || '')   !== String(B[i].ts || ''))   return false;
+    if(String(A[i].kind || '') !== String(B[i].kind || '')) return false;
+  }
+  return true;
+}
+
+async function fetchRecord(){
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const t = tokStore();
+  if(!t) throw new Error('not signed in');
+  const r = await fetch(
+    `${GRAPH}/sites/${site.id}/drive/root:/${sp.doc_folder}/${sessionFile()}:/content`,
+    {headers: {Authorization: 'Bearer ' + t.access_token}});
+  if(r.status === 404) return null;
+  if(!r.ok) throw new Error('record download HTTP ' + r.status);
+  const o = await r.json();
+  if(!o || typeof o !== 'object') throw new Error('the record on the server is not a session');
+  return o;
+}
+
+async function siblingRecords(){
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const kids = await graph(`/sites/${site.id}/drive/root:/${sp.doc_folder}:/children`
+                         + `?$select=name,lastModifiedDateTime&$top=999`);
+  const pre = `session_${PAYLOAD.plan_date}_${deviceId()}_`, me = sessionFile();
+  return (kids.value || [])
+    .filter(f => f && f.name && f.name.indexOf(pre) === 0 && f.name !== me)
+    .map(f => ({name: f.name, at: f.lastModifiedDateTime || ''}));
+}
+
+let RECONCILED = false;
+let SERVER_REC = null;           
+
+async function reconcileOnBoot(){
+  if(RECONCILED) return;
+  RECONCILED = true;
+
+  if(WRITE_LOCK) return;
+  const key0 = KEY, before = recordAge(S);
+  let rec = null;
+  try{ rec = await fetchRecord(); }
+  catch(e){
+
+    ev('boot_reconcile', {result:'unreachable', why:String((e && e.message) || e)});
+    save();
+    return;
+  }
+
+  if(KEY !== key0) return;                                   
+  const now = recordAge(S);
+  if(now.n !== before.n || now.lines !== before.lines) return;
+
+  if(!rec){
+
+    let sib = [];
+    try{ sib = await siblingRecords(); }catch(e){}
+    ev('boot_reconcile', {result: sib.length ? 'other_build_only' : 'no_server_copy',
+                          local: now.n, siblings: sib.map(x => x.name)});
+    save();
+    if(sib.length && !hasRecordedWork(S)){
+      banner('reconcile',
+        '<b>⚠️ There is a record for this pull day on SharePoint, but it was recorded against '
+        + 'a different version of the plan.</b>'
+        + '<div class="sm" style="margin-top:4px">It has <b>not</b> been brought back — the two '
+        + 'versions do not have the same lines, and merging them would quietly reconcile work '
+        + 'that was never the same work.</div>'
+        + '<div class="sm dim" style="margin-top:4px">' + esc(sib.map(x => x.name).join(', '))
+        + '</div>'
+        + '<div class="sm" style="margin-top:6px">⛔ Tell Jack before you re-do anything — that '
+        + 'record is safe and a person can say which lines still apply.</div>');
+    }
+    if(hasRecordedWork(S)) syncNow(true);    
+    return;
+  }
+  const there = recordAge(rec);
+
+  if(!hasRecordedWork(S) && hasRecordedWork(rec)){
+    applyServerRecord(rec, 'restored');
+    return;
+  }
+  if(there.n <= now.n){
+     
+    ev('boot_reconcile', {result:'local_current', local:now.n, server:there.n});
+    save();
+    if(there.n < now.n) syncNow(true);       
+    return;
+  }
+
+  SERVER_REC = rec;
+  if(isPrefix(S, rec)){
+
+    ev('boot_reconcile', {result:'server_ahead_ask', local:now.n, server:there.n});
+    save();
+    renderRestoreOffer(now, there);
+    return;
+  }
+
+  const kept = stashLocal('fork');
+  ev('boot_reconcile', {result:'diverged', local:now.n, server:there.n, kept:kept || ''});
+  save();
+  try{ uploadRaw('fork_' + PAYLOAD.plan_date + '_' + deviceId() + '_' + Date.now() + '.json',
+                 JSON.stringify(S)); }catch(e){}
+  banner('reconcile',
+    '<b>⛔ This tablet and the server disagree about this shift.</b>'
+    + '<div class="sm" style="margin-top:4px">Each one holds taps the other does not — '
+    + 'this tablet <b>' + now.n + '</b>, the server <b>' + there.n + '</b>. <b>Nothing has '
+    + 'been changed or deleted.</b> You are working the copy on this tablet.</div>'
+    + '<div class="sm dim" style="margin-top:4px">Both copies have been kept. ⛔ Do not clear '
+    + 'this iPad — tell Jack, and the two will be sorted out at the import.</div>');
+}
+
+function stashLocal(tag){
+  const stamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+  const k = KEY + '.rescue.' + tag + '-' + stamp;
+  try{
+    const raw = JSON.stringify(S);
+    localStorage.setItem(k, raw);
+    if(localStorage.getItem(k) !== raw) throw new Error('read-back mismatch');
+    return k;
+  }catch(e){ return ''; }
+}
+
+function applyServerRecord(rec, how){
+
+  const kept = stashLocal(how);
+  if(!kept && hasRecordedWork(S)){
+    banner('reconcile', '<b>⛔ There is a fuller record of this shift on the server, and no '
+      + 'room on this iPad to keep the local copy safe first.</b><div class="sm" '
+      + 'style="margin-top:4px">Nothing has been changed. Tell Jack — this needs a person.</div>');
+    return;
+  }
+  const o = blank();
+
+  ['started','finished','bay','screen','opened','lines','pallets','bays','putback_actual',
+   'new_pallets','split_contents','left_down','temp_out','floor_fix','events','breaks',
+   'backstock'].forEach(k => { if(rec[k] !== undefined && rec[k] !== null) o[k] = rec[k]; });
+  const age = recordAge(o);
+  S = o;                                      
+  COMMITTED = undoSnapshotOf(S);
+  writeLocal();                               
+  ev('boot_restore', {from:'sharepoint', how:how, lines:age.lines, events:age.n,
+                      bays_closed:age.bays, kept:kept || ''});
+  save();
+
+  UNDO.length = 0;
+  renderUndoBar();
+  banner('reconcile',
+    '<b>✓ Your earlier work came back from SharePoint.</b>'
+    + '<div class="sm" style="margin-top:4px">This tablet had lost it — iPads clear an app\'s '
+    + 'storage after about a week. Restored: <b>' + age.lines + '</b> recorded line'
+    + (age.lines===1?'':'s') + ' · <b>' + age.bays + '</b> bay'
+    + (age.bays===1?'':'s') + ' closed'
+    + (age.ts ? ' · last tap ' + esc(age.ts.slice(11,16)) : '') + '.</div>'
+    + '<div style="margin-top:8px"><button class="ghost" style="min-height:44px" '
+    + 'onclick="dropBanner(\'reconcile\')">Got it</button></div>', 'okbox');
+  render();
+}
+
+function renderRestoreOffer(local, there){
+  if(!SERVER_REC) return dropBanner('reconcile');
+  banner('reconcile',
+    '<b>⚠️ SharePoint has more of this shift than this tablet does.</b>'
+    + '<div class="sm" style="margin-top:4px">This tablet: <b>' + local.lines
+    + '</b> line' + (local.lines===1?'':'s') + ' · <b>' + local.bays + '</b> bay'
+    + (local.bays===1?'':'s') + ' closed. On the server: <b>' + there.lines
+    + '</b> line' + (there.lines===1?'':'s') + ' · <b>' + there.bays + '</b> bay'
+    + (there.bays===1?'':'s') + ' closed'
+    + (there.ts ? ', last tap ' + esc(there.ts.slice(11,16)) : '') + '.</div>'
+    + '<div class="sm" style="margin-top:6px">⭐ Everything on this tablet is also on the '
+    + 'server, so bringing it back <b>loses nothing</b> — and the copy on this tablet is '
+    + 'kept either way.</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button class="pri" style="min-height:48px" onclick="acceptRestore()">'
+    + 'Bring back the fuller one</button>'
+    + '<button class="ghost" style="min-height:48px" onclick="declineRestore()">'
+    + 'Keep what is on this tablet</button></div>', 'warnbox');
+}
+function acceptRestore(){
+  if(!SERVER_REC) return dropBanner('reconcile');
+  const rec = SERVER_REC; SERVER_REC = null;
+
+  if(!isPrefix(S, rec) || recordAge(rec).n <= recordAge(S).n){
+    dropBanner('reconcile');
+    return toast('⚠️ this tablet has moved on since — keeping what is here');
+  }
+  applyServerRecord(rec, 'accepted');
+}
+function declineRestore(){
+  SERVER_REC = null;
+  dropBanner('reconcile');
+  ev('boot_reconcile', {result:'declined_restore'});
+  save();
+
+  syncNow(true);
+}
+
 async function syncNow(quiet){
   if(SYNCING) return false;                
   SYNCING = true;
@@ -4505,6 +4754,8 @@ async function syncNow(quiet){
 
                  putback_actual: S.putback_actual, new_pallets: S.new_pallets,
                  split_contents: S.split_contents, floor_fix: S.floor_fix,
+
+                 left_down: S.left_down, temp_out: S.temp_out,
                  backstock: S.backstock || null, opened: S.opened,
 
                  moves_error: movesErr || null,
@@ -4624,6 +4875,73 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', flushSoon);
 
+function notePersisted(ok){
+  PERSISTED = !!ok;
+  try{
+    if(!OPEN_NOTED) return;         
+    ev('storage_persist', {granted: PERSISTED});
+    save();
+  }catch(e){}
+}
+
+let OPEN_NOTED = false;
+function noteOpen(){
+  if(OPEN_NOTED) return;                  
+  OPEN_NOTED = true;
+  try{
+    ev('app_open', {
+      lines:  Object.keys(S.lines  || {}).length,
+      events: (S.events || []).length,
+      bays_closed: Object.values(S.bays || {}).filter(x => x && x.closed).length,
+      started: !!S.started,
+      persisted: PERSISTED,
+      rescued: !!(typeof RESCUED !== 'undefined' && RESCUED),
+      build: (PAYLOAD && PAYLOAD.built) || ''
+    });
+    save();
+  }catch(e){}                             
+}
+
+function heldLine(){
+  const nl = Object.keys(S.lines || {}).length;
+  const nb = Object.values(S.bays || {}).filter(x => x && x.closed).length;
+  const tb = (PAYLOAD.bays || []).length;
+  const hhmm = t => { try{ return new Date(t).toTimeString().slice(0,5); }catch(e){ return '?'; } };
+  const saved  = LAST_WRITE ? hhmm(LAST_WRITE) : '—';
+  const synced = S.synced ? hhmm(S.synced) : 'not yet';
+  return '<div class="sm dim" style="padding:6px 2px 10px">' +
+    'This tablet is holding <b>' + nl + '</b> recorded line' + (nl===1?'':'s') +
+    ' · <b>' + nb + ' of ' + tb + '</b> bays closed' +
+    ' · saved ' + saved + ' · synced ' + esc(synced) +
+    '</div>';
+}
+
+function closedBox(b){
+  const bs = S.bays[b.n] || {};
+  if(!bs.closed) return '';
+  const hhmm = t => { try{ return new Date(t).toTimeString().slice(0,5); }catch(e){ return ''; } };
+  let done = 0, skipped = 0, missing = 0, counted = 0;
+  b.pallets.forEach(p => p.lines.forEach((l,i) => {
+    if(!isActionable(l)) return;          
+    const s = st(lid(b.n, p.loc, l, i)) || {};
+    if(s.state === 'skipped') skipped++;
+    else if(s.state === 'missing') missing++;
+    else if(s.state === 'done'){ done++; if(l.kind === 'count') counted++; }
+  }));
+  const bits = ['<b>' + done + '</b> line' + (done===1?'':'s') + ' recorded'];
+  if(counted)  bits.push('<b>' + counted + '</b> counted');
+  if(skipped)  bits.push('<b>' + skipped + '</b> skipped');
+  if(missing)  bits.push('<b>' + missing + '</b> not there');
+  bits.push(bs.putback_done
+    ? 'putback confirmed' + (bs.putback_ts ? ' ' + hhmm(bs.putback_ts) : '')
+    : '⚠️ <b>no putback recorded</b>');
+  return '<div class="okbox" style="margin-bottom:12px"><b>✓ This bay is already closed'
+    + (bs.closed_ts ? ' — ' + hhmm(bs.closed_ts) : '') + '.</b>'
+    + '<div class="sm" style="margin-top:4px">' + bits.join(' · ') + '</div>'
+    + '<div class="sm dim" style="margin-top:6px">Nothing here needs doing again. '
+    + 'You can still tap a line to correct it.</div></div>';
+}
+
 function dlg(title, bodyHtml, buttons, after){
   const d = $('#dlg');
   $('#dlgh').textContent = title; $('#dlgb').innerHTML = bodyHtml;
@@ -4648,15 +4966,15 @@ window.addEventListener('load', () => {
 
   try{
     if(navigator.storage && navigator.storage.persist)
-      navigator.storage.persist().then(ok => { PERSISTED = !!ok; }).catch(() => {});
+      navigator.storage.persist().then(notePersisted).catch(() => {});
   }catch(e){}
   keepAwake();
   boot();
 });
 
 function flushLocal(){
-  if(WRITE_LOCK) return;                     
-  try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){}
+
+  writeLocal();
 }
 window.addEventListener('pagehide', () => { flushLocal(); releaseOwner(); });
 window.addEventListener('beforeunload', () => { flushLocal(); releaseOwner(); });
