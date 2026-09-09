@@ -4542,15 +4542,40 @@ async function fetchRecord(){
   return o;
 }
 
-async function siblingRecords(){
+function classifyRecords(names){
+  const dev = deviceId(), stamp = planStamp(), me = sessionFile();
+  const pre = `session_${PAYLOAD.plan_date}_`;
+  const out = {mine_other_build: [], same_build_other_device: [], other: []};
+  names.filter(f => f && f.name && f.name.indexOf(pre) === 0 && f.name !== me)
+       .forEach(f => {
+
+    const body = f.name.slice(pre.length).replace(/\.json$/, '');
+    const cut = body.lastIndexOf('_');
+    const d = cut < 0 ? body : body.slice(0, cut);
+    const st = cut < 0 ? '' : body.slice(cut + 1);
+    const rec = {name: f.name, at: f.lastModifiedDateTime || '', device: d, stamp: st};
+    if(d === dev) out.mine_other_build.push(rec);
+    else if(st === stamp) out.same_build_other_device.push(rec);
+    else out.other.push(rec);
+  });
+  return out;
+}
+async function listRecords(){
   const sp = CFG.sharepoint;
   const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
   const kids = await graph(`/sites/${site.id}/drive/root:/${sp.doc_folder}:/children`
                          + `?$select=name,lastModifiedDateTime&$top=999`);
-  const pre = `session_${PAYLOAD.plan_date}_${deviceId()}_`, me = sessionFile();
-  return (kids.value || [])
-    .filter(f => f && f.name && f.name.indexOf(pre) === 0 && f.name !== me)
-    .map(f => ({name: f.name, at: f.lastModifiedDateTime || ''}));
+  return classifyRecords(kids.value || []);
+}
+async function fetchNamed(name){
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const t = tokStore();
+  const r = await fetch(
+    `${GRAPH}/sites/${site.id}/drive/root:/${sp.doc_folder}/${name}:/content`,
+    {headers: {Authorization: 'Bearer ' + t.access_token}});
+  if(!r.ok) throw new Error('download HTTP ' + r.status);
+  return r.json();
 }
 
 let RECONCILED = false;
@@ -4577,19 +4602,26 @@ async function reconcileOnBoot(){
 
   if(!rec){
 
-    let sib = [];
-    try{ sib = await siblingRecords(); }catch(e){}
-    ev('boot_reconcile', {result: sib.length ? 'other_build_only' : 'no_server_copy',
-                          local: now.n, siblings: sib.map(x => x.name)});
+    let cls = {mine_other_build:[], same_build_other_device:[], other:[]};
+    try{ cls = await listRecords(); }catch(e){}
+    const near = cls.same_build_other_device, far = cls.mine_other_build.concat(cls.other);
+    ev('boot_reconcile', {result: (near.length ? 'other_device_same_build'
+                                 : far.length ? 'other_build_only' : 'no_server_copy'),
+                          local: now.n,
+                          candidates: near.concat(far).map(x => x.name)});
     save();
-    if(sib.length && !hasRecordedWork(S)){
+    if(!hasRecordedWork(S) && near.length){
+
+      OFFER = near.sort((a,b) => String(b.at).localeCompare(String(a.at)))[0];
+      renderAdoptOffer(OFFER, near.length);
+    } else if(!hasRecordedWork(S) && far.length){
       banner('reconcile',
         '<b>⚠️ There is a record for this pull day on SharePoint, but it was recorded against '
         + 'a different version of the plan.</b>'
         + '<div class="sm" style="margin-top:4px">It has <b>not</b> been brought back — the two '
         + 'versions do not have the same lines, and merging them would quietly reconcile work '
         + 'that was never the same work.</div>'
-        + '<div class="sm dim" style="margin-top:4px">' + esc(sib.map(x => x.name).join(', '))
+        + '<div class="sm dim" style="margin-top:4px">' + esc(far.map(x => x.name).join(', '))
         + '</div>'
         + '<div class="sm" style="margin-top:6px">⛔ Tell Jack before you re-do anything — that '
         + 'record is safe and a person can say which lines still apply.</div>');
@@ -4717,6 +4749,49 @@ function declineRestore(){
   save();
 
   syncNow(true);
+}
+
+let OFFER = null;
+function renderAdoptOffer(f, n){
+  if(!f) return dropBanner('reconcile');
+  const when = String(f.at || '').slice(11,16);
+  banner('reconcile',
+    '<b>⚠️ Nothing is recorded on this iPad, but SharePoint has a shift for today\'s plan.</b>'
+    + '<div class="sm" style="margin-top:4px">It was synced by a tablet this one does not '
+    + 'recognise' + (when ? ', last at <b>' + esc(when) + '</b>' : '') + '. That is what an '
+    + 'iPad looks like after it clears an app\'s storage — <b>it is probably this one</b> — '
+    + 'but it could also be someone else working right now.</div>'
+    + '<div class="sm" style="margin-top:6px">⭐ <b>Is anyone else using the app today?</b> '
+    + 'If not, bring it back. If they are, leave it alone and tell Jack — two tablets on one '
+    + 'record overwrite each other.</div>'
+    + (n > 1 ? '<div class="sm dim" style="margin-top:4px">' + n + ' records match; the newest '
+             + 'is offered.</div>' : '')
+    + '<div class="sm dim" style="margin-top:4px">' + esc(f.name) + '</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button class="pri" style="min-height:48px" onclick="adoptOffer()">'
+    + 'Nobody else — bring it back</button>'
+    + '<button class="ghost" style="min-height:48px" onclick="declineOffer()">'
+    + 'Leave it alone</button></div>', 'warnbox');
+}
+async function adoptOffer(){
+  const f = OFFER; if(!f) return dropBanner('reconcile');
+  OFFER = null;
+  if(hasRecordedWork(S)){ dropBanner('reconcile');
+    return toast('⚠️ work has been recorded here since — keeping it'); }
+  let rec = null;
+  try{ rec = await fetchNamed(f.name); }
+  catch(e){ return banner('reconcile', '<b>⛔ Could not download it — ' + esc(String(e.message||e))
+    + '</b><div class="sm" style="margin-top:4px">Nothing has changed. Get back into signal and '
+    + 'tap it again.</div>'); }
+
+  try{ localStorage.setItem('freezer.device', f.device); }catch(e){}
+  applyServerRecord(rec, 'adopted');
+}
+function declineOffer(){
+  OFFER = null;
+  dropBanner('reconcile');
+  ev('boot_reconcile', {result:'declined_adopt'});
+  save();
 }
 
 async function syncNow(quiet){
