@@ -1399,20 +1399,17 @@ function renderBay(a){
             esc(x.l.kind)+' · '+esc(x.loc)+'</span>').join('<br>')+
           (left.length>10?'<br><span class="dim">…and '+(left.length-10)+' more</span>':'')+
         '</div>'+
-        '<label class="sm dim">Why?</label>'+
-        '<select id="skw"><option value="ran out of time">ran out of time</option>'+
-        '<option value="pallets had to go back up">pallets had to go back up</option>'+
-        '<option value="doing it later today">doing it later today</option>'+
-        '<option value="other">other</option></select>',
+        whyPicker(),
         [{t:'Go back',c:'ghost'},
          {t:'Record and close',c:'warn',f:()=>{
-            const w=$('#skw'); const why=w?w.value:'skipped';
-            left.forEach(x => skipLine(x.id, why));
+            const r = whyRead(); if(r === false) return false;
+            left.forEach(x => skipLine(x.id, r.why, r.typed));
             settleStays();
             b.pallets.forEach(p => { S.pallets[p.loc] =
               Object.assign(S.pallets[p.loc]||{}, {done:true, open:false}); });
-            ev('bay_closed_incomplete', {bay:b.bay, skipped:left.length, why:why});
-            save(); advance(); }}]);
+            ev('bay_closed_incomplete', {bay:b.bay, skipped:left.length,
+                                         why:r.why, typed:r.typed});
+            save(); advance(); }}], whyWire);
     };
   }
 }
@@ -1912,24 +1909,63 @@ function openLine(id){
     });
 }
 
-function skipLine(id, bulk){
+const SKIP_WHY = [
+  'ran out of time',
+  'pallets had to go back up',
+  'no room on the destination',
+  'too heavy / awkward',
+  'doing it later today',
+];
+const WHY_OTHER = '__type_it';
+function whyPicker(){
+  return '<label class="sm dim">Why?</label>'+
+    '<select id="skw">'+
+      SKIP_WHY.map(r => '<option value="'+esc(r)+'">'+esc(r)+'</option>').join('')+
+      '<option value="'+WHY_OTHER+'">something else — let me type it</option>'+
+    '</select>'+
+    '<div id="skwo" style="display:none;margin-top:10px">'+
+      '<label class="sm dim">In your own words — what stopped it?</label>'+
+      '<input id="skwt" type="text" maxlength="140" autocomplete="off" '+
+        'placeholder="e.g. the pallet was shrink-wrapped to the rack">'+
+    '</div>';
+}
+
+function whyWire(){
+  const s = $('#skw'), box = $('#skwo'), t = $('#skwt');
+  if(!s || !box) return;
+  s.onchange = () => {
+    const other = (s.value === WHY_OTHER);
+    box.style.display = other ? '' : 'none';
+    if(other && t) t.focus();
+  };
+}
+
+function whyRead(){
+  const s = $('#skw');
+  if(!s) return {why:'skipped', typed:false};
+  if(s.value !== WHY_OTHER) return {why:s.value, typed:false};
+  const t = $('#skwt'), v = ((t && t.value) || '').trim();
+  if(!v){ toast('⛔ Type what stopped it — or pick one of the reasons above.');
+          if(t) t.focus(); return false; }
+  return {why:v, typed:true};
+}
+
+function skipLine(id, bulk, typed){
   const f = find(id); if(!f) return;
   const done = () => { if(!bulk){ maybeDone(f.p ? f.p.loc : ''); render(); } };
-  if(bulk){ setLine(id, {state:'skipped', actual:0, reason:bulk});
-            ev('line_skipped',{line:id, why:bulk}); return; }
+
+  if(bulk){ setLine(id, {state:'skipped', actual:0, reason:bulk,
+                         reason_source:(typed ? 'typed' : 'picked')});
+            ev('line_skipped',{line:id, why:bulk, typed:!!typed}); return; }
   dlg('Skip ' + f.l.sku + '?',
     '<p class="dim">This records that you DID NOT do it — not that the stock is missing. '+
     'Nothing will be transferred and Finale will not be corrected.</p>'+
-    '<label class="sm dim">Why? (optional, but it is the most useful thing you can tell us)</label>'+
-    '<select id="skw"><option value="ran out of time">ran out of time</option>'+
-    '<option value="too heavy / awkward">too heavy / awkward</option>'+
-    '<option value="no room on the destination">no room on the destination</option>'+
-    '<option value="doing it later today">doing it later today</option>'+
-    '<option value="other">other</option></select>',
+    whyPicker(),
     [{t:'Cancel',c:'ghost'},
-     {t:'Skip it',c:'warn',f:()=>{ const w=$('#skw'); const why=w?w.value:'skipped';
-        setLine(id,{state:'skipped', actual:0, reason:why});
-        ev('line_skipped',{line:id, why:why}); done(); }}]);
+     {t:'Skip it',c:'warn',f:()=>{ const r = whyRead(); if(r === false) return false;
+        setLine(id,{state:'skipped', actual:0, reason:r.why,
+                    reason_source:(r.typed ? 'typed' : 'picked')});
+        ev('line_skipped',{line:id, why:r.why, typed:r.typed}); done(); }}], whyWire);
 }
 
 function skipRest(loc){
@@ -1952,17 +1988,13 @@ function skipRest(loc){
     '<div class="sm dim" style="margin:8px 0">'+
       left.slice(0,8).map(x=>'• '+esc(x.l.sku)+' <span class="dim">('+esc(x.l.kind)+')</span>').join('<br>')+
       (left.length>8?'<br>…and '+(left.length-8)+' more':'')+'</div>'+
-    '<label class="sm dim">Why?</label>'+
-    '<select id="skw"><option value="ran out of time">ran out of time</option>'+
-    '<option value="too heavy / awkward">too heavy / awkward</option>'+
-    '<option value="doing it later today">doing it later today</option>'+
-    '<option value="other">other</option></select>',
+    whyPicker(),
     [{t:'Cancel',c:'ghost'},
-     {t:'Skip '+left.length,c:'warn',f:()=>{ const w=$('#skw'); const why=w?w.value:'skipped';
-        left.forEach(x => skipLine(x.id, why));
+     {t:'Skip '+left.length,c:'warn',f:()=>{ const r = whyRead(); if(r === false) return false;
+        left.forEach(x => skipLine(x.id, r.why, r.typed));
         S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false});
-        ev('pallet_skipped',{pallet:loc, lines:left.length, why:why});
-        save(); render(); }}]);
+        ev('pallet_skipped',{pallet:loc, lines:left.length, why:r.why, typed:r.typed});
+        save(); render(); }}], whyWire);
 }
 function orphanDone(id, took){
   const f = find(id);
@@ -3748,7 +3780,7 @@ function moves(){
         onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
         onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''),
         cross:!!l.cross,
-        reason:s.reason||'', ts:s.ts}); return; }
+        reason:s.reason||'', reason_source:s.reason_source||'', ts:s.ts}); return; }
 
       if(l.kind === 'count'){
         if(s.counted != null){
@@ -4440,6 +4472,8 @@ async function syncNow(quiet){
                  plan_built: (PAYLOAD.built || ''),
 
                  pull_day: (PAYLOAD.pull_day || ''),
+
+                 title: (PAYLOAD.title || ''),
                  synced_at: new Date().toISOString(),
                  started: S.started, finished: S.finished || null,
                  bay: S.bay, screen: S.screen,
