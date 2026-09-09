@@ -271,11 +271,131 @@ function setPlan(p){
   PAYLOAD = p;
   KEY = 'freezer.exec.' + (p.plan_date || 'x');
   S = load();
+
+  COMMITTED = undoSnapshotOf(S);
+  UNDO.length = 0;
+  renderUndoBar();
+  claimOwner();           
+  scanStranded();
+}
+
+const OWNER_ID = 'w' + Math.random().toString(36).slice(2, 9);
+const OWNER_FRESH_MS = 45000;
+let TWO_WIN_TOLD = false, OWNER_TIMER = null;
+function ownerKey(){ return KEY + '.owner'; }
+function readOwner(){
+  try{ return JSON.parse(localStorage.getItem(ownerKey()) || 'null'); }catch(e){ return null; }
+}
+function touchOwner(){
+  try{ localStorage.setItem(ownerKey(), JSON.stringify({id: OWNER_ID, at: Date.now()})); }
+  catch(e){   }
+}
+function releaseOwner(){
+  try{ const o = readOwner(); if(o && o.id === OWNER_ID) localStorage.removeItem(ownerKey()); }
+  catch(e){}
+}
+function renderTwoWin(){
+  if(document.getElementById('twowin') && !document.getElementById('twowin').hidden) return;
+  banner('twowin',
+    '<b>⛔ This plan is open in another window.</b>'
+    + '<div class="sm" style="margin-top:4px">Both windows save the whole shift, so whichever '
+    + 'one saves last <b>erases what the other recorded</b> — including where pallets went. '
+    + 'Close one of them now, and work in the other.</div>');
+}
+function claimOwner(){
+  const prev = readOwner();
+  const foreignLive = prev && prev.id !== OWNER_ID && (Date.now() - (prev.at || 0)) < OWNER_FRESH_MS;
+  touchOwner();
+  if(foreignLive){
+    renderTwoWin();
+
+    const wasAt = prev.at || 0;
+    setTimeout(() => {
+      const now = readOwner();
+      if(!TWO_WIN_TOLD && (!now || now.id === OWNER_ID || (now.at || 0) <= wasAt)){
+        dropBanner('twowin'); touchOwner();
+      }
+    }, 4000);
+  }
+  if(OWNER_TIMER) clearInterval(OWNER_TIMER);
+  OWNER_TIMER = setInterval(touchOwner, 15000);
+}
+window.addEventListener('storage', e => {
+  if(!e || e.key !== ownerKey() || !e.newValue) return;
+  let o = null; try{ o = JSON.parse(e.newValue); }catch(err){ return; }
+  if(!o || o.id === OWNER_ID) return;
+  renderTwoWin();
+
+  if(!TWO_WIN_TOLD){ TWO_WIN_TOLD = true; touchOwner(); }
+});
+
+function strandedRecords(){
+  const out = [];
+  let keys = [];
+  try{ keys = Object.keys(localStorage); }catch(e){ return out; }
+  keys.forEach(k => {
+    if(k.indexOf('freezer.exec.') !== 0) return;
+    if(k === KEY) return;
+     
+    if(/\.(owner|probe)$/.test(k) || k.indexOf('.rescue.') >= 0) return;
+    let o = null;
+    try{ o = JSON.parse(localStorage.getItem(k) || 'null'); }
+    catch(e){ out.push({key: k, plan: k.slice(13), lines: null, unreadable: true}); return; }
+    if(!o || typeof o !== 'object') return;
+    const lines = Object.keys(o.lines || {}).length;
+    const work = lines || Object.keys(o.bays || {}).length
+                       || Object.keys(o.putback_actual || {}).length
+                       || (o.events || []).length;
+    if(!work) return;                        
+    out.push({key: k, plan: k.slice(13), lines: lines,
+              synced: (o.synced && o.synced.at) || null});
+  });
+  return out;
+}
+function scanStranded(){
+  const st = strandedRecords();
+  if(!st.length) return dropBanner('stranded');
+  banner('stranded',
+    '<b>⚠️ There is unsent work on this iPad for '
+    + (st.length === 1 ? 'another plan' : st.length + ' other plans') + '.</b>'
+    + st.map(r => '<div class="sm" style="margin-top:4px">Plan <b>' + esc(r.plan) + '</b> — '
+        + (r.unreadable ? 'could not be read'
+                        : r.lines + ' line(s) recorded, '
+                          + (r.synced ? 'last sent ' + esc(String(r.synced).slice(0, 16))
+                                      : '<b>never sent</b>'))
+        + ' <button class="ghost" style="min-height:44px;margin-left:6px" '
+        + 'onclick="sendStranded(' + JSON.stringify(r.key).replace(/"/g, '&quot;')
+        + ', this)">Send it</button></div>').join('')
+    + '<div class="sm dim" style="margin-top:4px">It is not part of today\'s shift and will '
+    + 'not sync on its own. ⛔ Do not clear this iPad until it has been sent.</div>',
+    'warnbox');
+}
+async function sendStranded(k, b){
+  let raw = null;
+  try{ raw = localStorage.getItem(k); }catch(e){}
+  if(!raw) return toast('⛔ it is not there any more');
+  if(b){ b.disabled = true; b.textContent = 'Sending…'; }
+  try{
+    const n = await uploadRaw('stranded_' + k.slice(13) + '_' + deviceId() + '_'
+                              + Date.now() + '.json', raw);
+    if(b){ b.textContent = 'Sent ✓'; }
+    toast('✅ sent — ' + n);
+  }catch(e){
+    if(b){ b.disabled = false; b.textContent = 'Send it'; }
+    dlg('Could not send it', '<div class="badbox">' + esc(String(e.message || e)) + '</div>'
+      + '<p class="sm dim">It is still on this iPad. Try again in signal.</p>',
+      [{t: 'OK', c: 'pri'}]);
+  }
 }
 
 const HOW_LINK = '<div class="sm" style="text-align:center;margin-top:14px">'+
-  '<a href="./how.html" style="color:var(--accent)">How does this work?</a></div>';
+
+  '<a href="./how.html" style="color:var(--take);text-decoration:underline;'+
+  'display:inline-block;min-height:44px;'+
+  'line-height:44px;padding:0 4px">How does this work?</a></div>';
 function renderGate(msg, busy){
+
+  try{ scanStranded(); }catch(e){}
   const c = cachedPlan();
   $('#hdr').textContent = 'Freezer restock';
   $('#sub').textContent = CFG.entra.client_id.startsWith('PASTE_')
@@ -410,6 +530,95 @@ async function boot(){
   catch(e){ renderGate('Could not load the plan: ' + e.message); }
 }
 
+let PENDING_PLAN = null;
+
+function renderPendingPlan(){
+  if(!PENDING_PLAN) return dropBanner('newplan');
+  const p = PENDING_PLAN;
+  const test = /TEST RUN/i.test(String(p.title || ''));
+  banner('newplan',
+    '<b>⚠️ A newer plan is ready' + (test ? ' — and it is a TEST' : '') + '.</b>'
+    + '<div class="sm" style="margin-top:4px">You are working <b>' + esc(PAYLOAD.plan_date)
+    + '</b>. The plan on the server is now <b>' + esc(p.plan_date) + '</b>'
+    + (test ? ' — <b>a test run: nothing on it really moves</b>' : '') + '.</div>'
+    + '<div class="sm" style="margin-top:6px">⭐ <b>You do NOT have to finish this shift.</b> '
+    + 'Everything you have recorded is sent to SharePoint first and <b>kept</b> — it is not '
+    + 'deleted, and it is still here if you come back to it.</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button class="pri" id="np-go" style="min-height:48px" onclick="switchToPendingPlan()">'
+    + 'Sync and switch to ' + esc(p.plan_date) + '</button>'
+    + '<button class="ghost" id="np-stay" style="min-height:48px" onclick="stayOnPlan()">'
+    + 'Stay on ' + esc(PAYLOAD.plan_date) + '</button>'
+    + '</div>', 'warnbox');
+}
+
+function stayOnPlan(){
+  if(PENDING_PLAN) ev('newer_plan_declined', {other: PENDING_PLAN.plan_date});
+  save();
+  dropBanner('newplan');
+  toast('staying on ' + PAYLOAD.plan_date);
+}
+
+function switchToPendingPlan(){
+  const p = PENDING_PLAN;
+  if(!p) return;
+  const from = PAYLOAD.plan_date, to = p.plan_date;
+  const done = Object.keys(S.lines || {}).length, bays = Object.keys(S.bays || {}).length;
+
+  dlg('Switch to plan ' + esc(to) + '?',
+    '<div class="okbox"><b>Your work on ' + esc(from) + ' is uploaded and kept.</b>'
+    + '<div class="sm" style="margin-top:4px">' + esc(String(done)) + ' line(s) recorded across '
+    + esc(String(bays)) + ' bay(s). Nothing is deleted — the app will keep reminding you it is '
+    + 'there.</div></div>'
+    + '<div class="badbox"><b>⛔ It syncs first, and will not switch if that fails.</b>'
+    + '<div class="sm" style="margin-top:4px">A shift left only on this iPad is the one thing '
+    + 'that cannot be recovered.</div></div>'
+    + '<p class="sm dim">You do not need to finish or close any bay.</p>',
+
+    [{t: 'Sync and switch', c: 'pri',
+      f: () => { setTimeout(() => doPlanSwitch(from, to, done, bays), 0); }},
+     {t: 'Cancel', c: 'ghost'}]);
+}
+
+async function doPlanSwitch(from, to, done, bays){
+  const p = PENDING_PLAN;
+  if(!p || p.plan_date !== to) return;       
+
+  ev('newer_plan_switch', {from: from, to: to, lines: done, bays: bays});
+  save();
+
+  if(!(await syncNow(false))){
+
+    banner('newplan',
+      '<b>⛔ Not switched — the sync did not go through.</b>'
+      + '<div class="sm" style="margin-top:4px">You are still on <b>' + esc(from) + '</b> and '
+      + 'nothing has been lost. Get back into signal and tap it again.</div>'
+      + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+      + '<button class="pri" id="np-go" style="min-height:48px" '
+      + 'onclick="switchToPendingPlan()">Try again</button></div>');
+    return;
+  }
+
+  PENDING_PLAN = null;
+  dropBanner('newplan');
+  acceptPlan(p);                  
+  ev('plan_started_after_switch', {from: from});
+  save();
+  render();
+  scanStranded();                 
+  dlg('Now on plan ' + esc(to),
+    '<div class="okbox"><b>Your ' + esc(from) + ' work is on SharePoint.</b>'
+    + '<div class="sm" style="margin-top:4px">It is still on this iPad too, and the app will '
+    + 'keep saying so until someone closes it out.</div></div>'
+    + (/TEST RUN/i.test(String(p.title || ''))
+        ? '<div class="badbox"><b>⛔ This is a TEST RUN — nothing on it really moves.</b>'
+          + '<div class="sm" style="margin-top:4px">Follow the printed test script. Do not '
+          + 'move any stock.</div></div>'
+        : '')
+    + '<p class="sm dim">' + esc(String(p.title || '')) + '</p>',
+    [{t: 'Start', c: 'pri'}]);
+}
+
 async function refreshPlanQuietly(){
   try{
     const p = await fetchPlan();
@@ -417,7 +626,9 @@ async function refreshPlanQuietly(){
     const changed = (p.plan_date !== PAYLOAD.plan_date) || (p.built !== PAYLOAD.built);
     if(changed){
       if(isDirty()){
-        toast(`⚠️ a newer plan is available (${p.plan_date}) — finish and sync first`);
+
+        PENDING_PLAN = p;
+        renderPendingPlan();
       }else{
         acceptPlan(p); render();
         toast(`newer plan ${p.plan_date} loaded`);
@@ -438,18 +649,132 @@ function blank(){
           new_pallets:{},     
           finished:null,      
           split_contents:{},  
+          left_down:{},       
+          temp_out:[],        
           floor_fix:{},       
           events:[],          
           breaks:[]};
 }
-function load(){
-  try{ const r = localStorage.getItem(KEY); if(r){ const o = JSON.parse(r);
 
-        if(o && o.v === 2){ o.putback_actual = o.putback_actual || {};
-                            o.new_pallets = o.new_pallets || {};
-                            o.split_contents = o.split_contents || {};
-                            o.floor_fix = o.floor_fix || {}; return o; } } }catch(e){}
-  return blank();
+let RESCUED = null;       
+let WRITE_LOCK = null;    
+
+function rescueRecord(raw, why){
+  const stamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+
+  let k = KEY + '.rescue.' + stamp, n = 0;
+  try{ while(localStorage.getItem(k) !== null && n < 50) k = KEY + '.rescue.' + stamp + '-' + (++n); }
+  catch(e){   }
+  try{
+    localStorage.setItem(k, raw);
+    if(localStorage.getItem(k) !== raw) throw new Error('read-back mismatch');
+  }catch(e){
+    WRITE_LOCK = 'an earlier record for this plan could not be read, and there is no room on '
+               + 'this device to keep it safe. Writing anything now would destroy it.';
+    blockStorage(why + ' — and the copy failed: ' + (e.message || e), false, raw);
+    return null;
+  }
+  RESCUED = {key: k, why: why, raw: raw};
+  try{ renderRescueBar(); }catch(e){}
+  return k;
+}
+
+function load(){
+  let raw = null;
+  try{ raw = localStorage.getItem(KEY); }catch(e){ return blank(); }
+  if(!raw) return blank();
+  let o = null, why = '';
+  try{ o = JSON.parse(raw); }
+  catch(e){ why = 'the saved record is not readable JSON (' + (e.message || e) + ')'; }
+  if(!why){
+    if(!o || typeof o !== 'object') why = 'the saved record is not a session';
+    else if(o.v !== 2) why = 'the saved record is version ' + JSON.stringify(o.v)
+                           + ' and this build of the app reads version 2';
+  }
+  if(why){ rescueRecord(raw, why); return blank(); }
+
+  o.putback_actual = o.putback_actual || {};
+  o.new_pallets = o.new_pallets || {};
+  o.split_contents = o.split_contents || {};
+  o.floor_fix = o.floor_fix || {};
+  o.left_down = o.left_down || {};
+  o.temp_out = o.temp_out || [];
+  return o;
+}
+
+function banner(id, html, cls){
+  let el = document.getElementById(id);
+  if(!el){
+    el = document.createElement('div');
+    el.id = id;
+    el.style.cssText = 'padding:8px 10px;background:var(--card)';
+    const bar = document.querySelector('.bar');
+    if(bar && bar.parentNode) bar.parentNode.insertBefore(el, bar.nextSibling);
+    else document.body.insertBefore(el, document.body.firstChild);
+  }
+  el.hidden = false;
+  el.innerHTML = '<div class="' + (cls || 'badbox') + '" style="margin:0">' + html + '</div>';
+  return el;
+}
+function dropBanner(id){ const el = document.getElementById(id); if(el) el.hidden = true; }
+
+function renderRescueBar(){
+  if(!RESCUED) return dropBanner('rescuebar');
+  banner('rescuebar',
+    '<b>⛔ An earlier record on this device could not be read.</b>'
+    + '<div class="sm" style="margin-top:4px">It has been kept aside untouched — nothing has '
+    + 'overwritten it. It may hold moves that exist nowhere else, so <b>do not clear this '
+    + 'iPad</b> until someone has it.</div>'
+    + '<div class="sm dim" style="margin-top:4px">' + esc(RESCUED.why) + '</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button class="pri" id="rb-send" style="min-height:44px" onclick="sendRescue()">Send it now</button>'
+    + '<button class="ghost" id="rb-show" style="min-height:44px" onclick="showRaw(RESCUED.raw)">Show it</button>'
+    + '</div>');
+}
+
+async function uploadRaw(name, text){
+  if(!(await ensureToken())) throw new Error('not signed in — sign in on wifi and try again');
+  const sp = CFG.sharepoint;
+  const site = await graph('/sites/' + sp.hostname + ':' + sp.site_path);
+  const t = tokStore();
+  const r = await fetch(GRAPH + '/sites/' + site.id + '/drive/root:/' + sp.doc_folder + '/'
+                        + name + ':/content',
+    {method: 'PUT', headers: {Authorization: 'Bearer ' + t.access_token,
+                              'Content-Type': 'application/json'}, body: text});
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  return name;
+}
+async function sendRescue(){
+  if(!RESCUED) return;
+  const b = document.getElementById('rb-send');
+  if(b){ b.disabled = true; b.textContent = 'Sending…'; }
+  try{
+    const n = await uploadRaw('rescue_' + (PAYLOAD && PAYLOAD.plan_date || 'unknown') + '_'
+                              + deviceId() + '_' + Date.now() + '.json', RESCUED.raw);
+    toast('✅ sent — ' + n);
+    if(b){ b.textContent = 'Sent ✓'; }
+  }catch(e){
+    if(b){ b.disabled = false; b.textContent = 'Send it now'; }
+    dlg('Could not send it', '<div class="badbox">' + esc(String(e.message || e)) + '</div>'
+      + '<p class="sm dim">It is still safe on this iPad. Get back in signal and try again, or '
+      + 'tap <b>Show it</b> and copy the text somewhere.</p>', [{t: 'OK', c: 'pri'}]);
+  }
+}
+
+function showRaw(text){
+  dlg('The raw record',
+    '<p class="sm dim">Copy this somewhere safe — an email to Jack will do. It is the only '
+    + 'copy of these movements.</p>'
+    + '<textarea id="rawout" readonly style="width:100%;height:220px;font:12px/1.4 ui-monospace,'
+    + 'monospace">' + esc(String(text || '')) + '</textarea>',
+    [{t: 'Copy', c: 'pri', f: () => {
+        const ta = document.getElementById('rawout');
+        try{ ta.select(); ta.setSelectionRange(0, 999999);
+             if(navigator.clipboard) navigator.clipboard.writeText(ta.value);
+             else document.execCommand('copy');
+             toast('copied'); }catch(e){ toast('⚠️ select it and copy by hand'); }
+        return false;                        
+      }}, {t: 'Close'}]);
 }
 
 let STORAGE_OK = null;
@@ -463,18 +788,112 @@ function probeStorage(){
   }catch(e){ return {ok:false, why:e.message||String(e)}; }
 }
 let saveT = null, saveFailed = false;
+let PERSISTED = null;       
+
+const UNDO = [];
+const UNDO_MAX = 30;
+let COMMITTED = null;    
+ 
+const UNDO_KEEP = ['events', 'breaks', 'started'];
+
+function undoSnapshotOf(st){
+  const o = {};
+  Object.keys(st).forEach(k => { if(UNDO_KEEP.indexOf(k) < 0) o[k] = st[k]; });
+  return JSON.stringify(o);
+}
+
+const UNDO_WORDS = {
+  line_done:'that line', count_recorded:'that count', qty_corrected:'that correction',
+  all_as_planned:'all as planned', bay_close:'closing the bay',
+  putback_done:'the putback', split_recorded:'that split', line_skipped:'that skip',
+  pallet_placed:'where that pallet went', orphan_fixed:'that fix',
+  temp_park:'parking it in temp', temp_return:'taking it out of temp',
+  session_finished:'clocking out'};
+function undoLabel(){
+  const e = S.events && S.events.length ? S.events[S.events.length - 1] : null;
+  if(!e) return 'the last change';
+  const w = UNDO_WORDS[e.kind];
+  if(!w) return 'the last change';
+  return w + (e.sku ? ' (' + e.sku + ')' : '');
+}
+
 function save(){
+
+  if(!saveT && COMMITTED !== null){
+    UNDO.push({state: COMMITTED, label: 'the last change', ts: Date.now()});
+    if(UNDO.length > UNDO_MAX) UNDO.shift();
+    renderUndoBar();
+  }
   
   if(saveT) clearTimeout(saveT);
   saveT = setTimeout(()=>{
-    try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; }
+    saveT = null;                        
+
+    if(UNDO.length) UNDO[UNDO.length - 1].label = undoLabel();
+    COMMITTED = undoSnapshotOf(S);
+    renderUndoBar();
+
+    if(WRITE_LOCK) return;
+    try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; touchOwner(); }
     catch(e){
 
-      if(!saveFailed){ saveFailed = true; blockStorage(e.message||String(e), true); }
+      if(!saveFailed){
+        saveFailed = true;
+
+        try{ syncNow(true); }catch(e2){}
+        blockStorage(e.message||String(e), true);
+      }
     }
   }, 60);
 }
-function blockStorage(why, midSession){
+function undoLast(){
+  if(!UNDO.length) return;
+  const top = UNDO[UNDO.length - 1];
+  if(!confirm('Undo ' + top.label + '?\n\nThis puts the app back exactly as it was just '
+              + 'before that. Your timings and the record of what you tapped are kept.')) return;
+  UNDO.pop();
+  let o;
+  try{ o = JSON.parse(top.state); }
+  catch(e){                                          
+
+    toast('⛔ could not undo — nothing was changed');
+    return;
+  }
+  Object.keys(o).forEach(k => { S[k] = o[k]; });
+
+  Object.keys(S).forEach(k => {
+    if(UNDO_KEEP.indexOf(k) < 0 && !(k in o)) delete S[k];
+  });
+   
+  S.events.push({ts:new Date().toISOString(), kind:'undo', what:top.label});
+  COMMITTED = undoSnapshotOf(S);                      
+  try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){}
+  renderUndoBar();
+  render();
+  toast('↶ undone — ' + top.label);
+}
+
+function renderUndoBar(){
+  let el = document.getElementById('undobar');
+  if(!UNDO.length){ if(el) el.hidden = true; return; }
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'undobar';
+    el.style.cssText = 'padding:6px 10px;border-bottom:1px solid var(--line);' +
+                       'background:var(--card);display:flex;justify-content:flex-end';
+    const bar = document.querySelector('.bar');
+    if(bar && bar.parentNode) bar.parentNode.insertBefore(el, bar.nextSibling);
+    else document.body.insertBefore(el, document.body.firstChild);
+  }
+  el.hidden = false;
+  el.innerHTML = '<button class="ghost" onclick="undoLast()" ' +
+    'style="min-height:44px;font-size:15px">↶ Undo ' + esc(UNDO[UNDO.length - 1].label) +
+    '</button>';
+}
+
+function blockStorage(why, midSession, raw){
+   
+  try{ BLOCK_RAW = raw || JSON.stringify(S); }catch(e){ BLOCK_RAW = raw || ''; }
   let el = document.getElementById('storagebad');
   if(!el){
     el = document.createElement('div');
@@ -494,7 +913,39 @@ function blockStorage(why, midSession){
     '<p class="sm" style="max-width:440px">Open this file from the SharePoint link (or add it to '+
     'the Home Screen) rather than from a preview, a private window, or an email attachment. '+
     'Do not work a bay until this is fixed.</p>'+
-    '<button class="big" style="max-width:320px" onclick="location.reload()">Try again</button>';
+    (midSession
+      ? '<p class="sm" style="max-width:440px"><b>Everything you have recorded is still on '+
+        'this screen.</b> Send it or copy it BEFORE you reload — reloading throws away '+
+        'anything since the last save.</p>'
+      : '')+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'+
+      (midSession
+        ? '<button class="big pri" id="sb-send" style="max-width:320px" '+
+          'onclick="blockSend(this)">Send it to SharePoint now</button>'+
+          '<button class="big" id="sb-copy" style="max-width:320px" '+
+          'onclick="showRaw(BLOCK_RAW)">Show it so I can copy it</button>'
+        : '')+
+      '<button class="big'+(midSession ? '' : ' pri')+'" id="sb-reload" style="max-width:320px" '+
+      'onclick="blockReload()">Try again</button>'+
+    '</div>';
+}
+ 
+let BLOCK_RAW = '';
+function blockSend(b){
+  if(b){ b.disabled = true; b.textContent = 'Sending…'; }
+  Promise.resolve()
+    .then(() => uploadRaw('rescue_' + ((PAYLOAD && PAYLOAD.plan_date) || 'unknown') + '_'
+                          + deviceId() + '_' + Date.now() + '.json', BLOCK_RAW))
+    .then(n => { if(b){ b.textContent = 'Sent ✓ ' + n; } })
+    .catch(e => { if(b){ b.disabled = false;
+                         b.textContent = 'Send failed — tap to retry'; }
+                  toast('⛔ ' + String(e.message || e)); });
+}
+ 
+function blockReload(){
+  if(BLOCK_RAW && !confirm('Reload?\n\nAnything recorded since the last successful save is '
+      + 'only on this screen. If you have not sent or copied it, it will be gone.')) return;
+  location.reload();
 }
 function ev(kind, extra){
 
@@ -538,6 +989,17 @@ function isFinished(s){ return !!(s && TERMINAL.indexOf(s.state) >= 0); }
 const ACTIONABLE = ['take', 'aside', 'count'];
 function isActionable(l){ return ACTIONABLE.indexOf(l.kind) >= 0; }
 
+function arrivedTooLate(palletId, ts){
+  if(!palletId || !ts) return false;
+
+  const a_ = actualFor(palletId);
+  if(a_ && a_.ts && a_.ts > ts) return false;
+  const rb = PAYLOAD.bays.find(x => (x.pallets||[]).some(y => y.pallet_id === palletId) ||
+                                    (x.putback||[]).some(y => y.pallet_id === palletId));
+  if(!rb) return false;
+  const rst = S.bays[rb.n] || {};
+  return !!(rst.putback_done && rst.putback_ts && ts > rst.putback_ts);
+}
 function arrivalsFor(palletId){
   const out = [];
   if(!palletId) return out;
@@ -553,9 +1015,10 @@ function arrivalsFor(palletId){
                                    deviated: !!pt.deviated, floor: !!pt.floor}))
       : [{pallet: l2.onto_pallet || '', deviated: false, floor: false,
           qty: (actual != null ? actual : Number(l2.planned_qty || 0))}];
+    const tooLate = arrivedTooLate(palletId, st_ && (st_.done_ts || st_.ts));
     parts.forEach(pt => {
       if(pt.pallet !== palletId) return;
-      out.push({sku:l2.sku, lot:l2.lot||'', planned:l2.planned_qty,
+      out.push({sku:l2.sku, lot:l2.lot||'', planned:l2.planned_qty, tooLate:tooLate,
                 qty:pt.qty,
                 from:pp.loc, bay:bb.bay, n:bb.n, cross:!!l2.cross,
 
@@ -592,9 +1055,25 @@ function arrivalLine(x){
 }
 
 function bayTitle(bay, pct){ return pct + '% · ' + bay; }
+
+const CORRECTION_FIELDS = ['left', 'adjustment', 'corrected', 'reason', 'direction',
+                           'clamped_from', 'took_from_sibling', 'gave_to_sibling',
+                           'baseline', 'sibling_took', 'not_here', 'posted_at'];
 function setLine(id, patch){
-  S.lines[id] = Object.assign({ts:new Date().toISOString()}, S.lines[id]||{}, patch);
+  const had = S.lines[id];
+  S.lines[id] = Object.assign({ts:new Date().toISOString()}, had||{}, patch);
   S.lines[id].ts = new Date().toISOString();
+
+  if(patch && patch.as_planned === true){
+    CORRECTION_FIELDS.forEach(k => { delete S.lines[id][k]; });
+
+    delete S.lines[id].placements;
+  }
+
+  const term = ['done','missing','skipped'];
+  if(term.indexOf(S.lines[id].state) >= 0 && !S.lines[id].done_ts)
+    S.lines[id].done_ts = S.lines[id].ts;
+  if(term.indexOf(S.lines[id].state) < 0) S.lines[id].done_ts = undefined;
   save();
 }
 
@@ -633,7 +1112,26 @@ function toast(m){
   d.style.cssText = 'position:fixed;left:50%;bottom:110px;transform:translateX(-50%);'+
     'background:#22272e;border:1px solid #30363d;padding:12px 18px;border-radius:12px;'+
     'z-index:200;max-width:90vw;text-align:center';
-  document.body.appendChild(d); setTimeout(()=>d.remove(), 3200);
+
+  const dl = document.querySelector('dialog[open]');
+
+  if(dl){
+    const body = dl.querySelector('.db') || dl;
+    let bar = body.querySelector('.dlgtoast');
+    if(!bar){
+      bar = document.createElement('div');
+      bar.className = 'dlgtoast badbox';
+      bar.style.cssText = 'margin:0 0 10px';
+      body.insertBefore(bar, body.firstChild);
+    }
+    bar.textContent = m;
+    if(bar.scrollIntoView) bar.scrollIntoView({block:'nearest'});
+    clearTimeout(bar._t);
+    bar._t = setTimeout(()=>{ if(bar.parentNode) bar.parentNode.removeChild(bar); }, 5000);
+    return false;
+  }
+  document.body.appendChild(d);
+  setTimeout(()=>d.remove(), 3200);
   return false;                  
 }
 
@@ -650,6 +1148,7 @@ function navArrows(){
 }
 
 function render(){
+  renderUndoBar();
   if(!PAYLOAD || !PAYLOAD.bays){ renderGate(); renderOfflineBadge(); return; }
   const a = $('#app');
   navArrows();
@@ -687,7 +1186,8 @@ function renderReview(a){
     '<div class="sm" style="margin-top:4px">If a move goes in both, Finale counts it twice '+
     'and next week is planned against the wrong figure. ⛔ <b>Half here and half there is '+
     'worse than doing it all the old way</b> — if this app will not work, stop and tell Jack '+
-    'rather than switching back partway. <a href="./how.html" style="color:inherit">How this '+
+    'rather than switching back partway. <a href="./how.html" style="color:inherit;'+
+    'display:inline-block;min-height:44px;line-height:44px">How this '+
     'works →</a></div></div>'+
     '<div class="card"><div class="pad">'+
     '<h2>Is this week the right size?</h2><div>'+
@@ -831,7 +1331,7 @@ function renderBay(a){
           '<div class="sub">'+esc(o.from_location)+' → '+esc(o.dest)+'</div></div>'+
           '<div class="qty">'+n(o.planned_qty)+'</div>'+
           '<button onclick="orphanDone(\''+id+'\',true)" class="'+(s&&s.state==='done'?'ok':'')+'">Took it</button>'+
-          '<button onclick="orphanDone(\''+id+'\',false)" class="'+(s&&s.state==='missing'?'warn':'')+'">Not here</button>'+
+          '<button onclick="orphanMissing(\''+id+'\')" class="'+(s&&s.state==='missing'?'warn':'')+'">Not here</button>'+
           '</div>';
       }).join('') + '</div>';
   }
@@ -1073,8 +1573,12 @@ function openLine(id){
   const f = find(id); if(!f) return;
   const l = f.l, s = st(id) || {};
 
+  if(l.kind === 'count'){ doCount(id, []); return; }
+
   const prev = s || {};
-  const planned = prev.actual != null ? prev.actual
+
+  const planned = (prev.state !== 'skipped' && prev.state !== 'missing' && prev.actual != null)
+                ? prev.actual
                 : (s.approved != null ? s.approved : l.planned_qty);
   if(l.kind === 'stay'){
     const prevStay = s || {};
@@ -1090,7 +1594,7 @@ function openLine(id){
        {t:'Correct the count',c:'warn',f:()=>{
           const v=readQty('q1');
           if(v===null){ toast('⛔ not a quantity'); return false; }
-          const adj = v - Number(l.system_qty);
+          const adj = v - onPallet(f.b, f.p, l.sku, l.lot);    
 
           if(Math.abs(adj) < 0.001){
             setLine(id,{state:'done', as_planned:true});
@@ -1108,7 +1612,8 @@ function openLine(id){
           ev('line_done',{line:id}); maybeDone(f.p.loc); render(); }}],
       () => {
         const upd = () => {
-          const v = Number($('#q1').value) || 0, adj = v - Number(l.system_qty);
+          const v = Number($('#q1').value) || 0,
+                adj = v - onPallet(f.b, f.p, l.sku, l.lot);      
           const c = $('#scalc'); if(!c) return;
           if(Math.abs(adj) < 0.001){
             c.innerHTML = 'No change — this will just confirm the count.'; return; }
@@ -1118,8 +1623,11 @@ function openLine(id){
             ? '<option value="__none__" selected>— choose a reason —</option>' : '';
           c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj)
                           :'Found '+n(adj)+' extra')+'</b>'+
+
             '<div class="sm dim" style="margin:6px 0">A Finale '+
-            (adj<0?'decrease':'increase')+' at '+esc(f.p?f.p.loc:'this pallet')+'.</div>'+
+            (adj<0?'decrease':'increase')+' at '+
+            esc(adjLoc(f.p, l, !(S.bays[f.b.n]||{}).putback_done, floorDown(f.p))
+                || (f.p?f.p.loc:'this pallet'))+'.</div>'+
             '<select id="sreason">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
               esc(r)+
               '</option>').join('')+'</select></div>';
@@ -1132,17 +1640,30 @@ function openLine(id){
   const sib = f.p ? f.p.lines.find((x,ix) =>
         ix !== f.i && x.sku === l.sku && (x.lot||'') === (l.lot||'') &&
         (x.kind === 'take' || x.kind === 'aside')) : null;
-  let sibTook = 0, sibId = null;
+  let sibTook = 0, sibId = null, sibMissing = false;
   if(sib){
     const si = f.p.lines.indexOf(sib);
     sibId = lid(f.b.n, f.p.loc, sib, si);
     const ss = st(sibId);
-    sibTook = Number((ss && ss.actual != null) ? ss.actual : sib.planned_qty) || 0;
+
+    sibMissing = !!(ss && ss.state === 'missing');
+
+    sibTook = sibShare(sib, ss);
   }
-  const baseline = Math.max(0, Number(l.system_qty) - sibTook);
+
+  const baseline = Math.max(0, onPallet(f.b, f.p, l.sku, l.lot) - sibTook);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
 
   dlg(l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
+
+    (prev.state === 'missing'
+      ? '<div class="badbox sm" style="margin-bottom:8px">∅ <b>Recorded as NOT HERE AT ALL</b>'+
+        (prev.reason ? ' — '+esc(prev.reason) : '')+
+        '<div style="margin-top:4px">Saving a quantity here replaces that write-off with what '+
+        'you enter.</div></div>'
+      : prev.state === 'skipped'
+      ? '<div class="warnbox sm" style="margin-bottom:8px">↷ <b>Recorded as SKIPPED</b>'+
+        (prev.reason ? ' — '+esc(prev.reason) : '')+'</div>' : '')+
     (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+esc(l.sku)+'</b> is also '+
         (sib.kind === 'take' ? 'being taken to '+esc(sib.dest||'F1')
                              : 'being set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
@@ -1215,8 +1736,25 @@ function openLine(id){
           const had = Number(ss.actual != null ? ss.actual : sibTook) || 0;
           const now = Math.max(0, Math.round((had - realloc) * 1000) / 1000);
 
+          const sprev = st(sibId) || {};
+          let sPlace = sprev.placements;
+          if(sPlace && sPlace.length){
+            let owe = realloc;
+            sPlace = sPlace.map(x => Object.assign({}, x)).reverse();
+            for(const x of sPlace){
+              if(owe <= 0) break;
+              const cut = Math.min(owe, Number(x.qty||0));
+              x.qty = Number(x.qty||0) - cut; owe -= cut;
+            }
+            sPlace = sPlace.reverse().filter(x => Number(x.qty||0) > 0.001);
+            if(owe > 0.001){ sPlace = undefined;
+              toast('⚠️ the other line was split — say again where its stock went'); }
+          }
           setLine(sibId, {state:'done', actual:now, gave_to_sibling:realloc,
-                          placements:undefined,
+                          placements: sPlace,
+                           
+                          reason: (sprev.state === 'missing') ? undefined : sprev.reason,
+                          was_missing: (sprev.state === 'missing') ? true : undefined,
 
                           reallocated:true,
                           as_planned:false});
@@ -1224,13 +1762,41 @@ function openLine(id){
           toast('✓ ' + n(realloc) + ' moved from the other line — it now shows ' + n(now));
         }
 
+        const qtyMoved = !prev || prev.actual == null ||
+                         Math.abs(mv - Number(prev.actual)) > 0.001;
         const hadPlacements = !!(prev && prev.placements && prev.placements.length);
+
+        const keepRealloc = !realloc && prev && prev.took_from_sibling &&
+                            Math.abs(mv - (prev.actual != null ? prev.actual : mv)) < 0.001;
         const patch = {state:'done', actual:mv, left:lf, adjustment:adj2,
                        baseline:baseline, sibling_took:sibTook,
-                       placements: undefined,
-                       took_from_sibling: realloc || undefined,
-                       sibling_line: realloc ? (sib.onto_pallet || sib.dest || '') : undefined};
-        if(Math.abs(adj2) > 0.001){
+                       placements: qtyMoved ? undefined : prev.placements,
+                       took_from_sibling: realloc || (keepRealloc ? prev.took_from_sibling : undefined),
+                       sibling_line: realloc ? (sib.onto_pallet || sib.dest || '')
+                                             : (keepRealloc ? prev.sibling_line : undefined)};
+
+        if(Math.abs(adj2) <= 0.001){ patch.reason = undefined; patch.direction = undefined; }
+
+        patch.to_temp = undefined; patch.from_temp = undefined;
+
+        const ft = $('#fromtemp');
+        if(adj2 > 0.001 && ft && ft.value !== '__no__' && tempLoc()){
+
+          const tlot = ft.value;
+          const avail = tempAvailable(l.sku, tlot);
+          patch.from_temp = Math.round(Math.min(adj2, avail) * 1000) / 1000;
+          patch.temp_sku = l.sku; patch.from_temp_lot = tlot;
+          patch.adjustment = Math.round((adj2 - patch.from_temp) * 1000) / 1000;
+          if(Math.abs(patch.adjustment) <= 0.001){
+            patch.adjustment = 0; patch.reason = undefined; patch.direction = undefined; }
+        }
+        const sact = $('#shortact');
+        if(adj2 < -0.001 && sact && sact.value === 'temp' && tempLoc()){
+          patch.to_temp = Math.round(-adj2 * 1000) / 1000;
+
+          patch.temp_sku = l.sku; patch.temp_lot = l.lot || '';
+          patch.adjustment = 0; patch.reason = undefined; patch.direction = undefined;
+        } else if(Math.abs(adj2) > 0.001){
           const sel = $('#rsn');
           if(sel && sel.value === '__none__'){
             toast('⛔ pick a reason — it becomes a Finale accounting code');
@@ -1240,12 +1806,15 @@ function openLine(id){
           patch.direction = adj2 < 0 ? 'shrink' : 'found';
         }
         setLine(id, patch);
-        if(hadPlacements)
+        if(hadPlacements && qtyMoved)
           toast('⚠️ the quantity changed — say again where it went');
         ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj2, realloc:realloc||0,
                         cleared_placements:hadPlacements||undefined});
         if(realloc){
-          toast('Recorded — ' + n(realloc) + ' taken from the other line, no correction');
+          const sp2 = st(sibId) || {};
+          toast('Recorded — ' + n(realloc) + ' taken from the other line, no correction' +
+                (sp2.was_missing ? ' ⚠️ and the other line is no longer marked "not here"'
+                                 : ''));
         }
         maybeDone(f.p.loc); render(); }},
 
@@ -1273,7 +1842,7 @@ function openLine(id){
         const adj=(mv+lf)-baseline; const c=$('#calc');
         if(Math.abs(adj)<0.001){ c.innerHTML='<div class="okbox sm">Adds up — nothing to correct.</div>'; return; }
 
-        if(sib && adj > 0.001 && adj <= sibTook + 0.001){
+        if(sib && !sibMissing && adj > 0.001 && adj <= sibTook + 0.001){
           c.innerHTML =
             '<div class="okbox"><b>That is '+n(adj)+' more than this line\'s share.</b>'+
             '<div class="sm" style="margin:6px 0">Did you take it out of the other line — '+
@@ -1281,10 +1850,9 @@ function openLine(id){
                                               : 'set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
             ', which was down for <b>'+n(sibTook)+'</b>?</div>'+
             '<select id="realloc">'+
-              '<option value="yes" selected>Yes — I moved '+n(adj)+' from that line to this '+
-                'one (nothing to correct)</option>'+
-              '<option value="no">No — there really was '+n(adj)+' more on the pallet than '+
-                'Finale says</option>'+
+
+              '<option value="yes" selected>Yes — from the other line (no correction)</option>'+
+              '<option value="no">No — there really was '+n(adj)+' more on the pallet</option>'+
             '</select></div>';
           return;
         }
@@ -1295,13 +1863,50 @@ function openLine(id){
         c.innerHTML = '<div class="warnbox"><b>'+(adj<0?'Short by '+n(-adj):'Found '+n(adj)+' extra')+'</b>'+
 
           '<div class="sm dim" style="margin:6px 0">We will record '+
-          (adj<0 ? 'a decrease at <b>'+esc(f.p?f.p.loc:'source')+'</b> — where Finale still '+
-                   'thinks it is'
-                 : 'an increase at <b>'+esc(adjLoc(f.p))+'</b> — where this pallet ends up, '+
-                   'because that is where the extra stock physically is')+
+
+          (adj<0
+            ? 'a decrease at <b>'+esc(adjLoc(f.p, l, !(S.bays[f.b.n]||{}).putback_done,
+                                              floorDown(f.p)) || (f.p?f.p.loc:'source'))+
+              '</b> — where Finale believes it is now'
+            : 'an increase at <b>'+esc(adjLoc(f.p, l, !(S.bays[f.b.n]||{}).putback_done,
+                                              floorDown(f.p)) || (f.p?f.p.loc:'source'))+
+              '</b> — where the extra stock physically is')+
           ', as well as the move.</div>'+
+
+          (adj > 0 && tempLoc() && tempLots(l.sku).length
+            ? '<div class="okbox" style="margin-top:8px"><b>Hold on — we already own '+
+              esc(l.sku)+' that nobody could find.</b>'+
+              '<div class="sm" style="margin:6px 0">It is sitting at '+esc(tempLoc())+
+              '. If this is that stock, we MOVE it here instead of adding new units — '+
+              'otherwise the books gain '+n(adj)+' out of nowhere and the missing ones stay '+
+              'lost for ever.</div>'+
+              '<select id="fromtemp">'+
+                tempLots(l.sku).map(r =>
+                  '<option value="'+esc(r.lot)+'"'+
+                  ((r.lot || '') === (l.lot || '') ? ' selected' : '')+'>Yes — '+
+                  (r.lot ? 'lot '+esc(r.lot) : 'no lot')+', '+n(r.qty)+' available'+
+                  ((r.lot || '') === (l.lot || '') ? ' (same lot)' : ' ⚠️ different lot')+
+                  '</option>').join('')+
+                '<option value="__no__">No — this is genuinely extra stock</option>'+
+              '</select></div>'
+            : '')+
+          (adj < 0 && tempLoc()
+            ? '<label class="sm" style="margin-top:8px">What do you want to do with the '+
+              n(-adj)+'?</label>'+
+              '<select id="shortact">'+
+                '<option value="temp" selected>Park it at '+esc(tempLoc())+
+                  ' — I think it is on another pallet</option>'+
+                '<option value="writeoff">Write it off — it is really gone</option>'+
+              '</select>'+
+              '<div class="sm dim" style="margin-top:6px">Parking moves it, it does not lose '+
+              'it. If it turns up further down the lane, say so on that pallet and we take '+
+              'it back out of '+esc(tempLoc())+' — no shrink either way.</div>'
+            : '')+
+          '<div id="rsnwrap"'+((adj < 0 && tempLoc()) ? ' hidden' : '')+'>'+
           '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
-            esc(r)+'</option>').join('')+'</select></div>';
+            esc(r)+'</option>').join('')+'</select></div></div>';
+        const sa = $('#shortact'), rw = $('#rsnwrap');
+        if(sa && rw) sa.onchange = () => { rw.hidden = (sa.value !== 'writeoff'); };
       };
       $('#q1').addEventListener('input',upd); $('#q2').addEventListener('input',upd); upd();
     });
@@ -1365,6 +1970,29 @@ function orphanDone(id, took){
   ev(took?'line_done':'line_missing', {line:id, orphan:true}); render();
 }
 
+function orphanMissing(id){
+  const f = find(id); if(!f) return;
+  const l = f.l, prev = (S.lines[id] || {});
+  const list = PAYLOAD.shrink_reasons || [];
+  const ph = list.length > 1 ? '<option value="__none__" selected>— choose a reason —</option>' : '';
+  dlg('Not here at all — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+    '<div class="badbox"><b>This says Finale is wrong about all '+n(l.system_qty || l.planned_qty)+
+      '.</b><div class="sm" style="margin-top:6px">It writes a stock decrease, so it needs the '+
+      'accounting code you would choose yourself. If you simply ran out of time, close the '+
+      'card instead — that is a different fact and it corrects nothing.</div></div>'+
+    '<label class="sm dim" style="margin-top:10px">Reason</label>'+
+    '<select id="orsn">'+ph+list.map(r=>'<option value="'+esc(r)+'"'+
+      (r===prev.reason?' selected':'')+'>'+esc(r)+'</option>').join('')+'</select>',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Record it as missing', c:'warn', f:()=>{
+        const sel = $('#orsn');
+        if(!sel || sel.value === '__none__')
+          return toast('⛔ pick a reason — it becomes a Finale accounting code');
+        setLine(id, {state:'missing', actual:0, reason:sel.value});
+        ev('line_missing', {line:id, orphan:true, reason:sel.value});
+        render(); }}]);
+}
+
 function chainCounts(loc){
   const b = PAYLOAD.bays[S.bay];
   const p = b.pallets.find(x => x.loc === loc);
@@ -1382,17 +2010,47 @@ function doCount(id, rest){
     '<br>Finale says <b>'+n(l.system_qty)+'</b>.</p>'+
     '<label class="sm dim">Counted</label>'+
     qtyField('cq', (st(id)||{}).counted != null ? n((st(id)||{}).counted) : '')+
+
+    '<div id="cvar"></div>'+
     (rest && rest.length ? '<p class="sm dim" style="margin-top:8px">'+rest.length+' more on this pallet after this one.</p>' : ''),
     [{t:'Cancel',c:'ghost'},
-     {t:'Matches',c:'ok',f:()=>{ setLine(id,{state:'done', counted:l.system_qty, variance:0});
+     {t:'Matches',c:'ok',f:()=>{ setLine(id,{state:'done', counted:l.system_qty, variance:0,
+                                             count_reason:undefined});
         ev('count_recorded',{line:id, counted:l.system_qty, variance:0});
         maybeDone(f.p.loc); render(); if(rest&&rest.length) setTimeout(()=>doCount(rest[0],rest.slice(1)),260); }},
      {t:'Save count',c:'pri',f:()=>{ const v=readQty('cq');
-        if(v===null){ toast('⛔ enter the counted quantity'); return false; }
-        setLine(id,{state:'done', counted:v, variance:v-Number(l.system_qty)});
-        ev('count_recorded',{line:id, counted:v, variance:v-Number(l.system_qty)});
+        if(v===null) return toast('⛔ enter the counted quantity');
+        const vr = Math.round((v - Number(l.system_qty)) * 1000) / 1000;
+        let rsn;
+        if(Math.abs(vr) > 0.001){
+          const sel = $('#crsn');
+          if(!sel || sel.value === '__none__')
+            return toast('⛔ pick a reason — a count variance is a real Finale stock change');
+          rsn = sel.value;
+        }
+        setLine(id,{state:'done', counted:v, variance:vr, count_reason:rsn});
+        ev('count_recorded',{line:id, counted:v, variance:vr, reason:rsn||''});
         maybeDone(f.p.loc); render(); if(rest&&rest.length) setTimeout(()=>doCount(rest[0],rest.slice(1)),260); }}],
-    ()=>{ setTimeout(()=>{ const e=$('#cq'); if(e) e.focus(); }, 80); });
+    ()=>{
+      const upd = () => {
+        const c = $('#cvar'); if(!c) return;
+        const v = readQty('cq');
+        const vr = (v == null) ? 0 : Math.round((v - Number(l.system_qty)) * 1000) / 1000;
+        if(Math.abs(vr) <= 0.001){ c.innerHTML = ''; return; }
+        const list = vr < 0 ? (PAYLOAD.shrink_reasons || []) : (PAYLOAD.found_reasons || []);
+        const cur = $('#crsn') ? $('#crsn').value : '';
+
+        const ph = list.length > 1
+          ? '<option value="__none__"'+(cur&&cur!=='__none__'?'':' selected')+'>— choose a reason —</option>' : '';
+        c.innerHTML = '<div class="warnbox" style="margin-top:10px"><b>'+
+          (vr < 0 ? 'Short by ' + n(-vr) : 'Found ' + n(vr) + ' extra')+'</b>'+
+          '<div class="sm dim" style="margin:6px 0">Finale says '+n(l.system_qty)+'. This is a '+
+          'real stock change, so it needs a reason code — the count is what corrects the books.</div>'+
+          '<select id="crsn">'+ph+list.map(r=>'<option value="'+esc(r)+'"'+
+            (r===cur?' selected':'')+'>'+esc(r)+'</option>').join('')+'</select></div>';
+      };
+      setTimeout(()=>{ const e=$('#cq'); if(e){ e.focus(); e.addEventListener('input', upd); } upd(); }, 80);
+    });
 }
 
 function putbackCard(b){
@@ -1461,9 +2119,25 @@ function putbackCard(b){
     (st_.putback_done?'✓ Putback recorded':'✓ Loaded back in this order')+'</button></div></div>';
   return h;
 }
+ 
+function bayHasWork(nn){
+  const b = PAYLOAD.bays.find(x => x.n === nn);
+  if(!b) return false;
+  return (b.pallets||[]).some(p => (p.lines||[]).some((l,i) =>
+    (st(lid(nn, p.loc, l, i)) || {}).state));
+}
 function putbackDone(nn){
 
-  S.bays[nn] = Object.assign(S.bays[nn]||{}, {putback_done:true});
+  if(!bayHasWork(nn) && !(S.bays[nn]||{}).putback_done){
+    if(!confirm('Nothing has been recorded in this bay.\n\nConfirming the putback tells '+
+                'Finale every pallet here came down and went back — which changes their '+
+                'locations. If you did not work this bay, tap Cancel.\n\nConfirm anyway?'))
+      return;
+  }
+
+  const was = (S.bays[nn]||{}).putback_ts;
+  S.bays[nn] = Object.assign(S.bays[nn]||{},
+                             {putback_done:true, putback_ts: was || new Date().toISOString()});
   ev('putback_done', {bay: PAYLOAD.bays.find(b=>b.n===nn).bay}); save();
   askLaneRoom(nn);          
   render();
@@ -1474,7 +2148,15 @@ function askLaneRoom(nn){
   if(!b) return;
   const st_ = S.bays[nn] || {};
   if(st_.lane_room) return;                 
-  const backN = (b.putback || []).length;
+
+  const backN = (b.putback || []).filter(pb => {
+    const a_ = actualFor(pb.pallet_id);
+    if(!a_ || !a_.loc) return true;                  
+    return a_.loc.indexOf(b.bay + '-') === 0;        
+  }).length + Object.keys(S.new_pallets || {}).filter(q => {
+    const a_ = actualFor(q);
+    return a_ && a_.loc && a_.loc.indexOf(b.bay + '-') === 0;
+  }).length;
   setTimeout(() => dlg('One question about ' + b.bay,
     '<p>You have just put <b>'+backN+'</b> pallet'+(backN===1?'':'s')+' back into '+
     esc(b.bay)+'.</p>'+
@@ -1503,6 +2185,15 @@ const FULL_BUCKETS = [
   {k:'over',     pct:120, t:'OVERFULL',   d:'⛔ would not all fit — say what is left over'},
 ];
 
+function floorDown(p){
+  if(!p || !floorLoc()) return false;
+  const bs = PAYLOAD.bays.find(b => (b.pallets||[]).some(x => x.loc === p.loc));
+  if(!bs) return false;
+  const st_ = S.bays[bs.n] || {};
+  return !!(st_.putback_done || st_.closed) ||
+    (bs.pallets||[]).some(p2 => (p2.lines||[]).some((l2,i2) =>
+      (st(lid(bs.n, p2.loc, l2, i2)) || {}).state));
+}
 function adjLoc(p, line, onFloor, cameDown){
   if(!p) return '';
 
@@ -1644,6 +2335,64 @@ function setFullness(bayN, loc, k, mode, ourPct){
   render();
 }
 
+function tempLoc(){ return PAYLOAD.temp_location || ''; }
+
+function tempPulled(sku, lot){
+  let q = 0;
+
+  (S.temp_out || []).forEach(r => {
+    if(r.sku === sku && (r.lot || '') === (lot || '')) q += Number(r.qty || 0); });
+  Object.keys(S.lines || {}).forEach(k => {
+    const st_ = S.lines[k] || {};
+    if(st_.temp_sku !== sku) return;
+    if((st_.from_temp_lot != null ? st_.from_temp_lot : st_.temp_lot || '') !== (lot || '')) return;
+    q += Number(st_.from_temp || 0);
+  });
+  return q;
+}
+function tempParkedHere(sku, lot){
+  let q = 0;
+  Object.keys(S.lines || {}).forEach(k => {
+    const st_ = S.lines[k] || {};
+    if(st_.temp_sku !== sku || (st_.temp_lot || '') !== (lot || '')) return;
+    q += Number(st_.to_temp || 0);
+  });
+  return q;
+}
+function tempAvailable(sku, lot){
+  let base = 0;
+  (PAYLOAD.temp_stock || []).forEach(r => {
+    if(r.sku === sku && (r.lot || '') === (lot || '')) base += Number(r.qty || 0); });
+  return Math.round((base + tempParkedHere(sku, lot) - tempPulled(sku, lot)) * 1000) / 1000;
+}
+
+function tempLots(sku){
+  const seen = {}, out = [];
+  (PAYLOAD.temp_stock || []).forEach(r => { if(r.sku === sku) seen[r.lot || ''] = 1; });
+  Object.keys(S.lines || {}).forEach(k => {
+    const st_ = S.lines[k] || {};
+    if(st_.temp_sku === sku && Number(st_.to_temp || 0) > 0) seen[st_.temp_lot || ''] = 1; });
+  Object.keys(seen).forEach(lot => {
+    const q = tempAvailable(sku, lot);
+    if(q > 0.001) out.push({lot: lot, qty: q});
+  });
+  return out.sort((a, b) => b.qty - a.qty);
+}
+ 
+function tempAll(){
+  const seen = {}, out = [];
+  (PAYLOAD.temp_stock || []).forEach(r => { seen[r.sku + '␟' + (r.lot || '')] = r.desc || ''; });
+  Object.keys(S.lines || {}).forEach(k => {
+    const st_ = S.lines[k] || {};
+    if(st_.temp_sku && Number(st_.to_temp || 0) > 0)
+      seen[st_.temp_sku + '␟' + (st_.temp_lot || '')] = seen[st_.temp_sku + '␟' + (st_.temp_lot || '')] || ''; });
+  Object.keys(seen).forEach(k => {
+    const i = k.indexOf('␟'), sku = k.slice(0, i), lot = k.slice(i + 1);
+    const q = tempAvailable(sku, lot);
+    if(q > 0.001) out.push({sku: sku, lot: lot, qty: q, desc: seen[k]});
+  });
+  return out.sort((a, b) => b.qty - a.qty);
+}
 function floorChoice(){
   const f = floorLoc();
   return f ? [f] : [];
@@ -1845,6 +2594,15 @@ function wireScan(id, selId){
         'is where you put it.';
       return;
     }
+
+    if(/^P-?\d+$/.test(v)){
+      sel.value = '';
+      msg.innerHTML = '⛔ <b>'+esc(v)+'</b> is the pallet\'s <b>temporary card</b>, not a '+
+        'place. Scan the <b>Finale placard</b> instead — the laminated card with the rack '+
+        'position on it, like <b>F2-A-03-2</b> — or pick the spot from the list below.';
+
+      return;
+    }
     const o = document.createElement('option');
     o.value = v; o.textContent = v + ' — scanned (not in this plan)';
     sel.appendChild(o); sel.value = v;
@@ -1870,8 +2628,12 @@ function palletChoices(bayN, exclude){
     seen[p.pallet_id] = 1; out.push({id:p.pallet_id, why:'came down from '+p.loc, spoil:!!p.spoil}); } });
   (b.putback || []).forEach(pb => { if(pb.pallet_id && pb.pallet_id !== exclude && !seen[pb.pallet_id]){
     seen[pb.pallet_id] = 1; out.push({id:pb.pallet_id, why:'goes to '+pb.loc}); } });
-  Object.keys(S.new_pallets || {}).forEach(k => { if(k !== exclude && !seen[k]){
-    seen[k] = 1; out.push({id:k, why:'you built this one', built:true}); } });
+
+  Object.keys(S.new_pallets || {}).forEach(k => {
+    const np = S.new_pallets[k] || {};
+    if(np.bay_n != null && np.bay_n !== bayN) return;
+    if(k !== exclude && !seen[k]){
+      seen[k] = 1; out.push({id:k, why:'you built this one', built:true}); } });
   return out;
 }
 
@@ -1907,9 +2669,18 @@ function askSplit(id){
     '<label class="sm" style="margin-top:10px">The rest went on</label>'+
     '<select id="sp2">'+
       '<option value="">— nowhere, the rest is still on the floor —</option>'+
+      '<optgroup label="onto another pallet in this bay">'+
       others.map(o => '<option value="'+esc(o.id)+'">'+esc(o.id)+' · '+esc(o.why)+
                       (o.spoil?' ⚠️ spoil':'')+'</option>').join('')+
       '<option value="__new__">a NEW pallet I built</option>'+
+      '</optgroup>'+
+
+      '<optgroup label="into a spot on the floor — not onto a pallet">'+
+      f1Choices().map(x => '<option value="@'+esc(x)+'">'+esc(x)+'</option>').join('')+
+      '</optgroup>'+
+      (tempLoc() ? '<optgroup label="we owe it but cannot find it">'+
+        '<option value="@'+esc(tempLoc())+'">'+esc(tempLoc())+
+        ' — park it until it turns up</option></optgroup>' : '')+
     '</select>'+
     '<div id="spnew" hidden><label class="sm" style="margin-top:8px">Which P- card did you '+
       'put on it?</label><input id="spcard" inputmode="numeric" placeholder="e.g. 12"></div>'+
@@ -1931,16 +2702,28 @@ function askSplit(id){
           const clash2 = cardInUse('P-' + cn);
           if(clash2) return toast('⛔ ' + clash2 + ' — the next free card is P-' + nextFreeCard());
           dest = 'P-' + cn;
-          S.new_pallets[dest] = {bay: f.b.bay, bay_n: f.b.n, built_ts: new Date().toISOString()};
+          S.new_pallets[dest] = {bay: f.b.bay, bay_n: f.b.n, built_ts: new Date().toISOString(),
+
+            split_from: (want || (f.p && f.p.pallet_id) || '')};
+
+          S.split_contents = S.split_contents || {};
+          S.split_contents[dest] = {
+            from: (want || (f.p && f.p.pallet_id) || ''),
+            built_by: 'askSplit',
+            items: [{sku: l.sku, lot: l.lot || '', qty: rest}]};
         }
         const parts = [{pallet:want, qty:a, deviated:false}];
-        parts.push({pallet:dest || '', qty:rest, deviated:true,
-                    floor: !dest});
+         
+        if(dest && dest.charAt(0) === '@')
+          parts.push({location: dest.slice(1), qty:rest, deviated:true});
+        else
+          parts.push({pallet:dest || '', qty:rest, deviated:true, floor: !dest});
         setLine(id, {placements:parts});
         ev('split_recorded', {line:id, parts:parts.length, overflow:rest, onto:dest||'FLOOR'});
         render();
 
-        if(dest && S.new_pallets[dest] && !actualFor(dest)) setTimeout(()=>askActual(f.b.n, dest), 0);
+        if(dest && dest.charAt(0) !== '@' && S.new_pallets[dest] && !actualFor(dest))
+          setTimeout(()=>askActual(f.b.n, dest), 0);
      }}],
     ()=>{
       const sel = $('#sp2'), nw = $('#spnew'), msg = $('#spmsg');
@@ -1993,6 +2776,14 @@ function askActual(bayN, pid){
     '<div class="sm dim" style="margin-top:6px">Left it out for the night? That is fine — say '+
     'it is on the restock floor, or put it in an F1 spot and scan that. Either way it has a '+
     'location, so nobody has to go looking for it tomorrow.</div>'+
+
+    splitsFrom(pid).map(sp =>
+      '<div class="warnbox" style="margin-bottom:10px"><b>Split: '+esc(sp.pid)+'</b>'+
+      '<div class="sm" style="margin:4px 0">'+n(sp.items.length)+' line(s) recorded as moving '+
+      'onto '+esc(sp.pid)+(sp.loc ? ', which went to <b>'+esc(sp.loc)+'</b>' : ', which has no '+
+      'position yet')+'.</div>'+
+      '<button type="button" class="warn" onclick="undoSplit(\''+esc(pid)+'\',\''+esc(sp.pid)+
+        '\')">Undo this split — it was not split after all</button></div>').join('')+
     '<label class="sm" style="margin-top:10px">Anything different about it?</label>'+
     '<select id="pan">'+
       '<option value="">nothing — one pallet, as it came down</option>'+
@@ -2005,6 +2796,19 @@ function askActual(bayN, pid){
      {t:'Record it', c:'pri', f:()=>{
         const v = $('#pa').value, note = $('#pan').value;
 
+        const clash = Object.keys(S.putback_actual || {}).find(q => q !== pid &&
+                        ((S.putback_actual[q]||{}).loc === v)) ||
+                      PAYLOAD.bays.reduce((acc, bb) => acc || (bb.putback||[]).find(pb =>
+                        pb.pallet_id !== pid && pb.loc === v &&
+                        !((S.putback_actual||{})[pb.pallet_id]||{}).loc), null);
+        if(v && v !== floorLoc() && clash){
+          const other = typeof clash === 'string' ? clash : clash.pallet_id;
+          if(!confirm(esc(v) + ' is already ' + other + '\'s spot.\n\nTwo pallets cannot be '
+                      + 'in one position. If ' + other + ' went somewhere else, record that '
+                      + 'too — otherwise Finale ends up with both of them there.\n\n'
+                      + 'Record it anyway?')) return false;
+        }
+
         if(!v) return toast('⛔ where did it go? Scan the placard or pick a spot') && false;
         const rec = {state:'placed', loc:v, note:note, planned:planned,
                      ts:new Date().toISOString()};
@@ -2013,6 +2817,8 @@ function askActual(bayN, pid){
         ev('putback_actual', {pallet:pid, loc:rec.loc || 'FLOOR', planned:planned, note:note});
         save(); render();
         if(note === 'split') setTimeout(()=>askSecondPallet(bayN, pid), 0);
+
+        if(note === 'short') setTimeout(()=>askShort(bayN, pid), 0);
      }}],
     ()=>{
       wireScan('pascan', 'pa');
@@ -2025,30 +2831,76 @@ function askActual(bayN, pid){
     });
 }
 
+function sibShare(l2, s2){
+  if(s2 && s2.state === 'missing')
+    return Number(s2.baseline != null ? s2.baseline : l2.system_qty) || 0;
+  if(s2 && s2.state === 'skipped')
+    return Number(l2.planned_qty) || 0;
+  if(s2 && s2.actual != null && s2.left != null)
+    return (Number(s2.actual) || 0) + (Number(s2.left) || 0);
+  return Number((s2 && s2.actual != null) ? s2.actual : l2.planned_qty) || 0;
+}
+function onPallet(b, p, sku, lot){
+  const base = (() => {
+    for(const l of (p.lines || []))
+      if(l.kind !== 'count' && l.sku === sku && (l.lot||'') === (lot||''))
+        return Number(l.system_qty || 0);
+    return 0;
+  })();
+  for(let i = 0; i < (p.lines||[]).length; i++){
+    const l = p.lines[i];
+    if(l.kind !== 'count' || l.sku !== sku || (l.lot||'') !== (lot||'')) continue;
+    const st_ = st(lid(b.n, p.loc, l, i));
+    if(st_ && st_.counted != null) return Number(st_.counted);
+  }
+  return base;
+}
 function splitPicker(pid){
   let pal = null, bay = null;
   PAYLOAD.bays.forEach(b => (b.pallets||[]).forEach(p => {
     if(p.pallet_id === pid){ pal = p; bay = b; } }));
   if(!pal) return '<div class="sm dim">nothing recorded on that pallet</div>';
-  const seen = {}, rows = [];
+
+  const seen = {}, items = [];
   (pal.lines || []).forEach(l => {
     if(l.kind === 'count') return;
     const k = l.sku + '␟' + (l.lot || '');
     if(seen[k]) return; seen[k] = 1;
+    items.push({sku:l.sku, lot:l.lot || '', max: onPallet(bay, pal, l.sku, l.lot),
+                note: n(l.system_qty) + ' on it'});
+  });
+  arrivalsFor(pid).forEach(x => {
+    if(!x.state || x.gone || x.tooLate) return;
+    const q = Number(x.qty || 0);
+    if(!(q > 0)) return;
+    const k = x.sku + '␟' + (x.lot || '');
+    if(seen[k]){
+      const it = items.find(i => i.sku === x.sku && (i.lot || '') === (x.lot || ''));
+      it.max += q; it.note += ' + ' + n(q) + ' arrived';
+    } else {
+      seen[k] = 1;
+      items.push({sku:x.sku, lot:x.lot || '', max:q,
+                  note: n(q) + ' arrived from ' + x.from});
+    }
+  });
+  const rows = items.map((it, ix) => {
 
-    const rid = 'sp' + rows.length;
-    rows.push('<div style="display:flex;gap:10px;align-items:center;padding:9px 2px;'+
+    const rid = 'sp' + ix;
+    return '<div style="display:flex;gap:10px;align-items:center;padding:9px 2px;'+
       'border-bottom:1px solid var(--line);min-height:48px">'+
       '<input type="checkbox" class="splititem" id="'+rid+'" '+
         'style="width:24px;height:24px;flex:0 0 auto" '+
-        'data-sku="'+esc(l.sku)+'" data-lot="'+esc(l.lot||'')+'" data-max="'+n(l.system_qty)+'">'+
-      '<label for="'+rid+'" class="grow" style="cursor:pointer"><b>'+esc(l.sku)+'</b>'+
-        (l.lot ? ' <span class="dim sm">lot '+esc(l.lot)+'</span>'
-               : ' <span class="dim sm">no lot</span>')+
-        '<div class="sm dim">'+n(l.system_qty)+' on it</div></label>'+
+        'data-sku="'+esc(it.sku)+'" data-lot="'+esc(it.lot)+
+        '" data-max="'+n(it.max)+'">'+
+
+      '<label for="'+rid+'" class="grow" style="cursor:pointer;min-height:44px;display:flex;'+
+        'flex-direction:column;justify-content:center"><b>'+esc(it.sku)+'</b>'+
+        (it.lot ? ' <span class="dim sm">lot '+esc(it.lot)+'</span>'
+                : ' <span class="dim sm">no lot</span>')+
+        '<div class="sm dim">'+esc(it.note)+'</div></label>'+
       '<input class="splitqty" data-for="'+rid+'" inputmode="numeric" disabled '+
-        'value="'+n(l.system_qty)+'" style="width:78px;text-align:center;font-size:16px">'+
-      '</div>');
+        'value="'+n(it.max)+'" style="width:78px;text-align:center;font-size:16px">'+
+      '</div>';
   });
   return rows.length
     ? '<div style="max-height:250px;overflow-y:auto">'+rows.join('')+'</div>'+
@@ -2067,6 +2919,78 @@ function wireSplitQty(){
   });
 }
 
+function splitsFrom(fromPid){
+  return Object.keys(S.split_contents || {})
+    .filter(k => (S.split_contents[k] || {}).from === fromPid)
+    .map(k => ({pid:k, items:(S.split_contents[k] || {}).items || [],
+                loc:((S.putback_actual || {})[k] || {}).loc || ''}));
+}
+
+function undoSplit(fromPid, newPid){
+  if(!confirm('Undo the split onto ' + newPid + '?\n\nEverything goes back onto ' + fromPid +
+              ' and ' + newPid + ' stops existing.')) return;
+  delete (S.split_contents || {})[newPid];
+  delete (S.new_pallets || {})[newPid];
+  delete (S.putback_actual || {})[newPid];
+
+  let folded = 0;
+  Object.keys(S.lines || {}).forEach(id => {
+    const ln = S.lines[id];
+    if(!ln || !ln.placements || !ln.placements.length) return;
+    if(!ln.placements.some(x => x.pallet === newPid)) return;
+    const back = ln.placements.filter(x => x.pallet === newPid)
+                              .reduce((a,x) => a + Number(x.qty||0), 0);
+    const rest = ln.placements.filter(x => x.pallet !== newPid);
+    if(rest.length) rest[0].qty = Number(rest[0].qty||0) + back;
+    ln.placements = rest.length ? rest : undefined;
+    folded += back;
+  });
+
+  const src = (S.putback_actual || {})[fromPid];
+  if(src && src.note === 'split'){ src.note = ''; src.deviated = (src.loc !== src.planned); }
+  ev('split_undone', {from:fromPid, to:newPid});
+  save();
+  const d = document.querySelector('dialog[open]'); if(d) d.close();
+  render();
+  toast('✓ split undone — everything is back on ' + fromPid +
+        (folded ? ' (' + n(folded) + ' units folded back)' : ''));
+}
+function askShort(bayN, pid){
+
+  const b = PAYLOAD.bays.find(x => x.n === bayN); if(!b) return;
+  dlg('What would not fit on ' + esc(pid) + '?',
+    '<p class="sm dim">You said some of it is still on the floor. Tick what stayed down and '+
+    'say how much — those units are recorded as sitting at the restock floor, not back in '+
+    'the rack.</p>'+
+    '<div style="margin-top:10px"><label class="sm"><b>Which items are still down?</b></label>'+
+    splitPicker(pid)+'</div>',
+    [{t:'Nothing — it all fit after all', c:'ghost', f:()=>{
+        if(S.left_down) delete S.left_down[pid];
+        const r = (S.putback_actual||{})[pid];
+        if(r && r.note === 'short'){ r.note = ''; r.deviated = (r.loc !== r.planned); }
+        save(); render();
+     }},
+     {t:'Record it', c:'pri', f:()=>{
+         
+        const took = []; let badq = null;
+        [...document.querySelectorAll('.splititem:checked')].forEach(c => {
+          const box = document.querySelector('.splitqty[data-for="'+c.id+'"]');
+          const raw = box ? String(box.value).trim() : '';
+          const max = Number(c.dataset.max || 0);
+          const q = raw === '' ? max : Number(raw);
+          if(!isFinite(q) || q <= 0 || q > max + 0.001){ badq = c.dataset.sku; return; }
+          took.push({sku: c.dataset.sku, lot: c.dataset.lot || '', qty: q});
+        });
+        if(badq) return toast('⛔ check the quantity on ' + badq);
+        if(!took.length) return toast('⛔ tick what stayed on the floor, or choose '+
+                                      '“Nothing — it all fit after all”');
+        S.left_down = S.left_down || {};
+        S.left_down[pid] = {bay:b.bay, bay_n:bayN, items:took, ts:new Date().toISOString()};
+        ev('left_on_floor', {pallet:pid, items:took.length,
+                             units:took.reduce((x,y)=>x+Number(y.qty||0),0)});
+        save(); render();
+     }}], ()=>{ wireSplitQty(); });
+}
 function askSecondPallet(bayN, fromPid){
   const b = PAYLOAD.bays.find(x => x.n === bayN); if(!b) return;
   const pos = lanePositions(fromPid, bayN);   
@@ -2102,6 +3026,17 @@ function askSecondPallet(bayN, fromPid){
         const clash = cardInUse(pid);
         if(clash) return toast('⛔ ' + clash + ' — the next free card is P-' + nextFreeCard());
         const v = $('#s2pos').value;
+
+        const clash2 = Object.keys(S.putback_actual || {}).find(q => q !== pid &&
+                         ((S.putback_actual[q]||{}).loc === v)) ||
+                       PAYLOAD.bays.reduce((acc, bb) => acc || (bb.putback||[]).find(pb =>
+                         pb.pallet_id !== pid && pb.loc === v &&
+                         !((S.putback_actual||{})[pb.pallet_id]||{}).loc), null);
+        if(v && v !== floorLoc() && clash2){
+          const other2 = typeof clash2 === 'string' ? clash2 : clash2.pallet_id;
+          if(!confirm(v + ' is already ' + other2 + '\'s spot.\n\nTwo pallets cannot be in '+
+                      'one position. Record it anyway?')) return false;
+        }
         const took = [];
         let badq = null;
         [...document.querySelectorAll('.splititem:checked')].forEach(c => {
@@ -2169,6 +3104,24 @@ function askBackstock(){
      }}]);
 }
 
+function shiftedCard(m){
+  const rows = (m.transfers || []).filter(t => t.kind === 'lane_shift');
+  if(!rows.length) return '';
+  const u = rows.reduce((a, t) => a + Number(t.quantity || 0), 0);
+  const lanes = {};
+  rows.forEach(t => { const k = t.from_location + ' → ' + t.to_location;
+                      lanes[k] = (lanes[k] || 0) + Number(t.quantity || 0); });
+  return '<div class="card"><div class="pad"><h3>Pallets that moved without being touched</h3>'+
+    '<div class="sm dim">Nothing to do — this is just so the numbers make sense.</div></div>'+
+    '<div class="pad"><div class="okbox sm"><b>'+n(u)+' units across '+rows.length+
+    ' line'+(rows.length===1?'':'s')+' are in the Finale file for pallets nobody opened.</b>'+
+    '<div style="margin-top:6px">When a lane goes back with fewer pallets than came out of it, '+
+    'everything behind them slides forward a slot. The stock did not move, but its location '+
+    'number did — and Finale tracks stock by location, so it needs telling.</div>'+
+    '<div style="margin-top:8px">'+
+      Object.keys(lanes).sort().map(k => '<div>'+esc(k)+' — '+n(lanes[k])+'u</div>').join('')+
+    '</div></div></div></div>';
+}
 function floorCard(m){
   const FL = floorLoc();
   if(!FL) return '';
@@ -2180,14 +3133,29 @@ function floorCard(m){
   const units = hold.reduce((a, x) => a + x.units, 0);
   let out = '';
 
-  if(open_.length){
-    out += '<div class="badbox"><b>⛔ '+open_.length+' item'+(open_.length===1?'':'s')+
+  const waiting = open_.filter(o => o.cause === 'awaiting_bay' &&
+                                    !PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed));
+  const stuck   = open_.filter(o => waiting.indexOf(o) < 0);
+  if(waiting.length){
+    const u = waiting.reduce((a,o)=>a+Number(o.units||0),0);
+    out += '<div class="okbox"><b>⏳ '+waiting.length+' item'+(waiting.length===1?'':'s')+
+      ' ('+n(u)+' units) are on the floor waiting for a bay you have not worked yet.</b>'+
+      '<div class="sm" style="margin-top:4px">Nothing to do — they go on when you get there. '+
+      'They only need sorting out if the shift ends with that bay untouched.</div>'+
+      '<div class="sm dim" style="margin-top:6px">'+
+      waiting.map(o => esc(o.sku)+' ×'+n(o.units)+' → '+esc(o.pallet||'?')).join('<br>')+
+      '</div></div>';
+  }
+
+  if(stuck.length){
+    out += '<div class="badbox"><b>⛔ '+stuck.length+' item'+(stuck.length===1?'':'s')+
       ' ended up at '+esc(FL)+' with nowhere to go.</b>'+
       '<div class="sm" style="margin-top:6px">These are real units. Finale will show them at '+
       '<b>'+esc(FL)+'</b> so nothing is lost — but that is a holding spot, not where they '+
       'belong. <b>Tell us what actually happened to each one</b> and it gets recorded '+
       'properly; leave it and someone has to come looking tomorrow.</div>'+
-      open_.map((o, i) =>
+
+      stuck.map((o) => { const i = orph.indexOf(o); return ''+
         '<div class="ln" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">'+
           '<div><b>'+esc(o.sku)+'</b> ×'+n(o.units)+(o.lot?' · lot '+esc(o.lot):'')+'</div>'+
 
@@ -2199,7 +3167,7 @@ function floorCard(m){
             '<button class="pri" onclick="fixOrphan('+i+',\'moved\')">It went here →</button>'+
             '<button class="warn" onclick="fixOrphan('+i+',\'lost\')">It is lost</button>'+
           '</div>'+
-        '</div>').join('')+
+        '</div>'; }).join('')+
       '</div>';
   }
   if(done_.length){
@@ -2242,7 +3210,64 @@ function floorCard(m){
     out += '<div class="okbox"><b>Nothing left at '+esc(FL)+' — everything that came down '+
       'went back up or out to the floor.</b></div>';
   }
+
+  const tmp = (typeof tempAll === 'function') ? tempAll() : [];
+  if(tempLoc() && tmp.length){
+    const tu = tmp.reduce((x, r) => x + r.qty, 0);
+    out += '<div class="warnbox"><b>'+n(tu)+' unit'+(Math.abs(tu)===1?'':'s')+' across '+
+      tmp.length+' item'+(tmp.length===1?'':'s')+' are owed but not found — sitting at '+
+      esc(tempLoc())+'.</b>'+
+      '<div class="sm" style="margin:6px 0">We own this stock and nobody can lay hands on '+
+      'it. If any of it turns up — on any pallet, in any lane, today or next week — move it '+
+      'out here rather than recording a NEW find, or the books gain units they already had.'+
+      '</div>'+
+      tmp.slice(0, 12).map(r =>
+        '<div class="ln" style="display:flex;gap:10px;align-items:center;min-height:48px">'+
+        '<div class="grow"><b>'+esc(r.sku)+'</b> '+
+        (r.lot ? '<span class="dim sm">lot '+esc(r.lot)+'</span>'
+               : '<span class="dim sm">no lot</span>')+
+        '<div class="sm dim">'+n(r.qty)+' unit'+(r.qty===1?'':'s')+
+        (r.desc ? ' · '+esc(r.desc) : '')+'</div></div>'+
+        '<button class="pri" style="min-height:44px" onclick="moveOutOfTemp('+
+          JSON.stringify(r.sku).replace(/"/g,'&quot;')+','+
+          JSON.stringify(r.lot||'').replace(/"/g,'&quot;')+')">I found it</button></div>').join('')+
+      (tmp.length > 12 ? '<div class="sm dim">…and '+(tmp.length-12)+' more</div>' : '')+
+      '</div>';
+  }
   return out;
+}
+
+function moveOutOfTemp(sku, lot){
+  const avail = tempAvailable(sku, lot);
+  if(!(avail > 0.001)) return toast('nothing of that left at '+tempLoc());
+  dlg('Found ' + esc(sku) + ' — where is it?',
+    '<p class="sm dim">There are <b>'+n(avail)+'</b> of this at '+esc(tempLoc())+
+    '. Moving them out is not a stock correction — we already own them, they were just '+
+    'somewhere nobody could see.</p>'+
+    '<label class="sm">How many did you find?</label>'+
+    qtyField('mtq', avail)+
+    '<label class="sm" style="margin-top:10px">Where is it now?</label>'+
+    scanField('mtscan')+
+    '<select id="mtloc">'+
+      f1Choices().map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+      (floorChoice().length ? '<optgroup label="on the restock floor">'+
+        floorChoice().map(x => '<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+
+        '</optgroup>' : '')+
+    '</select>',
+    [{t:'Cancel', c:'ghost'},
+     {t:'Move it out', c:'pri', f:()=>{
+        const q = readQty('mtq');
+        if(q == null || !(q > 0)) return toast('⛔ how many did you find?');
+        if(q > avail + 0.001) return toast('⛔ only '+n(avail)+' of that is at '+tempLoc());
+        const where = $('#mtloc').value;
+        if(!where) return toast('⛔ where is it now?');
+        S.temp_out = S.temp_out || [];
+        S.temp_out.push({sku:sku, lot:lot||'', qty:q, to:where,
+                         ts:new Date().toISOString()});
+        ev('temp_moved_out', {sku:sku, lot:lot||'', qty:q, to:where});
+        save(); render();
+        toast('✓ '+n(q)+' of '+sku+' moved out of '+tempLoc()+' to '+where);
+     }}], ()=>{ wireScan('mtscan','mtloc'); });
 }
 
 function fixOrphan(i, action){
@@ -2314,6 +3339,17 @@ function fixOrphan(i, action){
         save(); render(); toast('Recorded as '+r+'.');
      }}]);
 }
+
+function placeHomeless(pid){
+  let bn = null;
+  PAYLOAD.bays.forEach(b => {
+    if((b.pallets||[]).some(p => p.pallet_id === pid) ||
+       (b.putback||[]).some(p => p.pallet_id === pid)) bn = b.n;
+  });
+  if(bn == null) bn = ((S.new_pallets||{})[pid]||{}).bay_n;
+  if(bn == null) bn = (PAYLOAD.bays[0]||{}).n;
+  askActual(bn, pid);
+}
 function unplacedPallets(){
   const out = [];
   const homeless = pid => { const a = actualFor(pid);
@@ -2356,11 +3392,17 @@ function renderDone(a){
       ? '<div class="badbox"><b>⛔ '+homeless.length+' pallet'+(homeless.length===1?'':'s')+
         ' with no location recorded.</b><div class="sm" style="margin-top:6px">'+
 
-        homeless.map(h => '<b>'+esc(h.pid)+'</b>'+
-          (h.bay ? ' ('+(h.built ? 'built in ' : '')+esc(h.bay)+')' : '')).join(', ')+
-        ' — nobody said where '+(homeless.length===1?'it':'they')+' ended up. Go back to that bay and tap '+
-        '<b>went elsewhere?</b>, or scan the spot. Even if it is parked on the floor for the '+
-        'night, it belongs in an F1 location so nobody has to go looking tomorrow.</div></div>'
+        'Nobody said where '+(homeless.length===1?'it':'they')+' ended up. Even parked on the '+
+        'floor for the night, a pallet belongs in an F1 location so nobody has to go looking '+
+        'tomorrow.</div>'+
+        homeless.map(h =>
+          '<div class="row" style="margin-top:8px;align-items:center">'+
+            '<div class="grow"><b>'+esc(h.pid)+'</b>'+
+              (h.bay ? ' <span class="sm dim">'+(h.built ? 'built in ' : '')+esc(h.bay)+
+                       '</span>' : '')+'</div>'+
+            '<button class="pri" onclick="placeHomeless(\''+esc(h.pid)+'\')">Where is it?</button>'+
+          '</div>').join('')+
+        '</div>'
       : '') +
 
     (allClosed
@@ -2377,6 +3419,7 @@ function renderDone(a){
     backstockCard()+
 
     floorCard(m)+
+    shiftedCard(m)+
     '<div class="card"><div class="pad"><h3>What will go to Finale</h3>'+
     '<div>'+chip('Transfers', m.transfers.length)+chip('Corrections', m.adjustments.length)+
     chip('Counts', m.counts.length)+chip('Not found', m.missing.length)+
@@ -2497,6 +3540,17 @@ function palletFinalLoc(pid){
 }
 
 function actualFor(pid){ return (S.putback_actual || {})[pid] || null; }
+
+function bayWorked(b){
+  const bs = S.bays[b.n] || {};
+  if(bs.putback_done || bs.closed) return true;
+  if((b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
+        (st(lid(b.n, p2.loc, l2, i2)) || {}).state))) return true;
+   
+  if((b.pallets || []).some(p2 => p2.pallet_id && actualFor(p2.pallet_id))) return true;
+  if((b.putback  || []).some(pb => pb.pallet_id && actualFor(pb.pallet_id))) return true;
+  return false;
+}
 function plannedLocFor(pid){
   for(const b of PAYLOAD.bays)
     for(const pb of (b.putback || []))
@@ -2545,11 +3599,24 @@ function moves(){
       const a = actualFor(pb.pallet_id);
       out.pallet_moves.push({bay:b.bay, pallet_id:pb.pallet_id,
         planned_location:pb.loc,
-        actual_location: a ? (a.state === 'floor' ? '' : a.loc) : pb.loc,
+
+        actual_location: a ? (a.state === 'floor' ? '' : a.loc) : '',
         state: a ? a.state : 'planned',
         confirmed: !!a, deviated: !!(a && a.deviated), note: a ? (a.note||'') : '',
         built_by_crew:false, ts: a ? a.ts : ''});
     });
+  });
+
+  (S.temp_out || []).forEach(r => {
+    const q = Number(r.qty || 0);
+    if(!(q > 0) || !r.to || !tempLoc()) return;
+    let lid_ = '';
+    (PAYLOAD.temp_stock || []).forEach(x => {
+      if(x.sku === r.sku && (x.lot || '') === (r.lot || '')) lid_ = x.lot_id || ''; });
+    out.transfers.push({bay:'', from_location:tempLoc(), to_location:r.to,
+      from_pallet_loc:'', onto_pallet:'', sku:r.sku, lot:r.lot || '',
+      lot_id_hint:lid_, quantity:q, kind:'from_temp', planned_qty:0,
+      why:'found and taken back out of '+tempLoc(), ts:r.ts});
   });
   Object.keys(S.new_pallets || {}).forEach(pid => {
     const np = S.new_pallets[pid], a = actualFor(pid) || {};
@@ -2569,25 +3636,32 @@ function moves(){
 
   const floorStranded = {};
 
+  const tempReturned = {};
+
   const floorOrphans = [];
   const strand = (o) => {
     out.unresolved = out.unresolved || [];
-    out.unresolved.push({bay:o.bay, from:o.origin, sku:o.sku, qty:o.units,
-                         onto_pallet:o.pallet || '', why:o.why});
+
+    const urow = {bay:o.bay, from:o.origin, sku:o.sku, lot:o.lot || '', qty:o.units,
+                  onto_pallet:o.pallet || '', why:o.why};
+    out.unresolved.push(urow);
     if(!FLOOR) return;                        
     const k = o.sku + ' ' + (o.lot || '');
     floorStranded[k] = (floorStranded[k] || 0) + o.units;
     floorOrphans.push({sku:o.sku, lot:o.lot || '', units:o.units, why:o.why, cause:o.cause,
                        origin:o.origin, pallet:o.pallet || '', bay:o.bay,
-                       fixKey:o.sku + '|' + (o.lot || '') + '|' + o.origin});
+
+                       _urow: urow,
+
+                       handedOff: !!o.handedOff,
+
+                       fixKey:o.sku + '|' + (o.lot || '') + '|' + o.origin + '|' +
+                              (o.pallet || '') + '|' + (o.cause || '')});
   };
   const downQty = {};                       
   if(FLOOR) PAYLOAD.bays.forEach(b => {
     const bs = S.bays[b.n] || {};
-    const bayWorked = !!(bs.putback_done || bs.closed) ||
-      (b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
-        (st(lid(b.n, p2.loc, l2, i2)) || {}).state));
-    if(!bayWorked) return;                  
+    if(!bayWorked(b)) return;               
     (b.pallets || []).forEach(p => {
       floorPallets.add(p.loc);
       if(p.pallet_id) floorPalletIds.add(p.pallet_id);
@@ -2617,20 +3691,31 @@ function moves(){
     const push = (p, l, i, key, loc) => {
       const id = lid(b.n, key, l, i), s = S.lines[id];
       if(!s) return;
-      if(s.state === 'missing'){
 
-        let sibRecorded = 0;
+      const shareCeiling = () => {
+        let sib = 0;
         if (p && p.lines) p.lines.forEach((l2, i2) => {
           if (i2 === i) return;
           if (l2.sku !== l.sku || (l2.lot || '') !== (l.lot || '')) return;
           if (l2.kind !== 'take' && l2.kind !== 'aside') return;
           const s2 = S.lines[lid(b.n, key, l2, i2)];
-          sibRecorded += Number((s2 && s2.actual != null) ? s2.actual : l2.planned_qty) || 0;
+
+          sib += sibShare(l2, s2);
         });
-        const ceiling = Math.max(0, Number(l.system_qty || 0) - sibRecorded);
+
+        const held = (p && b) ? onPallet(b, p, l.sku, l.lot) : Number(l.system_qty || 0);
+        return Math.max(0, held - sib);
+      };
+      if(s.state === 'missing'){
+
+        const ceiling = shareCeiling();
         const claimed = (s.baseline != null) ? Number(s.baseline) : Number(l.system_qty || 0);
         const dec = Math.min(claimed, ceiling);
-        out.missing.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot||'',
+
+        const postedAdj = (dec > 0.001 && s.reason &&
+                           (PAYLOAD.shrink_reasons||[]).indexOf(s.reason) >= 0);
+        out.missing.push({posted_adjustment:postedAdj,
+          bay:b.bay, from:loc, sku:l.sku, lot:l.lot||'',
           planned_qty:l.planned_qty, system_qty:l.system_qty,
           sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
           suggested_decrease:dec, note:s.reason||'not found',
@@ -2638,7 +3723,7 @@ function moves(){
           onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
           onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''), ts:s.ts});
 
-        if (dec > 0.001 && s.reason && (PAYLOAD.shrink_reasons||[]).indexOf(s.reason) >= 0) {
+        if (postedAdj) {
           out.adjustments.push({
             location: (FLOOR && floorPallets.has(loc)) ? FLOOR : loc,
             origin: loc, posted_at: (FLOOR && floorPallets.has(loc)) ? 'restock floor' : 'origin',
@@ -2649,7 +3734,7 @@ function moves(){
             left_on_pallet: 0, not_here: true, ts: s.ts});
         } else if (dec > 0.001) {
           out.unresolved = out.unresolved || [];
-          out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, qty:dec, onto_pallet:'',
+          out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot || '', qty:dec, onto_pallet:'',
             why:'marked "not here at all" with no Finale reason code' +
                 (s.reason ? ' ("'+s.reason+'" is not one of the accounting codes)' : '') +
                 ' — re-open the line and choose one, or Finale is never told'});
@@ -2666,9 +3751,37 @@ function moves(){
         reason:s.reason||'', ts:s.ts}); return; }
 
       if(l.kind === 'count'){
-        if(s.counted != null)
+        if(s.counted != null){
+
           out.counts.push({serial:l.serial, location:loc, sku:l.sku, lot:l.lot,
+            final_location:(palletFinalLoc(p.pallet_id) || ''),
+            onto_pallet:(p.pallet_id || ''),
             system_qty:l.system_qty, counted:s.counted, variance:s.variance, ts:s.ts});
+
+          const cv = Number(s.variance || 0);
+          if(Math.abs(cv) > 0.001){
+            const camedown = (downQty[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) > 0;
+            const at = (FLOOR && camedown) ? FLOOR : loc;
+            const list = cv < 0 ? (PAYLOAD.shrink_reasons || []) : (PAYLOAD.found_reasons || []);
+            if(s.count_reason && list.indexOf(s.count_reason) >= 0){
+              out.adjustments.push({location: at, origin: loc,
+                posted_at: at === FLOOR ? 'restock floor' : 'origin',
+                sku: l.sku, lot: l.lot || '', change: cv,
+                direction: cv < 0 ? 'decrease' : 'increase',
+                baseline: l.system_qty, sibling_took: 0, reason: s.count_reason,
+                system_qty: l.system_qty, moved: '', left_on_pallet: s.counted,
+
+                from_count: true, serial: l.serial, counted: s.counted, ts: s.ts});
+            } else {
+              out.unresolved = out.unresolved || [];
+              out.unresolved.push({bay:b.bay, from:loc, sku:l.sku, lot:l.lot || '', qty:cv, onto_pallet:'',
+                why:'counted ' + n(s.counted) + ' against Finale\'s ' + n(l.system_qty) +
+                    ' with no accounting reason' +
+                    (s.count_reason ? ' ("'+s.count_reason+'" is not one of the codes)' : '') +
+                    ' — re-open the count and choose one, or the variance is never posted'});
+            }
+          }
+        }
         return;
       }
       const act = s.actual != null ? s.actual : null;
@@ -2679,18 +3792,35 @@ function moves(){
           : [{pallet: (l.kind === 'aside' ? (l.onto_pallet||'') : ''), qty: act, deviated:false}];
         parts.forEach(pt => {
           if(!(pt.qty > 0)) return;
-          const pdest = (l.kind === 'take') ? (l.dest || '')
-                                            : (palletFinalLoc(pt.pallet) || '');
 
-          const fromFloor = floorPallets.has(loc);
+          const rawDest = pt.location ? pt.location
+                        : (l.kind === 'take') ? (l.dest || '')
+                                              : (palletFinalLoc(pt.pallet) || '');
+
+          const pdest = (rawDest && rawDest !== tempLoc() && !/^F[123]/.test(rawDest)
+                         && (l.kind === 'take' || pt.location)) ? '' : rawDest;
+
+          const fromFloor = (key !== 'ORPHAN') && floorPallets.has(loc);
           const src = fromFloor ? FLOOR : loc;
 
           const pdest_forced = !!(l.kind === 'aside' && pt.pallet && actualFor(pt.pallet));
           if(!pdest){
 
+            if(l.kind === 'take'){
+
+              floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
+                (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+              strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
+                pallet:'', cause:'no_f1_home', handedOff:true,
+                why: rawDest
+                  ? 'the plan sends this to "' + rawDest + '", which is not a real F1 spot — '+
+                    'this SKU has no home on the floor. Scan where you actually put it.'
+                  : 'the plan names no destination for this pick — scan where you put it'});
+              return;
+            }
             const pa = actualFor(pt.pallet);
             strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
-              pallet:pt.pallet||'',
+              pallet:pt.pallet||'', handedOff:true,
               cause: pt.floor ? 'loose' : (pa && pa.state === 'floor') ? 'pallet_down'
                                                                       : 'no_position',
               why: pt.floor
@@ -2712,10 +3842,21 @@ function moves(){
           if(l.kind === 'aside' && fromFloor && pt.pallet &&
              !floorPalletIds.has(pt.pallet) && !pdest_forced){
             strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
-              pallet:pt.pallet, cause:'awaiting_bay',
+              pallet:pt.pallet, cause:'awaiting_bay', handedOff:true,
               why:'set aside for pallet ' + pt.pallet +
                   (l.onto_bay ? ' in bay ' + l.onto_bay : '') + ', which has not been ' +
                   'worked yet — the stock is on the restock floor waiting for it'});
+            floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            return;
+          }
+
+          if(l.kind === 'aside' && fromFloor && pt.pallet &&
+             arrivedTooLate(pt.pallet, s.done_ts || s.ts)){
+            strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
+              pallet:pt.pallet, cause:'receiver_already_up', handedOff:true,
+              why:'set aside for pallet ' + pt.pallet + ', but that pallet had already gone '+
+                  'back up before this was recorded — the stock is on the restock floor'});
             floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
               (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
             return;
@@ -2744,20 +3885,59 @@ function moves(){
             kind:l.kind, bay:b.bay, ts:s.ts});
         });
       }
-      if(s.adjustment && Math.abs(s.adjustment) > 0.001){
+
+      const backRaw = Number(s.from_temp || 0);
+      if(backRaw > 0.001 && tempLoc()){
+        const backTo = adjLoc(p, l, !(S.bays[b.n]||{}).putback_done,
+                              FLOOR && floorPallets.has(loc)) || loc;
+         
+        const backLot = (s.from_temp_lot != null) ? s.from_temp_lot : (l.lot || '');
+        out.transfers.push({bay:b.bay, from_location:tempLoc(), to_location:backTo,
+          from_pallet_loc:'', onto_pallet:(p&&p.pallet_id)||'', sku:l.sku, lot:backLot,
+          quantity:backRaw, kind:'from_temp', planned_qty:l.planned_qty,
+          matched_line_lot:(backLot === (l.lot||'') ? undefined : (l.lot||'')),
+          why:'turned up here — taken back out of '+tempLoc(), ts:s.ts});
+
+        if(FLOOR && backTo === FLOOR){
+
+          const tk = loc + '|' + l.sku + ' ' + (backLot || '');
+          tempReturned[tk] = (tempReturned[tk] || 0) + backRaw;
+        }
+      }
+      const parkRaw = Number(s.to_temp || 0);
+      const park = parkRaw > 0 ? Math.min(parkRaw, shareCeiling()) : 0;
+      if(park > 0.001 && FLOOR && tempLoc()){
+        out.transfers.push({bay:b.bay, from_location:FLOOR, to_location:tempLoc(),
+          from_pallet_loc:loc, onto_pallet:'', sku:l.sku, lot:l.lot||'',
+          quantity:park, kind:'to_temp', planned_qty:l.planned_qty,
+          why:'owed but not found on '+(p&&p.pallet_id||loc)+' — parked until it turns up',
+          clamped_from:(Math.abs(parkRaw - park) > 0.001 ? parkRaw : undefined),
+          ts:s.ts});
+      }
+
+      const rawAdj = Number(s.adjustment || 0);
+      const adjOut = rawAdj < 0 ? -Math.min(-rawAdj, shareCeiling()) : rawAdj;
+      if(adjOut && Math.abs(adjOut) > 0.001){
 
         const shrinkAt = (FLOOR && floorPallets.has(loc)) ? FLOOR : loc;
-        out.adjustments.push({location: (s.adjustment > 0
+        out.adjustments.push({location: (adjOut > 0
 
                                          ? (adjLoc(p, l, !(S.bays[b.n]||{}).putback_done,
                                                     FLOOR && floorPallets.has(loc)) || loc)
                                          : shrinkAt),
 
           origin: loc,
-          posted_at: (s.adjustment > 0 ? 'final position'
-                      : ((FLOOR && floorPallets.has(loc)) ? 'restock floor' : 'origin')),
+
+          posted_at: ((adjOut > 0
+                         ? (adjLoc(p, l, !(S.bays[b.n]||{}).putback_done,
+                                   FLOOR && floorPallets.has(loc)) || loc)
+                         : shrinkAt) === FLOOR
+                      ? 'restock floor'
+                      : (adjOut > 0 ? 'final position' : 'origin')),
           sku:l.sku, lot:l.lot||'',
-          change:s.adjustment, direction:s.adjustment<0?'decrease':'increase',
+          change:adjOut, direction:adjOut<0?'decrease':'increase',
+
+          clamped_from:(Math.abs(rawAdj - adjOut) > 0.001 ? rawAdj : undefined),
           baseline:(s.baseline != null ? s.baseline : l.system_qty),
           sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
           reason:s.reason||'', system_qty:l.system_qty,
@@ -2773,15 +3953,14 @@ function moves(){
   PAYLOAD.bays.forEach(b => {
 
     const bs = S.bays[b.n] || {};
-    const bayWorked = !!(bs.putback_done || bs.closed) ||
-      (b.pallets || []).some(p2 => (p2.lines || []).some((l2, i2) =>
-        (st(lid(b.n, p2.loc, l2, i2)) || {}).state));
-    if(!bayWorked) return;                  
+    if(!bayWorked(b)) return;               
     const onFloor = !bs.putback_done;       
     (b.pallets || []).forEach(p => {
       const origin = p.loc;
       const a = actualFor(p.pallet_id);
       const final = palletFinalLoc(p.pallet_id);
+
+      const recordedHome = !!(a && a.loc && a.state !== 'floor');
       const key = (sk, lt) => sk + ' ' + (lt || '');
 
       const gone = {};
@@ -2801,8 +3980,16 @@ function moves(){
         const [oloc, sk] = kk.split('|');
         if (oloc === origin) gone[sk] = (gone[sk] || 0) + floorHandoff[kk];
       });
+
+      Object.keys(tempReturned).forEach(kk => {
+        const i = kk.indexOf('|');
+        if (kk.slice(0, i) !== origin) return;
+        const sk = kk.slice(i + 1);
+        gone[sk] = (gone[sk] || 0) - tempReturned[kk];
+      });
       (out.missing || []).forEach(m => {
-        if (m.from === origin)
+
+        if (m.from === origin && !m.posted_adjustment)
           gone[key(m.sku, m.lot)] = (gone[key(m.sku, m.lot)] || 0) + Number(m.suggested_decrease || 0);
       });
 
@@ -2811,6 +3998,10 @@ function moves(){
         if (a.origin !== origin) return;
         const ch = Number(a.change || 0);
         if (ch < 0) gone[key(a.sku, a.lot)] = (gone[key(a.sku, a.lot)] || 0) + (-ch);
+
+        else if (a.from_count || a.posted_at === 'restock floor' ||
+                 (FLOOR && a.location === FLOOR))
+          gone[key(a.sku, a.lot)] = (gone[key(a.sku, a.lot)] || 0) + (-ch);
       });
 
       const onIt = {};
@@ -2825,6 +4016,8 @@ function moves(){
           if (x.gone) return;                        
 
           if (!x.state) return;                      
+
+          if (x.tooLate) return;
           const q = Number(x.qty || 0);
           if (!(q > 0)) return;
           const k = key(x.sku, x.lot);
@@ -2845,10 +4038,27 @@ function moves(){
         });
       });
 
+      const stillDown = {};
+      const _ld = (S.left_down || {})[p.pallet_id];
+      ((_ld && _ld.items) || []).forEach(x => {
+        const kk = key(x.sku, x.lot);
+        stillDown[kk] = (stillDown[kk] || 0) + Number(x.qty || 0);
+      });
+
       Object.keys(onIt).forEach(k => {
         const it = onIt[k];
-        const left = Math.round((it.qty - (gone[k] || 0)) * 1000) / 1000;
+        let left = Math.round((it.qty - (gone[k] || 0)) * 1000) / 1000;
         if (left <= 0.001) return;
+        const downQ = Math.min(left, stillDown[k] || 0);
+        if (downQ > 0.001) {
+          strand({bay: b.bay, origin: origin, sku: it.sku, lot: it.lot || '', units: downQ,
+                  pallet: p.pallet_id, cause: 'did_not_fit', handedOff: false,
+                  why: 'you said this would not fit back on ' + (p.pallet_id || 'the pallet') +
+                       ' (' + origin + ') and is still on the restock floor — say where it ' +
+                       'ended up, or it stays recorded at F1-Restock'});
+          left = Math.round((left - downQ) * 1000) / 1000;
+          if (left <= 0.001) return;
+        }
 
         const sp = splitTo[k];
         if (sp && sp.length) {
@@ -2870,6 +4080,8 @@ function moves(){
                 pallet:otherPid, cause:'no_position',
                 why:'it went onto ' + otherPid + ' when this pallet was split, and nobody '+
                     'recorded where ' + otherPid + ' ended up'});
+            } else if (ofin === ((FLOOR && floorPallets.has(origin)) ? FLOOR : origin)) {
+
             } else {
               out.transfers.push({
                 from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
@@ -2885,13 +4097,15 @@ function moves(){
           });
 
           const rest = Math.round(pool * 1000) / 1000;
-          const restDest = onFloor ? (floorLoc() || final) : final;
-          if (rest > 0.001 && !onFloor) {
+          const restDest = (onFloor && !recordedHome) ? (floorLoc() || final) : final;
+          if (rest > 0.001 && (!onFloor || recordedHome)) {
             if (!restDest) {
               strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:rest,
                 pallet:p.pallet_id || '', cause:'no_position',
                 why:'the part left on ' + (p.pallet_id||'this pallet') + ' after the split '+
                     'has nowhere recorded to go'});
+            } else if (restDest === ((FLOOR && floorPallets.has(origin)) ? FLOOR : origin)) {
+               
             } else {
               out.transfers.push({
                 from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
@@ -2916,7 +4130,7 @@ function moves(){
           return;
         }
 
-        const dest = onFloor ? (floorLoc() || final) : final;
+        const dest = (onFloor && !recordedHome) ? (floorLoc() || final) : final;
         if (!dest) {
           strand({bay:b.bay, origin:origin, sku:it.sku, lot:it.lot||'', units:left,
             pallet:p.pallet_id || '', cause:'no_position',
@@ -2927,8 +4141,13 @@ function moves(){
 
         if (!floorPallets.has(origin) && final === origin) return;
 
-        if (onFloor) return;         
-        out.transfers.push({from_location: (FLOOR && floorPallets.has(origin)) ? FLOOR : origin,
+        const src = (FLOOR && floorPallets.has(origin)) ? FLOOR : origin;
+
+        if (dest === src) return;
+        if (onFloor && !recordedHome) return;    
+        out.transfers.push({from_location: src,
+
+          from_pallet_loc: origin,
           to_location: dest,
           on_floor: onFloor,         
           onto_pallet: p.pallet_id || '',
@@ -2947,12 +4166,49 @@ function moves(){
   out.transfers.forEach(t => (t.kind === 'pallet_down' ? down : rest).push(t));
   out.transfers = down.concat(rest);
 
+  (PAYLOAD.shifted_pallets || []).forEach(sp => {
+    const bay = PAYLOAD.bays.find(b => (b.bay || '') === sp.lane);
+    if(!bay) return;
+    if(!((S.bays[bay.n] || {}).putback_done)) return;    
+
+    const deviated = (bay.putback || []).some(pb => {
+      const a2 = actualFor(pb.pallet_id);
+      return a2 && a2.loc && a2.loc !== pb.loc;
+    }) || Object.keys(S.new_pallets || {}).some(q =>
+            ((S.new_pallets[q] || {}).bay_n === bay.n));
+    if(deviated) return;
+    const from = sp.lane + '-' + sp.from_position;
+    const to   = sp.lane + '-' + sp.to_position;
+    if(from === to) return;
+    const q = Number(sp.units || 0);
+    if(!(q > 0)) return;
+    out.transfers.push({from_location: from, to_location: to,
+      from_pallet_loc: from, onto_pallet: '',
+      sku: sp.sku, lot: sp.lot || '', quantity: q,
+      planned_qty: '', approved_qty: '', as_planned: true, planned_pallet: '',
+      took_from_sibling: '', sibling_line: '',
+
+      kind: 'lane_shift', untouched: true, bay: sp.lane,
+      ts: new Date().toISOString()});
+  });
+
   if(FLOOR && floorOrphans.length){
     const fixes = S.floor_fix || {};
+
+    const retireHandoff = (o, k) => {
+      if(!o.handedOff) return;
+      const hk = o.origin + '|' + k;
+      if(!(hk in floorHandoff)) return;
+      floorHandoff[hk] = Math.max(0, (floorHandoff[hk] || 0) - o.units);
+    };
     floorOrphans.forEach(o => {
       const f = fixes[o.fixKey];
       if(!f) return;
       const k = o.sku + ' ' + (o.lot || '');
+
+      if(f.action === 'moved' && f.to === FLOOR){
+        return;
+      }
       if(f.action === 'moved' && f.to){
         o.fixed = {action:'moved', to:f.to};
         out.transfers.push({from_location: FLOOR, to_location: f.to,
@@ -2964,16 +4220,26 @@ function moves(){
           kind:'orphan_placed', bay:o.bay, note:f.note || '',
           ts:f.ts || new Date().toISOString()});
         floorStranded[k] = (floorStranded[k] || 0) - o.units;
+        retireHandoff(o, k);
       } else if(f.action === 'lost' && f.reason){
         o.fixed = {action:'lost', reason:f.reason};
+         
         out.adjustments.push({location: FLOOR, origin: o.origin, posted_at:'restock floor',
           sku:o.sku, lot:o.lot || '', change: -o.units, direction:'decrease',
           baseline:o.units, sibling_took:0, reason:f.reason, system_qty:'',
           moved:'', left_on_pallet:'', orphan:true, note:f.note || '',
           ts:f.ts || new Date().toISOString()});
         floorStranded[k] = (floorStranded[k] || 0) - o.units;
+        retireHandoff(o, k);
       }
     });
+
+    const retracted = floorOrphans.filter(o => o.fixed && o._urow);
+    if(retracted.length){
+      const drop = new Set(retracted.map(o => o._urow));
+      out.unresolved = (out.unresolved || []).filter(r => !drop.has(r));
+    }
+    floorOrphans.forEach(o => { delete o._urow; });
   }
   out.floor_orphans = floorOrphans;
 
@@ -2989,14 +4255,15 @@ function moves(){
       if(a.location === FLOOR) bump(net, a.sku + ' ' + (a.lot || ''), Number(a.change || 0));
     });
 
+    const residualCovered = new Set();
+
     PAYLOAD.bays.forEach(b => {
-      const bs = S.bays[b.n] || {};
-      if(bs.putback_done) return;                   
       (b.pallets || []).forEach(p => {
         if(!floorPallets.has(p.loc)) return;        
+        residualCovered.add(p.loc);
 
         const arr = p.pallet_id
-          ? arrivalsFor(p.pallet_id).filter(x => !x.gone && x.state) : [];
+          ? arrivalsFor(p.pallet_id).filter(x => !x.gone && x.state && !x.tooLate) : [];
         const keySet = new Map();
         (p.lines || []).forEach(l => {
           if(l.kind === 'count') return;
@@ -3016,6 +4283,8 @@ function moves(){
               q -= Number(t.quantity || 0);
           });
           q -= (floorHandoff[p.loc + '|' + k] || 0);    
+
+          q += (tempReturned[p.loc + '|' + k] || 0);
           arr.forEach(x => {
             if((x.sku + ' ' + (x.lot || '')) === k) q += Number(x.qty || 0);
           });
@@ -3027,8 +4296,13 @@ function moves(){
         });
       });
     });
-     
-    Object.keys(floorStranded).forEach(k => bump(expected, k, floorStranded[k]));
+
+    floorOrphans.forEach(o => {
+      if(o.fixed) return;                           
+
+      if(!o.handedOff && residualCovered.has(o.origin)) return;
+      bump(expected, o.sku + ' ' + (o.lot || ''), o.units);
+    });
     const keys = new Set(Object.keys(net).concat(Object.keys(expected)));
     out.floor_holding = Object.keys(net)
       .filter(k => Math.abs(net[k]) > 0.001)
@@ -3036,8 +4310,32 @@ function moves(){
     out.floor_unbalanced = [...keys]
       .map(k => ({key: k, net: net[k] || 0, expected: expected[k] || 0,
                   diff: Math.round(((net[k] || 0) - (expected[k] || 0)) * 1000) / 1000}))
-      .filter(x => Math.abs(x.diff) > 0.001);
+
+      .concat([...keys]
+        .filter(k => (net[k] || 0) < -0.001)
+        .map(k => ({key: k, net: net[k] || 0, expected: expected[k] || 0,
+                    diff: Math.round((net[k] || 0) * 1000) / 1000,
+                    negative_floor: true})))
+      .filter(x => x.negative_floor || Math.abs(x.diff) > 0.001)
+       
+      .filter((x, i, all) => all.findIndex(y => y.key === x.key && !!y.negative_floor === !!x.negative_floor) === i)
+      .sort((a, b) => (b.negative_floor ? 1 : 0) - (a.negative_floor ? 1 : 0));
   }
+
+  const LOTIDS = PAYLOAD.lot_ids || {};
+
+  (PAYLOAD.temp_stock || []).forEach(r => {
+    const k = r.sku + '|' + (r.lot || '');
+    if(!LOTIDS[k] && r.lot_id) LOTIDS[k] = r.lot_id;
+  });
+  ['transfers', 'adjustments', 'counts', 'pallet_moves', 'unresolved', 'fullness']
+    .forEach(bucket => {
+      (out[bucket] || []).forEach(r => {
+        if(!r || !r.sku) return;
+        const raw = LOTIDS[r.sku + '|' + (r.lot || '')];
+        r.lot_id = (r.lot ? (raw || '') : '');
+      });
+    });
   return out;
 }
 function csv(rows){
@@ -3091,7 +4389,17 @@ function sessionKey(){ return `${PAYLOAD.plan_date}_${deviceId()}`; }
 function sessionFile(){ return `session_${PAYLOAD.plan_date}_${deviceId()}_${planStamp()}.json`; }
 function allBaysClosed(){
 
-  return PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed) && unplacedPallets().length === 0;
+  if(PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed) && unplacedPallets().length === 0){
+    try{
+      const m = moves();
+      if((m.floor_unbalanced || []).length) return false;
+
+      if((m.floor_orphans || []).some(o => !o.fixed && o.cause !== 'awaiting_bay'))
+        return false;
+      return true;
+    }catch(e){ return false; }   
+  }
+  return false;
 }
 
 async function graphWrite(path, body, method){
@@ -3108,7 +4416,7 @@ async function graphWrite(path, body, method){
 }
 
 async function syncNow(quiet){
-  if(SYNCING) return;                      
+  if(SYNCING) return false;                
   SYNCING = true;
   let fileLanded = false;
   const btn = quiet ? null : $('#mainbtn');
@@ -3116,12 +4424,22 @@ async function syncNow(quiet){
   if(btn){ btn.textContent = 'Syncing…'; btn.disabled = true; }
   try{
 
-    if(!(await ensureToken())){ if(quiet) return; await signIn(); return; }
+    if(!(await ensureToken())){ if(quiet) return false; await signIn(); return false; }
     const sp = CFG.sharepoint;
     const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
-    const m = moves();
+
+    let m = null, movesErr = '';
+    try{ m = moves(); }
+    catch(e){
+      movesErr = String((e && e.message) || e);
+      m = {transfers: [], adjustments: [], counts: [], skipped: [], missing: []};
+    }
 
     const rec = {schema: 1, plan_date: PAYLOAD.plan_date, device: deviceId(),
+
+                 plan_built: (PAYLOAD.built || ''),
+
+                 pull_day: (PAYLOAD.pull_day || ''),
                  synced_at: new Date().toISOString(),
                  started: S.started, finished: S.finished || null,
                  bay: S.bay, screen: S.screen,
@@ -3131,7 +4449,9 @@ async function syncNow(quiet){
                  putback_actual: S.putback_actual, new_pallets: S.new_pallets,
                  split_contents: S.split_contents, floor_fix: S.floor_fix,
                  backstock: S.backstock || null, opened: S.opened,
-                 moves: m};
+
+                 moves_error: movesErr || null,
+                 moves: movesErr ? null : m};
     const fname = sessionFile();
     const t = tokStore();
     const up = await fetch(
@@ -3146,13 +4466,16 @@ async function syncNow(quiet){
     const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
     const lst = (lists.value || []).find(x => x.displayName === sp.list_name);
     if(!lst) throw new Error(`list "${sp.list_name}" not found on ${sp.site_path}`);
-    const units = m.transfers.reduce((t2,x) => t2 + Number(x.quantity||0), 0);
+
+    const HANDLED = ['take','aside','orphan_placed','to_temp','from_temp'];
+    const units = m.transfers.reduce((t2,x) =>
+      t2 + (HANDLED.indexOf(String(x.kind||'')) >= 0 ? Number(x.quantity||0) : 0), 0);
     const fields = {
       Title: sessionKey(), PlanDate: PAYLOAD.plan_date, Device: deviceId(),
 
-      Status: allBaysClosed() ? 'complete' : 'in_progress',
+      Status: (!movesErr && allBaysClosed()) ? 'complete' : 'in_progress',
       StartedAt: S.started || new Date().toISOString(),
-      FinishedAt: allBaysClosed() ? new Date().toISOString() : null,
+      FinishedAt: (!movesErr && allBaysClosed()) ? new Date().toISOString() : null,
       Transfers: m.transfers.length, UnitsMoved: Math.round(units),
       Corrections: m.adjustments.length, Counts: m.counts.length,
       Skipped: m.skipped.length, NotFound: m.missing.length,
@@ -3182,15 +4505,30 @@ async function syncNow(quiet){
     if(!ack) throw new Error('the list write returned no acknowledgement');
 
     S.synced = {at: new Date().toISOString(), file: upj.name,
-                transfers: m.transfers.length, counts: m.counts.length};
-    ev('synced', {file: upj.name, transfers: m.transfers.length});
+                transfers: m.transfers.length, counts: m.counts.length,
+                moves_error: movesErr || null};
+    ev(movesErr ? 'synced_facts_only' : 'synced',
+       {file: upj.name, transfers: m.transfers.length, why: movesErr || undefined});
     save(); render();
-    if(!quiet) toast(`✅ synced — ${m.transfers.length} transfer(s), ${m.counts.length} count(s)`);
+    if(movesErr){
+
+      dlg('Your work is saved — but the export is broken',
+        '<div class="okbox"><b>Everything you recorded has been sent to SharePoint.</b> '
+        + 'It is safe; nothing is lost.</div>'
+        + '<div class="badbox"><b>⛔ The app could not work out the Finale moves from it.</b>'
+        + '<div class="sm" style="margin-top:6px">' + esc(movesErr) + '</div></div>'
+        + '<p class="sm dim">Carry on recording — the facts keep saving normally. Tell Jack '
+        + 'today: the import file has to be rebuilt from the record rather than from here.</p>',
+        [{t: 'OK', c: 'pri'}]);
+    }
+    else if(!quiet) toast(`✅ synced — ${m.transfers.length} transfer(s), ${m.counts.length} count(s)`);
+
+    return true;
   }catch(e){
     ev('sync_failed', {why: String(e.message || e)});
     save();
 
-    if(quiet) return;
+    if(quiet) return false;
     dlg('Sync failed', '<div class="badbox"><b>'+
       (fileLanded ? 'The record file was saved, but the session row was NOT updated.'
                   : 'Nothing was sent.')+
@@ -3198,6 +4536,7 @@ async function syncNow(quiet){
       '<p class="sm dim">Your work is still saved on this iPad. Get back in signal and try '+
       'again — ⛔ do not start another session for this plan until this succeeds.</p>',
       [{t:'OK', c:'pri'}]);
+    return false;
   }finally{ SYNCING = false; if(btn){ btn.disabled = false; btn.textContent = was; } }
 }
 
@@ -3249,10 +4588,23 @@ window.addEventListener('load', () => {
   const probe = probeStorage();
   STORAGE_OK = probe.ok;
   if(!STORAGE_OK){ blockStorage(probe.why, false); return; }   
+
+  try{
+    if(navigator.storage && navigator.storage.persist)
+      navigator.storage.persist().then(ok => { PERSISTED = !!ok; }).catch(() => {});
+  }catch(e){}
   keepAwake();
   boot();
 });
-window.addEventListener('beforeunload', () => { try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} });
+
+function flushLocal(){
+  if(WRITE_LOCK) return;                     
+  try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){}
+}
+window.addEventListener('pagehide', () => { flushLocal(); releaseOwner(); });
+window.addEventListener('beforeunload', () => { flushLocal(); releaseOwner(); });
+
+document.addEventListener('visibilitychange', flushLocal);
 </script>
 </body>
 </html>
