@@ -3445,6 +3445,17 @@ function unplacedPallets(){
       out.push({pid, built: false, bay: bayOfPallet(pid), from: ''});
   });
 
+  PAYLOAD.bays.forEach(b => {
+    if(!bayWorked(b)) return;                     
+    if((S.bays[b.n] || {}).putback_done) return;  
+    (b.pallets || []).forEach(p => {
+      const pid = p.pallet_id;
+      if(!pid || !homeless(pid)) return;
+      if(out.some(o => o.pid === pid)) return;
+      out.push({pid, built: false, bay: b.bay || ('bay ' + b.n), from: '', came_down: true});
+    });
+  });
+
   Object.keys(S.split_contents || {}).forEach(pid => {           
     if(homeless(pid) && !out.some(o => o.pid === pid))
       out.push({pid, built: true, bay: bayOfPallet(pid),
@@ -3476,6 +3487,13 @@ function renderDone(a){
         'Nobody said where '+(homeless.length===1?'it':'they')+' ended up. Even parked on the '+
         'floor for the night, a pallet belongs in an F1 location so nobody has to go looking '+
         'tomorrow.</div>'+
+
+        (homeless.some(h => h.came_down)
+          ? '<div class="sm" style="margin-top:6px">⛔ <b>Everything still on these pallets '+
+            'counts as standing at '+esc(floorLoc())+'</b> — every SKU on them, including '+
+            'the ones nobody touched. Say where the pallet went, or go back and tap '+
+            '<b>Loaded back in this order</b>, and they follow it.</div>'
+          : '')+
         homeless.map(h =>
           '<div class="row" style="margin-top:8px;align-items:center">'+
             '<div class="grow"><b>'+esc(h.pid)+'</b>'+
@@ -4863,6 +4881,8 @@ async function syncNow(quiet){
       Corrections: m.adjustments.length, Counts: m.counts.length,
       Skipped: m.skipped.length, NotFound: m.missing.length,
       RecordFile: `${sp.doc_folder}/${fname}`,
+
+      PlanTitle: (PAYLOAD.title || '').slice(0, 250),
       PlanFile: `${sp.doc_folder}/plan_latest.json`};
 
     const q = encodeURIComponent(`fields/Title eq '${sessionKey()}'`);
