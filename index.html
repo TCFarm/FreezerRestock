@@ -1666,18 +1666,7 @@ function openLine(id){
   const sib = f.p ? f.p.lines.find((x,ix) =>
         ix !== f.i && x.sku === l.sku && (x.lot||'') === (l.lot||'') &&
         (x.kind === 'take' || x.kind === 'aside')) : null;
-  let sibTook = 0, sibId = null, sibMissing = false;
-  if(sib){
-    const si = f.p.lines.indexOf(sib);
-    sibId = lid(f.b.n, f.p.loc, sib, si);
-    const ss = st(sibId);
-
-    sibMissing = !!(ss && ss.state === 'missing');
-
-    sibTook = sibShare(sib, ss);
-  }
-
-  const baseline = Math.max(0, onPallet(f.b, f.p, l.sku, l.lot) - sibTook);
+  const tal0 = pileTally(f.b, f.p, l.sku, l.lot);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
 
   dlg(l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
@@ -1690,24 +1679,17 @@ function openLine(id){
       : prev.state === 'skipped'
       ? '<div class="warnbox sm" style="margin-bottom:8px">↷ <b>Recorded as SKIPPED</b>'+
         (prev.reason ? ' — '+esc(prev.reason) : '')+'</div>' : '')+
-    (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+esc(l.sku)+'</b> is also '+
-        (sib.kind === 'take' ? 'being taken to '+esc(sib.dest||'F1')
-                             : 'being set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
-        ' — <b>'+n(sibTook)+'</b> units on the other line. '+
-        'So this line is only about the <b>'+n(baseline)+'</b> that are not part of that.</div>' : '')+
-    '<div class="row"><div><label class="sm dim">How many '+esc(verb)+'?</label>'+
-      qtyField('q1', n(planned))+'</div>'+
+    (sib ? '<div class="okbox sm" style="margin-bottom:8px">⭐ <b>'+n(tal0.system)+'</b> of '+
+        esc(l.sku)+' on this pallet, going two ways — <b>'+n(l.planned_qty||0)+'</b> here and '+
+        '<b>'+n(sib.planned_qty||0)+'</b> '+
+        (sib.kind === 'take' ? 'to '+esc(sib.dest||'F1')
+                             : 'set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
+        '.<div style="margin-top:4px">Just say what you carried. ⛔ We add the pile up '+
+        'ourselves — you are not being asked to count the pallet.</div></div>' : '')+
 
-      '<div><label class="sm dim">Of those '+n(baseline)+', how many are LEFT on '+
-        esc(palletLabel(f.p))+'?</label>'+
-      qtyField('q2', n(prev.left != null ? prev.left : Math.max(0, baseline - Number(planned))))+
-      '</div></div>'+
-    '<div class="sm dim" style="margin-top:8px">'+
-    (sib ? 'Finale says <b>'+n(l.system_qty)+'</b> on this pallet, <b>'+n(sibTook)+
-           '</b> of which is the other line — so <b>'+n(baseline)+'</b> belongs to this one. '
-         : 'Finale says <b>'+n(l.system_qty)+'</b> was on this pallet. ')+
-    'If moved + left does not equal that, we record the difference as a correction — '+
-    'you do not have to work it out.</div>'+
+    '<div><label class="sm dim">How many '+esc(verb)+'?</label>'+
+      qtyField('q1', n(planned))+'</div>'+
+    '<div class="sm dim" style="margin-top:8px" id="pileline"></div>'+
     '<div id="calc" style="margin-top:10px"></div>',
     [{t:'Cancel',c:'ghost'},
 
@@ -1716,9 +1698,11 @@ function openLine(id){
         '<div class="warnbox"><b>This says Finale is WRONG.</b><div class="sm" '+
         'style="margin-top:6px">Finale believes <b>'+n(l.system_qty)+'</b> of '+esc(l.sku)+
         (l.lot?' (lot '+esc(l.lot)+')':'')+' is on '+esc(f.p?f.p.loc:'this pallet')+
-        (sib ? ', <b>'+n(sibTook)+'</b> of which is the other line — so this line is about '+
-               'the <b>'+n(baseline)+'</b> that are not part of that' : '')+
-        '. Recording this proposes a decrease of <b>'+n(baseline)+'</b>.</div></div>'+
+        (sib ? ', and <b>'+n(sib.planned_qty||0)+'</b> of it is planned onto the other line'
+             : '')+
+
+        '. Recording this proposes a decrease of <b>'+
+        n(pileMissingDecrease(f.b, f.p, l, f.i, f.p ? f.p.loc : ''))+'</b>.</div></div>'+
         '<p class="sm dim">⛔ Not the same as <b>Skip</b> — skip means we did not do it and '+
         'Finale stays as it is.</p>'+
 
@@ -1735,16 +1719,19 @@ function openLine(id){
             const rsn = ($('#nhr')||{}).value;
             if(!rsn || rsn === '__none__')
               return toast('⛔ pick a reason — it becomes a Finale accounting code');
+
             setLine(id,{state:'missing', actual:0, reason:rsn,
-                        baseline:baseline, sibling_took:sibTook});
+                        baseline:undefined, sibling_took:undefined});
             ev('line_missing',{line:id, reason:rsn}); maybeDone(f.p.loc); render(); }}]), 0); }},
       
      {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
 
-        const mv=readQty('q1'), lf=readQty('q2');
-        if(mv==null||lf==null) return toast('⛔ fill in both numbers');
-        const adj = (mv + lf) - baseline;      
+        const mv=readQty('q1');
+        if(mv==null) return toast('⛔ fill in the quantity');
+
+        const tal = pileTally(f.b, f.p, l.sku, l.lot, id, mv);
+        const adj = tal.over ? tal.over : (tal.short ? -tal.short : 0);
 
         if(mv === 0 && Math.abs(adj) < 0.001 && isActionable(l)){
           toast('nothing moved and nothing missing — recording this as NOT DONE');
@@ -1752,54 +1739,33 @@ function openLine(id){
           return;
         }
         let adj2 = adj;
-        const rl = $('#realloc');
 
-        const realloc = (rl && rl.value === 'yes') ? adj : 0;
-        if(realloc) adj2 = 0;
-
-        if(realloc > 0 && sibId){
-          const ss = st(sibId) || {};
-          const had = Number(ss.actual != null ? ss.actual : sibTook) || 0;
-          const now = Math.max(0, Math.round((had - realloc) * 1000) / 1000);
-
-          const sprev = st(sibId) || {};
-          let sPlace = sprev.placements;
-          if(sPlace && sPlace.length){
-            let owe = realloc;
-            sPlace = sPlace.map(x => Object.assign({}, x)).reverse();
-            for(const x of sPlace){
-              if(owe <= 0) break;
-              const cut = Math.min(owe, Number(x.qty||0));
-              x.qty = Number(x.qty||0) - cut; owe -= cut;
-            }
-            sPlace = sPlace.reverse().filter(x => Number(x.qty||0) > 0.001);
-            if(owe > 0.001){ sPlace = undefined;
-              toast('⚠️ the other line was split — say again where its stock went'); }
-          }
-          setLine(sibId, {state:'done', actual:now, gave_to_sibling:realloc,
-                          placements: sPlace,
-                           
-                          reason: (sprev.state === 'missing') ? undefined : sprev.reason,
-                          was_missing: (sprev.state === 'missing') ? true : undefined,
-
-                          reallocated:true,
-                          as_planned:false});
-          ev('reallocated', {from:sibId, to:id, units:realloc});
-          toast('✓ ' + n(realloc) + ' moved from the other line — it now shows ' + n(now));
-        }
-
+        let stolen = 0;
+        if(f.p) (f.p.lines||[]).forEach((l2, i2) => {
+          if(i2 === f.i) return;
+          if(l2.sku !== l.sku || (l2.lot||'') !== (l.lot||'')) return;
+          if(l2.kind !== 'take' && l2.kind !== 'aside') return;
+          const id2 = lid(f.b.n, f.p.loc, l2, i2), s2 = st(id2);
+          if(!s2 || !s2.pile_adj) return;
+          stolen += Math.abs(Number(s2.adjustment||0)) + Number(s2.to_temp||0) +
+                    Number(s2.from_temp||0);
+          setLine(id2, {adjustment:0, to_temp:undefined, from_temp:undefined,
+                        reason:undefined, direction:undefined, adj_why:undefined,
+                        pile_adj:undefined});
+        });
         const qtyMoved = !prev || prev.actual == null ||
                          Math.abs(mv - Number(prev.actual)) > 0.001;
         const hadPlacements = !!(prev && prev.placements && prev.placements.length);
 
-        const keepRealloc = !realloc && prev && prev.took_from_sibling &&
+        const keepRealloc = prev && prev.took_from_sibling &&
                             Math.abs(mv - (prev.actual != null ? prev.actual : mv)) < 0.001;
-        const patch = {state:'done', actual:mv, left:lf, adjustment:adj2,
-                       baseline:baseline, sibling_took:sibTook,
+
+        const patch = {state:'done', actual:mv, adjustment:adj2,
+                       left:undefined, baseline:undefined, sibling_took:undefined,
+                       pile_adj: (Math.abs(adj2) > 0.001) || undefined,
                        placements: qtyMoved ? undefined : prev.placements,
-                       took_from_sibling: realloc || (keepRealloc ? prev.took_from_sibling : undefined),
-                       sibling_line: realloc ? (sib.onto_pallet || sib.dest || '')
-                                             : (keepRealloc ? prev.sibling_line : undefined)};
+                       took_from_sibling: keepRealloc ? prev.took_from_sibling : undefined,
+                       sibling_line: keepRealloc ? prev.sibling_line : undefined};
 
         if(Math.abs(adj2) <= 0.001){ patch.reason = undefined; patch.direction = undefined; }
 
@@ -1823,66 +1789,70 @@ function openLine(id){
           patch.temp_sku = l.sku; patch.temp_lot = l.lot || '';
           patch.adjustment = 0; patch.reason = undefined; patch.direction = undefined;
         } else if(Math.abs(adj2) > 0.001){
-          const sel = $('#rsn');
-          if(sel && sel.value === '__none__'){
+          const got = pileAdjFields(adj2, tal, f.p, ($('#rsn')||{}).value);
+          if(!got){
             toast('⛔ pick a reason — it becomes a Finale accounting code');
             return false;                      
           }
-          patch.reason = sel ? sel.value : '';
-          patch.direction = adj2 < 0 ? 'shrink' : 'found';
+          patch.reason = got.reason; patch.direction = got.direction;
+          patch.adj_why = got.adj_why;
         }
         setLine(id, patch);
         if(hadPlacements && qtyMoved)
           toast('⚠️ the quantity changed — say again where it went');
-        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj2, realloc:realloc||0,
+        ev('line_done',{line:id, actual:mv, adjustment:adj2, pile_out:tal.movedOut,
+                        pile_system:tal.system,
                         cleared_placements:hadPlacements||undefined});
-        if(realloc){
-          const sp2 = st(sibId) || {};
-          toast('Recorded — ' + n(realloc) + ' taken from the other line, no correction' +
-                (sp2.was_missing ? ' ⚠️ and the other line is no longer marked "not here"'
-                                 : ''));
-        }
+        if(stolen > 0.001)
+          toast('⚠️ the ' + n(stolen) + ' recorded on the other line moved here — it is one '+
+                'pile, so it is answered once');
         maybeDone(f.p.loc); render(); }},
 
      ...((f.l.kind === 'aside') ? [{t:'Save — but it did not all fit', c:'', f:()=>{
-        const mv = readQty('q1'), lf = readQty('q2');
+        const mv = readQty('q1');
         if(mv == null) return toast('⛔ how many did you move?') && false;
-        const adj = (mv + (lf==null?0:lf)) - baseline;
-        const patch = {state:'done', actual:mv, left:lf, adjustment:adj,
-                       baseline:baseline, sibling_took:sibTook};
+
+        const tal = pileTally(f.b, f.p, l.sku, l.lot, id, mv);
+        const adj = tal.over ? tal.over : (tal.short ? -tal.short : 0);
+        const patch = {state:'done', actual:mv, adjustment:adj,
+                       left:undefined, baseline:undefined, sibling_took:undefined,
+                       pile_adj:(Math.abs(adj) > 0.001) || undefined};
         if(Math.abs(adj) > 0.001){
-          const sel = $('#rsn');
-          if(sel && sel.value === '__none__'){
+          const got = pileAdjFields(adj, tal, f.p, ($('#rsn')||{}).value);
+          if(!got){
             toast('⛔ pick a reason — it becomes a Finale accounting code'); return false; }
-          patch.reason = sel ? sel.value : '';
-          patch.direction = adj < 0 ? 'shrink' : 'found';
+          patch.reason = got.reason; patch.direction = got.direction;
+          patch.adj_why = got.adj_why;
         }
         setLine(id, patch);
-        ev('line_done',{line:id, actual:mv, left:lf, adjustment:adj, didnt_fit:true});
+        ev('line_done',{line:id, actual:mv, adjustment:adj, didnt_fit:true,
+                        pile_out:tal.movedOut, pile_system:tal.system});
         maybeDone(f.p.loc);
         setTimeout(()=>askSplit(id), 0);
      }}] : [])],
     ()=>{ 
       const upd = ()=>{
-        const mv=Number($('#q1').value)||0, lf=Number($('#q2').value)||0;
-        const adj=(mv+lf)-baseline; const c=$('#calc');
-        if(Math.abs(adj)<0.001){ c.innerHTML='<div class="okbox sm">Adds up — nothing to correct.</div>'; return; }
+        const mv=Number($('#q1').value)||0;
+        const tal=pileTally(f.b, f.p, l.sku, l.lot, id, mv);
+        const adj=tal.over ? tal.over : (tal.short ? -tal.short : 0);
+        const c=$('#calc'), pl=$('#pileline');
 
-        if(sib && !sibMissing && adj > 0.001 && adj <= sibTook + 0.001){
-          c.innerHTML =
-            '<div class="okbox"><b>That is '+n(adj)+' more than this line\'s share.</b>'+
-            '<div class="sm" style="margin:6px 0">Did you take it out of the other line — '+
-            esc(l.sku)+' '+(sib.kind==='take' ? 'going to '+esc(sib.dest||'F1')
-                                              : 'set aside onto '+esc(sib.onto_card || cardOf(sib.onto_pallet)))+
-            ', which was down for <b>'+n(sibTook)+'</b>?</div>'+
-            '<select id="realloc">'+
+        if(pl) pl.innerHTML = tal.pending
+          ? 'Finale says <b>'+n(tal.system)+'</b> on this pallet. '+tal.pending+
+            ' other line'+(tal.pending===1?'':'s')+' still to answer.'
+          : 'Finale says <b>'+n(tal.system)+'</b> on this pallet · <b>'+n(tal.movedOut)+
+            '</b> carried off · <b>'+n(Math.max(0, Math.round((tal.system-tal.movedOut)*1000)/1000))+
+            '</b> staying on it'+(tal.cleared ? ' — and the plan clears this pile' : '');
+        if(Math.abs(adj)<0.001){
 
-              '<option value="yes" selected>Yes — from the other line (no correction)</option>'+
-              '<option value="no">No — there really was '+n(adj)+' more on the pallet</option>'+
-            '</select></div>';
+          c.innerHTML = '<div class="okbox sm">'+
+            (tal.pending ? 'Recorded. We add the pile up once every line is answered.'
+             : tal.cleared ? 'Adds up — the pile is clear and there is nothing to correct.'
+             : 'Adds up — the rest stays on the pallet. Nothing to correct.')+'</div>';
           return;
         }
-        const list = adj<0 ? PAYLOAD.shrink_reasons : PAYLOAD.found_reasons;
+
+        const list = PAYLOAD.shrink_reasons;
 
         const ph = list.length > 1
           ? '<option value="__none__" selected>— choose a reason —</option>' : '';
@@ -1928,13 +1898,18 @@ function openLine(id){
               'it. If it turns up further down the lane, say so on that pallet and we take '+
               'it back out of '+esc(tempLoc())+' — no shrink either way.</div>'
             : '')+
-          '<div id="rsnwrap"'+((adj < 0 && tempLoc()) ? ' hidden' : '')+'>'+
-          '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
-            esc(r)+'</option>').join('')+'</select></div></div>';
+
+          (adj > 0
+            ? '<div class="sm dim">We will record it as <b>'+
+              esc((PAYLOAD.found_reasons||['Found'])[0] || 'Found')+
+              '</b>, with a note saying it came from what you carried rather than a count.</div>'
+            : '<div id="rsnwrap"'+(tempLoc() ? ' hidden' : '')+'>'+
+              '<select id="rsn">'+ph+list.map(r=>'<option value="'+esc(r)+'">'+
+              esc(r)+'</option>').join('')+'</select></div>')+'</div>';
         const sa = $('#shortact'), rw = $('#rsnwrap');
         if(sa && rw) sa.onchange = () => { rw.hidden = (sa.value !== 'writeoff'); };
       };
-      $('#q1').addEventListener('input',upd); $('#q2').addEventListener('input',upd); upd();
+      $('#q1').addEventListener('input',upd); upd();
     });
 }
 
@@ -2913,15 +2888,70 @@ function askActual(bayN, pid){
     });
 }
 
-function sibShare(l2, s2){
-  if(s2 && s2.state === 'missing')
-    return Number(s2.baseline != null ? s2.baseline : l2.system_qty) || 0;
-  if(s2 && s2.state === 'skipped')
-    return Number(l2.planned_qty) || 0;
-  if(s2 && s2.actual != null && s2.left != null)
-    return (Number(s2.actual) || 0) + (Number(s2.left) || 0);
-  return Number((s2 && s2.actual != null) ? s2.actual : l2.planned_qty) || 0;
+function pileMissingDecrease(b, p, l, i, key){
+  if(!p || !p.lines) return Number(l.system_qty || 0);
+  let earlier = false, movedOut = 0;
+  p.lines.forEach((l2, i2) => {
+    if(i2 === i) return;
+    if(l2.sku !== l.sku || (l2.lot||'') !== (l.lot||'')) return;
+    if(l2.kind !== 'take' && l2.kind !== 'aside') return;
+    const s2 = S.lines[lid(b.n, key, l2, i2)] || {};
+    if(s2.state === 'missing' && i2 < i) earlier = true;
+    if(s2.state === 'done')  movedOut += Number(s2.actual || 0);
+  });
+  if(earlier) return 0;
+  return Math.max(0, Math.round((onPallet(b, p, l.sku, l.lot) - movedOut) * 1000) / 1000);
 }
+
+function pileAdjFields(adj, tal, p, picked){
+  const where = (p && (p.pallet_id || p.loc)) || 'this pallet';
+  const sum = n(tal.movedOut) + ' recorded carried off ' + where + ' against ' +
+              n(tal.system) + ' Finale believed was there' +
+              (tal.lines.length > 1 ? ' across ' + tal.lines.length + ' lines on this pile' : '');
+  if(adj > 0.001)
+    return {reason:((PAYLOAD.found_reasons||['Found'])[0] || 'Found'), direction:'found',
+            adj_why:'found during restock, auto-added from the moves: ' + sum +
+                    ' — nobody counted the pallet, so the difference IS what was carried'};
+  if(!picked || picked === '__none__') return null;
+  return {reason:picked, direction:'shrink',
+          adj_why:'short during restock: ' + sum + ', and the plan clears this pile, so there '+
+                  'is no stay left for the shortfall to hide in'};
+}
+
+function pileTally(b, p, sku, lot, overrideId, overrideActual){
+  const out = {system:0, plannedOut:0, plannedStay:0, movedOut:0, cleared:false,
+               lines:[], pending:0, short:0, over:0};
+  if(!b || !p) return out;
+  out.system = onPallet(b, p, sku, lot);
+  (p.lines || []).forEach((l, i) => {
+    if(l.sku !== sku || (l.lot || '') !== (lot || '')) return;
+    if(l.kind !== 'take' && l.kind !== 'aside') return;
+    const id = lid(b.n, p.loc, l, i);
+    const sRaw = st(id) || {};
+    const planned = Number(l.planned_qty || 0);
+    out.plannedOut += planned;
+    out.lines.push(id);
+     
+    const isOverride = (overrideId && id === overrideId);
+    const state = isOverride ? 'done' : sRaw.state;
+    const act   = isOverride ? Number(overrideActual || 0)
+                             : Number(sRaw.actual != null ? sRaw.actual : 0);
+    if(state === 'done')          out.movedOut += act;
+    else if(state === 'skipped')  {   }
+    else if(state === 'missing')  {   }
+    else                          out.pending++;
+  });
+  out.plannedStay = Math.max(0, out.system - out.plannedOut);
+
+  out.cleared = out.plannedStay < 0.001;
+  const r = x => Math.round(x * 1000) / 1000;
+  if(!out.pending){
+    if(out.cleared && out.movedOut < out.system - 0.001) out.short = r(out.system - out.movedOut);
+    if(out.movedOut > out.system + 0.001)                out.over  = r(out.movedOut - out.system);
+  }
+  return out;
+}
+
 function onPallet(b, p, sku, lot){
   const base = (() => {
     for(const l of (p.lines || []))
@@ -3870,24 +3900,23 @@ function moves(){
       if(!s) return;
 
       const shareCeiling = () => {
-        let sib = 0;
-        if (p && p.lines) p.lines.forEach((l2, i2) => {
-          if (i2 === i) return;
-          if (l2.sku !== l.sku || (l2.lot || '') !== (l.lot || '')) return;
-          if (l2.kind !== 'take' && l2.kind !== 'aside') return;
+        if(!p || !p.lines) return Number(l.system_qty || 0);
+        let others = 0;
+        p.lines.forEach((l2, i2) => {
+          if(i2 === i) return;
+          if(l2.sku !== l.sku || (l2.lot || '') !== (l.lot || '')) return;
+          if(l2.kind !== 'take' && l2.kind !== 'aside') return;
           const s2 = S.lines[lid(b.n, key, l2, i2)];
-
-          sib += sibShare(l2, s2);
+          if(s2 && s2.state === 'done') others += Number(s2.actual || 0);
         });
 
-        const held = (p && b) ? onPallet(b, p, l.sku, l.lot) : Number(l.system_qty || 0);
-        return Math.max(0, held - sib);
+        return Math.max(0, onPallet(b, p, l.sku, l.lot) - others);
       };
       if(s.state === 'missing'){
 
         const ceiling = shareCeiling();
-        const claimed = (s.baseline != null) ? Number(s.baseline) : Number(l.system_qty || 0);
-        const dec = Math.min(claimed, ceiling);
+        const claimed = pileMissingDecrease(b, p, l, i, key);
+        const dec = Math.min(claimed, ceiling);        
 
         const postedAdj = (dec > 0.001 && s.reason &&
                            (PAYLOAD.shrink_reasons||[]).indexOf(s.reason) >= 0);
@@ -3906,6 +3935,10 @@ function moves(){
             origin: loc, posted_at: (FLOOR && floorPallets.has(loc)) ? 'restock floor' : 'origin',
             sku: l.sku, lot: l.lot || '', change: -dec, direction: 'decrease',
             baseline: (s.baseline != null ? s.baseline : l.system_qty),
+
+            why: 'not here at all: Finale believed ' + n(l.system_qty) + ' on ' +
+                 ((p && (p.pallet_id || p.loc)) || loc) + ', and ' + n(dec) +
+                 ' of it is unaccounted for once everything carried off it is counted',
 
             clamped_from: (claimed - dec > 0.001 ? -claimed : undefined),
             sibling_took: (s.sibling_took != null ? s.sibling_took : 0),
@@ -4119,7 +4152,8 @@ function moves(){
           clamped_from:(Math.abs(rawAdj - adjOut) > 0.001 ? rawAdj : undefined),
           baseline:(s.baseline != null ? s.baseline : l.system_qty),
           sibling_took:(s.sibling_took != null ? s.sibling_took : 0),
-          reason:s.reason||'', system_qty:l.system_qty,
+
+          why:s.adj_why||'', reason:s.reason||'', system_qty:l.system_qty,
           moved:(s.actual!=null?s.actual:0), left_on_pallet:(s.left!=null?s.left:''), ts:s.ts});
       }
     };
