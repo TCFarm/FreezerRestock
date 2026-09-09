@@ -2354,16 +2354,37 @@ function setFullness(bayN, loc, k, mode, ourPct){
           '<option value="stack_height">could not stack it as high here</option>'+
           '<option value="wrong_contents">what is on it is not what the app listed</option>'+
           '<option value="part_elsewhere">part of this pallet is somewhere else</option>'+
-          '<option value="other">something else</option></select></div>')+
+          '<option value="other">something else — let me type it</option></select>'+
+
+        '<div id="fwhyo" style="display:none;margin-top:8px">'+
+          '<label class="sm dim">What is different about this one?</label>'+
+          '<input id="fwhyt" type="text" maxlength="140" autocomplete="off" '+
+            'placeholder="in your own words">'+
+        '</div></div>')+
     (k === 'over'
       ? '<div class="warnbox sm" style="margin-top:10px"><b>⛔ Do not force it.</b> Leave '+
         'what will not fit on the floor and tell us at the end — a pallet crammed past its '+
         'deck is how stock ends up in a place Finale cannot see.</div>' : ''),
     [{t:'OK', c:'pri', f:()=>{
        const w = $('#fwhy');
-       if(w && w.value){ ps_.fullness_why = w.value; save();
-                         ev('fullness_why', {pallet:p?p.pallet_id:loc, why:w.value}); }
-    }}]), 0);
+       if(w && w.value){
+         const nt = $('#fwhyt'), note = ((nt && nt.value) || '').trim();
+
+         if(w.value === 'other' && !note)
+           return toast('⛔ Type what is different — or choose "skip, no idea".');
+         ps_.fullness_why = w.value;
+         if(note) ps_.fullness_note = note;
+         save();
+         ev('fullness_why', {pallet:p?p.pallet_id:loc, why:w.value, note:note||''});
+       }
+    }}], () => {
+        
+       const w = $('#fwhy'), box = $('#fwhyo'), t = $('#fwhyt');
+       if(!w || !box) return;
+       w.onchange = () => { const o = (w.value === 'other');
+                            box.style.display = o ? '' : 'none';
+                            if(o && t) t.focus(); };
+    }), 0);
   render();
 }
 
@@ -3609,6 +3630,8 @@ function moves(){
         crew_bucket:ps_.fullness, crew_pct:bk?bk.pct:null,
          
         mode:ps_.fullness_mode||'blind', crew_why:ps_.fullness_why||'',
+
+        crew_why_note:ps_.fullness_note||'',
         model_m3:ours, deck_m3:deck,
         model_pct: deck>0 ? Math.round(100*ours/deck) : null,
         no_volume_skus:(p.no_volume||[]).join(' '),
