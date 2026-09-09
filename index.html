@@ -655,6 +655,7 @@ function blank(){
           putback_actual:{},  
           new_pallets:{},     
           finished:null,      
+          stopped_early:null, 
           split_contents:{},  
           left_down:{},       
           temp_out:[],        
@@ -3449,6 +3450,8 @@ function unplacedPallets(){
     if(!bayWorked(b)) return;                     
     if((S.bays[b.n] || {}).putback_done) return;  
     (b.pallets || []).forEach(p => {
+
+      if(!palletCameDown(b, p)) return;
       const pid = p.pallet_id;
       if(!pid || !homeless(pid)) return;
       if(out.some(o => o.pid === pid)) return;
@@ -3564,8 +3567,13 @@ function renderDone(a){
         (S.synced ? 'Sync again' : 'Sync now')+'</button>'+
 
       (S.finished
-        ? '<div class="okbox sm" style="margin-top:8px">✓ <b>Finished '+
-          esc(String(S.finished).slice(11,16))+'</b> — the clock stopped there.</div>'
+        ? (S.stopped_early
+            ? '<div class="warnbox sm" style="margin-top:8px">⛔ <b>Stopped '+
+              esc(String(S.finished).slice(11,16))+' — not finished.</b>'+
+              '<div style="margin-top:4px">Recorded as: '+esc(S.stopped_early.why)+'.'+
+              ' Anything never taken down stays in the rack.</div></div>'
+            : '<div class="okbox sm" style="margin-top:8px">✓ <b>Finished '+
+              esc(String(S.finished).slice(11,16))+'</b> — the clock stopped there.</div>')
         : '<button class="big" style="margin-top:8px" onclick="clockOut()">'+
           '✓ Finished for the day</button>')+
       '<div class="sm dim" style="margin-top:8px">⛔ Nothing is in Finale until the export is '+
@@ -3596,21 +3604,45 @@ function clockOut(){
         '<div class="sm" style="margin-top:4px">Finishing is fine — it records that the '+
         'shift ended here, not that everything got done.</div></div>'
       : '';
-  dlg('Finished for the day?',
+
+  const stopping = !!(openBays || (jp.total - jp.done) || homeless.length);
+  dlg(stopping ? 'Stopping for the day?' : 'Finished for the day?',
     warn +
-    '<p class="sm">This stamps the time you stopped, so we can tell how long the job '+
-    'actually took. It does not send anything on its own — sync after.</p>',
+    (stopping
+      ? '<p class="sm">If you are done for the day and <b>not coming back to this</b>, say '+
+        'so here. Nothing gets marked as done that you did not do, and '+
+        '<b>anything you never took down stays where it is</b> — it is not moved to the '+
+        'restock floor.</p>'+
+        '<div class="sm dim" style="margin:8px 0">Leaving: '+
+          (openBays ? '<b>'+openBays+'</b> bay(s) not closed' : 'no open bays')+
+          ' · <b>'+(jp.total - jp.done)+'</b> line(s) not done'+
+          (homeless.length ? ' · <b>'+homeless.length+'</b> pallet(s) down with no '+
+                             'recorded spot' : '')+
+        '</div>'+
+        whyPicker()
+      : '<p class="sm">This stamps the time you stopped, so we can tell how long the job '+
+        'actually took. It does not send anything on its own — sync after.</p>'),
     [{t:'Not yet'},
-     {t:'✓ Finished', c:'pri', f:()=>{
+     {t: stopping ? '⛔ We are stopping — we did not finish' : '✓ Finished',
+      c: stopping ? 'warn' : 'pri', f:()=>{
+        let r = null;
+        if(stopping){ r = whyRead(); if(r === false) return false; }
         S.finished = new Date().toISOString();
+        if(r) S.stopped_early = {why: r.why, why_source: (r.typed ? 'typed' : 'picked'),
+                                 at: S.finished};
         ev('session_finished', {bays_closed: PAYLOAD.bays.length - openBays,
                                 lines_done: jp.done, lines_total: jp.total,
-                                homeless: homeless.length});
+                                homeless: homeless.length,
+
+                                stopped_early: !!r,
+                                why: r ? r.why : null,
+                                why_source: r ? (r.typed ? 'typed' : 'picked') : null});
         save(); render();
 
         setTimeout(()=>{ LAST_AUTOSYNC = 0; autoSyncTick(); }, 0);
-        toast('✓ clocked out — remember to sync');
-     }}]);
+        toast(r ? '⛔ recorded — we stopped here. Remember to sync.'
+                : '✓ clocked out — remember to sync');
+     }}], whyWire);
 }
 
 function startOver(){
@@ -3650,6 +3682,31 @@ function bayWorked(b){
   if((b.putback  || []).some(pb => pb.pallet_id && actualFor(pb.pallet_id))) return true;
   return false;
 }
+
+function posOf(loc){
+  const m = /-(\d+)$/.exec(String(loc || ''));
+  return m ? Number(m[1]) : 0;
+}
+function deepestOpened(b){
+  let d = 0;
+  (b.pallets || []).forEach(p => {
+    const touched = !!(S.pallets || {})[p.loc]
+      || (p.pallet_id && actualFor(p.pallet_id))
+      || (p.lines || []).some((l, i) => (st(lid(b.n, p.loc, l, i)) || {}).state);
+    if(touched) d = Math.max(d, posOf(p.loc));
+  });
+  return d;
+}
+function palletCameDown(b, p){
+  const bs = S.bays[b.n] || {};
+   
+  if(bs.putback_done) return true;
+  if(p.pallet_id && actualFor(p.pallet_id)) return true;    
+  if((S.pallets || {})[p.loc]) return true;                 
+  if((p.lines || []).some((l, i) => (st(lid(b.n, p.loc, l, i)) || {}).state)) return true;
+  return posOf(p.loc) < deepestOpened(b);    
+}
+
 function plannedLocFor(pid){
   for(const b of PAYLOAD.bays)
     for(const pb of (b.putback || []))
@@ -3764,6 +3821,8 @@ function moves(){
     const bs = S.bays[b.n] || {};
     if(!bayWorked(b)) return;               
     (b.pallets || []).forEach(p => {
+
+      if(!palletCameDown(b, p)) return;
       floorPallets.add(p.loc);
       if(p.pallet_id) floorPalletIds.add(p.pallet_id);
 
@@ -4057,6 +4116,8 @@ function moves(){
     if(!bayWorked(b)) return;               
     const onFloor = !bs.putback_done;       
     (b.pallets || []).forEach(p => {
+
+      if(!palletCameDown(b, p)) return;
       const origin = p.loc;
       const a = actualFor(p.pallet_id);
       const final = palletFinalLoc(p.pallet_id);
@@ -4849,6 +4910,7 @@ async function syncNow(quiet){
                  split_contents: S.split_contents, floor_fix: S.floor_fix,
 
                  left_down: S.left_down, temp_out: S.temp_out,
+                 stopped_early: S.stopped_early || null,
                  backstock: S.backstock || null, opened: S.opened,
 
                  moves_error: movesErr || null,
