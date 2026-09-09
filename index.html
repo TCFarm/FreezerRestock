@@ -3204,6 +3204,22 @@ function shiftedCard(m){
       Object.keys(lanes).sort().map(k => '<div>'+esc(k)+' — '+n(lanes[k])+'u</div>').join('')+
     '</div></div></div></div>';
 }
+
+function clampCard(m){
+  const c = (m.clamped || []);
+  if(!c.length) return '';
+  return '<div class="card"><div class="pad"><div class="badbox">'+
+    '<b>⛔ '+c.length+' entr'+(c.length===1?'y was':'ies were')+' bigger than we thought that '+
+    'line could be — we wrote the smaller number.</b>'+
+    '<div class="sm" style="margin-top:4px">This is <b>our</b> mistake, not yours: it means '+
+    'our idea of how much was on that pallet did not match what you found. '+
+    'The Finale file is still safe to import. ⛔ Tell Jack, and say which SKU.</div>'+
+    '<div class="sm" style="margin-top:8px">'+
+      c.map(x => '• <b>'+esc(x.sku)+'</b>'+(x.lot ? ' <span class="dim">'+esc(x.lot)+'</span>' : '')+
+        ' at '+esc(x.origin)+' — you said <b>'+n(Math.abs(x.asked))+'</b>, we wrote <b>'+
+        n(Math.abs(x.wrote))+'</b> <span class="dim">('+esc(x.kind)+')</span>').join('<br>')+
+    '</div></div></div></div>';
+}
 function floorCard(m){
   const FL = floorLoc();
   if(!FL) return '';
@@ -3521,6 +3537,7 @@ function renderDone(a){
     backstockCard()+
 
     floorCard(m)+
+    clampCard(m)+
     shiftedCard(m)+
     '<div class="card"><div class="pad"><h3>What will go to Finale</h3>'+
     '<div>'+chip('Transfers', m.transfers.length)+chip('Corrections', m.adjustments.length)+
@@ -3889,6 +3906,8 @@ function moves(){
             origin: loc, posted_at: (FLOOR && floorPallets.has(loc)) ? 'restock floor' : 'origin',
             sku: l.sku, lot: l.lot || '', change: -dec, direction: 'decrease',
             baseline: (s.baseline != null ? s.baseline : l.system_qty),
+
+            clamped_from: (claimed - dec > 0.001 ? -claimed : undefined),
             sibling_took: (s.sibling_took != null ? s.sibling_took : 0),
             reason: s.reason, system_qty: l.system_qty, moved: 0,
             left_on_pallet: 0, not_here: true, ts: s.ts});
@@ -4466,6 +4485,21 @@ function moves(){
       bump(expected, o.sku + ' ' + (o.lot || ''), o.units);
     });
     const keys = new Set(Object.keys(net).concat(Object.keys(expected)));
+
+  out.clamped = [];
+  (out.adjustments || []).forEach(a => {
+    if(a.clamped_from === undefined || a.clamped_from === null) return;
+    out.clamped.push({sku:a.sku, lot:a.lot || '', origin:a.origin || '',
+                      asked:Number(a.clamped_from), wrote:Number(a.change),
+                      kind:'write-off'});
+  });
+  (out.transfers || []).forEach(t => {
+    if(t.clamped_from === undefined || t.clamped_from === null) return;
+    out.clamped.push({sku:t.sku, lot:t.lot || '', origin:t.from_pallet_loc || t.from_location || '',
+                      asked:Number(t.clamped_from), wrote:Number(t.quantity),
+                      kind:'parked in temp'});
+  });
+
     out.floor_holding = Object.keys(net)
       .filter(k => Math.abs(net[k]) > 0.001)
       .map(k => ({key: k, units: Math.round(net[k] * 1000) / 1000}));
