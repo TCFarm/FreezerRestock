@@ -2093,7 +2093,13 @@ function putbackCard(b){
   const st_ = S.bays[b.n] || {};
   let h = '<div class="card" id="pbcard"><div class="pad"><h3>Putback — load in this order</h3>'+
     '<div class="sm dim">Deepest first. The LAST pallet you push in is the one at the front '+
-    '(position 1). Put the placard on each pallet as it goes in.</div></div><div class="body">';
+    '(position 1). Put the placard on each pallet as it goes in.</div>'+
+
+    '<div class="okbox sm" style="margin-top:8px">⭐ <b>Stack each pallet soonest-needed on '+
+    'top.</b> The list on every pallet below is already in that order — first one named goes '+
+    'on last, so it is the first thing you reach next time. <span class="dim">Nothing moves '+
+    'between pallets; this is only the order it goes back on.</span></div>'+
+    '</div><div class="body">';
   b.putback.forEach((pb, i) => {
     const waiting = (pb.waits_for||[]).length;
     h += '<div class="ln"><span class="tag '+(pb.pos===1?'t-take':'t-stay')+'">'+(i+1)+'</span>'+
@@ -2110,8 +2116,10 @@ function putbackCard(b){
             ')</span>':' <span class="dim sm">as planned</span>')+'</div>';
       })()+
 
-      '<div class="sub">'+pb.items.length+' SKU · '+
-        pb.items.map(x=>esc(x.sku)).join(', ')+'</div>'+
+      '<div class="sub"><b>'+pb.items.length+' SKU — stack in this order, first on top:</b> '+
+        pb.items.map(x=>esc(x.sku)+(x.next_needed_wk != null
+              ? ' <span class="dim">('+n(x.next_needed_wk)+'w)</span>' : '')).join(' · ')+
+        '</div>'+
 
       (function(){
         const arr = arrivalsFor(pb.pallet_id);
