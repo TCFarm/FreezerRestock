@@ -1413,7 +1413,15 @@ function renderBay(a){
     btn.className = 'big warn';
     btn.textContent = left ? 'Putback — ' + left + ' line(s) not done'
                            : 'Putback — load ' + b.putback.length + ' pallet(s) back';
-    btn.onclick = () => { const c = document.getElementById('pbcard');
+
+    btn.onclick = () => { const st = S.bays[b.n] = S.bays[b.n] || {};
+                          if(!st.putback_open_ts){
+                            st.putback_open_ts = new Date().toISOString();
+                            ev('putback_open', {bay: b.bay, pallets: b.putback.length,
+                                                lines_open: openLines().length});
+                            save();
+                          }
+                          const c = document.getElementById('pbcard');
                           if(c) c.scrollIntoView({behavior:'smooth'}); };
   } else {
     const left = openLines();
