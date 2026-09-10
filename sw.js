@@ -20,7 +20,7 @@
    strictly worse than no service worker, because nothing on screen says so.
    ⭐ deploy_freezer_page.py rewrites it from the built page's own byte length, so it cannot
    be forgotten — see STAMP below. */
-const VERSION = '6c2ae51ccd60';
+const VERSION = 'c470bdf17883';
 const CACHE = 'freezer-shell-' + VERSION;
 /* ⛔⛔ `zxing.js` IS IN THE SHELL, AND THAT IS THE WHOLE POINT OF PRECACHING IT.
    It is the barcode decoder for every device whose browser has none (Safari, i.e. the crew's
