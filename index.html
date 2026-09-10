@@ -349,16 +349,21 @@ function strandedRecords(){
                        || (o.events || []).length;
     if(!work) return;                        
     out.push({key: k, plan: k.slice(13), lines: lines,
-              synced: (o.synced && o.synced.at) || null});
+
+              synced: (o.synced && typeof o.synced.at === 'string') ? o.synced.at : null});
   });
   return out;
 }
 function scanStranded(){
   const st = strandedRecords();
   if(!st.length) return dropBanner('stranded');
+
+  const unsent = st.filter(r => !r.synced || r.unreadable);
   banner('stranded',
-    '<b>⚠️ There is unsent work on this iPad for '
-    + (st.length === 1 ? 'another plan' : st.length + ' other plans') + '.</b>'
+    '<b>' + (unsent.length
+      ? '⚠️ There is unsent work on this iPad for '
+        + (unsent.length === 1 ? 'another plan' : unsent.length + ' other plans')
+      : '⭐ This iPad is still holding an earlier shift') + '.</b>'
     + st.map(r => '<div class="sm" style="margin-top:4px">Plan <b>' + esc(r.plan) + '</b> — '
         + (r.unreadable ? 'could not be read'
                         : r.lines + ' line(s) recorded, '
