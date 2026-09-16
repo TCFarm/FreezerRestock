@@ -567,7 +567,10 @@ async function boot(){
   const c = cachedPlan();
   if(c){ setPlan(c.plan); render();
 
-         ensureToken().then(ok => { if(ok){ refreshPlanQuietly(); reconcileOnBoot(); } });
+         ensureToken().then(ok => {
+           if(ok){ dropBanner('staleplan'); refreshPlanQuietly(); reconcileOnBoot(); return; }
+           renderNotSignedIn(c);
+         });
          return; }
   if(!(await ensureToken())){
 
@@ -772,6 +775,23 @@ function banner(id, html, cls){
   return el;
 }
 function dropBanner(id){ const el = document.getElementById(id); if(el) el.hidden = true; }
+
+function renderNotSignedIn(c){
+  if(!c || !c.plan) return;
+  if(navigator.onLine === false) return;    
+  banner('staleplan',
+    '<b>⚠️ Not signed in — this iPad is showing the plan for '
+    + esc(String(c.plan.plan_date)) + '.</b>'
+    + '<div class="sm" style="margin-top:4px">It was loaded '
+    + esc(String(c.fetched).slice(0, 16)) + '. <b>Sign in to check for a newer one</b> before '
+    + 'you start — everything already recorded on this iPad is kept either way.</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button class="pri" style="min-height:48px" onclick="signIn()">Sign in with Microsoft'
+    + '</button>'
+    + '<button class="ghost" style="min-height:48px" onclick="dropBanner(\'staleplan\')">'
+    + 'Work offline on ' + esc(String(c.plan.plan_date)) + '</button>'
+    + '</div>', 'warnbox');
+}
 
 function renderRescueBar(){
   if(!RESCUED) return dropBanner('rescuebar');
