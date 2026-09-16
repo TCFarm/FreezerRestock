@@ -99,7 +99,8 @@ dialog{background:var(--card);color:var(--ink);border:1px solid var(--line);bord
 dialog::backdrop{background:#000b}
 .dh{padding:14px;border-bottom:1px solid var(--line);font-weight:700}
 .db{padding:14px;overflow-y:auto;max-height:60vh}
-.df{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px}
+.df{padding:12px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
+
 .df>*{flex:1}
 .foot{position:fixed;left:0;right:0;bottom:0;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
   background:color-mix(in srgb,var(--bg) 95%,transparent);border-top:1px solid var(--line);z-index:30}
@@ -196,9 +197,39 @@ async function ensureToken(){
   }catch(e){ tokStore(null); return false; }
 }
 
+const VER_KEY = 'freezer.pkce';
+const VER_TTL = 30 * 60 * 1000;           
+function putVerifier(v){
+  const blob = JSON.stringify({v: v, ts: Date.now()});
+  let stored = false;
+  try{ localStorage.setItem(VER_KEY, blob); stored = true; }catch(e){}
+  try{ sessionStorage.setItem(VER_KEY, blob); stored = true; }catch(e){}
+  return stored;
+}
+function takeVerifier(){
+  let blob = null;
+  try{ blob = localStorage.getItem(VER_KEY); }catch(e){}
+  if(!blob){ try{ blob = sessionStorage.getItem(VER_KEY); }catch(e){} }
+
+  if(!blob){ try{ const legacy = sessionStorage.getItem('fz.v');
+                  if(legacy) blob = JSON.stringify({v: legacy, ts: Date.now()}); }catch(e){} }
+  try{ localStorage.removeItem(VER_KEY); }catch(e){}
+  try{ sessionStorage.removeItem(VER_KEY); sessionStorage.removeItem('fz.v'); }catch(e){}
+  if(!blob) return '';
+  try{
+    const o = JSON.parse(blob);
+    if(!o || !o.v) return '';
+    if(Date.now() - Number(o.ts || 0) > VER_TTL) return '';
+    return String(o.v);
+  }catch(e){ return ''; }
+}
+
 async function signIn(){
   const verifier = b64u(crypto.getRandomValues(new Uint8Array(48)));
-  sessionStorage.setItem('fz.v', verifier);
+
+  if(!putVerifier(verifier))
+    return renderGate('This browser is blocking storage, so sign-in cannot complete. '
+                      + 'Turn off Private Browsing (or allow site data) and try again.');
   const q = new URLSearchParams({
     client_id: CFG.entra.client_id, response_type: 'code', redirect_uri: REDIRECT(),
     response_mode: 'query',
@@ -215,7 +246,13 @@ async function completeSignIn(){
     if(qs.get('error')) throw new Error(qs.get('error_description') || qs.get('error'));
     return false;
   }
-  const verifier = sessionStorage.getItem('fz.v') || '';
+  const verifier = takeVerifier();
+
+  if(!verifier){
+    history.replaceState({}, '', location.pathname);
+    throw new Error('Sign-in timed out on the way back from Microsoft — '
+                    + 'nothing is lost, just sign in again.');
+  }
   const body = new URLSearchParams({
     client_id: CFG.entra.client_id, grant_type: 'authorization_code', code: code,
     redirect_uri: REDIRECT(), code_verifier: verifier});
@@ -322,7 +359,9 @@ function claimOwner(){
   OWNER_TIMER = setInterval(touchOwner, 15000);
 }
 window.addEventListener('storage', e => {
-  if(!e || e.key !== ownerKey() || !e.newValue) return;
+  if(!e || e.key !== ownerKey()) return;
+
+  if(!e.newValue){ TWO_WIN_TOLD = false; dropBanner('twowin'); return; }
   let o = null; try{ o = JSON.parse(e.newValue); }catch(err){ return; }
   if(!o || o.id === OWNER_ID) return;
   renderTwoWin();
@@ -418,7 +457,10 @@ function renderGate(msg, busy){
       '<p class="dim">Nothing about the plan is stored in this page — it is fetched from '+
       'SharePoint after you sign in with your TC Farm account, then kept on this device so '+
       'the freezer does not need signal.</p>'+
-      (msg ? '<div class="warnbox">'+esc(msg)+'</div>' : '')+
+
+      (msg ? '<div class="warnbox">'+esc(msg)
+             + '<div style="margin-top:8px"><button class="ghost" style="min-height:48px" '
+             + 'onclick="signIn()">Try signing in again</button></div></div>' : '')+
       (c ? '<div class="okbox">A plan for <b>'+esc(c.plan.plan_date)+'</b> is already on this '+
            'device (loaded '+esc(String(c.fetched).slice(0,16))+'). You can work offline.</div>' : '')+
       '<div id="offbadge" class="sm" style="margin-top:10px"></div>'+
@@ -830,9 +872,12 @@ function undoLabel(){
   return w + (e.sku ? ' (' + e.sku + ')' : '');
 }
 
+let NO_UNDO = 0;
+function saveQuiet(){ NO_UNDO++; try{ save(); } finally { NO_UNDO--; } }
+
 function save(){
 
-  if(!saveT && COMMITTED !== null){
+  if(!saveT && COMMITTED !== null && !NO_UNDO){
     UNDO.push({state: COMMITTED, label: 'the last change', ts: Date.now()});
     if(UNDO.length > UNDO_MAX) UNDO.shift();
     renderUndoBar();
@@ -894,7 +939,8 @@ function undoLast(){
 
 function renderUndoBar(){
   let el = document.getElementById('undobar');
-  if(!UNDO.length){ if(el) el.hidden = true; return; }
+
+  if(!UNDO.length){ if(el){ el.hidden = true; el.style.display = 'none'; } return; }
   if(!el){
     el = document.createElement('div');
     el.id = 'undobar';
@@ -904,7 +950,7 @@ function renderUndoBar(){
     if(bar && bar.parentNode) bar.parentNode.insertBefore(el, bar.nextSibling);
     else document.body.insertBefore(el, document.body.firstChild);
   }
-  el.hidden = false;
+  el.hidden = false; el.style.display = 'flex';
   el.innerHTML = '<button class="ghost" onclick="undoLast()" ' +
     'style="min-height:44px;font-size:15px">↶ Undo ' + esc(UNDO[UNDO.length - 1].label) +
     '</button>';
@@ -1267,7 +1313,7 @@ function openWhy(id){
       row('Cover after this pull', w.cover_after ? w.cover_after+' wk' : '') +
       row('Source pallet', f.p ? f.p.loc : (l.from_location||'')) +
       row('Lot', l.lot) + row('On that pallet', l.system_qty) +
-      row('Destination', l.dest) + row('FIFO note', w.fifo) +
+      row('Destination', l.dest) + row('Note', w.fifo) +
       (l.kind==='aside' ? row('Goes onto pallet',
                               l.onto_pallet + ' (bay ' + l.onto_bay +
                               (l.cross ? ' · ' + (l.onto_lane||'') + ' — CROSS-LANE, a '
@@ -1481,7 +1527,11 @@ function pallet(b, p){
       (p.pallet_id ? ' <span class="tag t-count">card '+esc(cardOf(p))+'</span>' : '')+
       '<small><b>'+esc(head)+'</b></small>'+
       '<small>'+esc(counts)+
-      (p.spoil?' · <b>SPOIL — nothing to take, goes straight back</b>':'')+'</small></div>'+
+
+      (p.spoil ? ' · <b>' + (p.goes_back_to && p.goes_back_to !== p.loc
+          ? 'SPOIL — nothing to take, but it does NOT go back here → placard '
+            + esc(p.goes_back_to)
+          : 'SPOIL — nothing to take, goes straight back') + '</b>' : '')+'</small></div>'+
     '<span class="dim">'+(open?'▾':'▸')+'</span></div>';
   if(open){
 
@@ -5126,7 +5176,7 @@ function notePersisted(ok){
   try{
     if(!OPEN_NOTED) return;         
     ev('storage_persist', {granted: PERSISTED});
-    save();
+    saveQuiet();           
   }catch(e){}
 }
 
@@ -5144,7 +5194,7 @@ function noteOpen(){
       rescued: !!(typeof RESCUED !== 'undefined' && RESCUED),
       build: (PAYLOAD && PAYLOAD.built) || ''
     });
-    save();
+    saveQuiet();           
   }catch(e){}                             
 }
 
