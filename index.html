@@ -5887,13 +5887,29 @@ function askFinalize(){
                                 'to go — say where they went first');
   if(unplacedPallets().length)
     blockers.push(unplacedPallets().length + ' pallet(s) have no recorded position');
-  if(blockers.length)
+  if(blockers.length){
+
+    const jump = [];
+    if(isDirty() || !S.synced_at)
+      jump.push({t:'⇪ Sync now', c:'pri', f:()=>{ syncNow(); }});
+    if(unplacedPallets().length || (m.floor_orphans || []).length)
+      jump.push({t:'Take me there', c:'pri', f:()=>{ openFinish(); }});
+    jump.push({t:'OK', c:'ghost'});
+    const names = unplacedPallets().map(h => h.pid + (h.bay ? ' (' + h.bay + ')' : ''));
     return dlg('Not ready to finalize',
       '<p>⛔ These have to be answered first — the drain cannot ask you:</p><ul class="sm">'+
         blockers.map(x => '<li>' + esc(x) + '</li>').join('')+'</ul>'+
+      (names.length ? '<p class="sm"><b>The pallet(s):</b> '+esc(names.join(', '))+
+        '</p><p class="sm dim">⭐ Tap <b>Take me there</b> — each one gets a '+
+        '<b>Where is it?</b> button on the finish screen. ⚠️ It is NOT about any date on '+
+        'screen.</p>' : '')+
+      ((m.floor_unbalanced || []).length ? '<p class="sm" style="color:#7a1216">⛔ <b>The '+
+        'pile(s) that do not balance are OUR bug, not yours.</b> You cannot answer that one — '+
+        'do not go looking for it. Tell Jack and carry on.</p>' : '')+
       '<p class="sm dim">⭐ Each one is a real question about where stock is. Finale is told '+
       'exactly what this record says, so a record that contradicts itself posts a '+
-      'contradiction.</p>', [{t:'OK',c:'ghost'}]);
+      'contradiction.</p>', jump);
+  }
   dlg('Send this shift to Finale',
     '<p>This asks the office machine to post <b>'+n((m.transfers||[]).length)+'</b> movement '+
       'row(s) and <b>'+n((m.adjustments||[]).length)+'</b> stock correction(s) into Finale.</p>'+
