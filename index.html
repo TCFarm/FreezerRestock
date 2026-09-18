@@ -2145,8 +2145,30 @@ function navArrows(){
   nx.disabled = S.bay >= PAYLOAD.bays.length - 1;
 }
 
+const TEST_WORDS = ['do not import', 'not a restock', 'test run', 'testrun'];
+function isTestRun(){
+  const t = String((PAYLOAD && PAYLOAD.title) || '').toLowerCase();
+  return TEST_WORDS.some(w => t.indexOf(w) >= 0);
+}
+
+function renderTestBanner(){
+  let el = document.getElementById('testbanner');
+  if(!isTestRun()){ if(el) el.remove(); return; }
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'testbanner';
+    el.style.cssText = 'position:sticky;top:0;z-index:50;background:#7a1216;color:#fff;'+
+      'padding:10px 14px;font-weight:700;line-height:1.35;font-size:15px';
+    document.body.insertBefore(el, document.body.firstChild);
+  }
+  el.innerHTML = '⛔ PRACTICE RUN — MOVE NOTHING'+
+    '<div style="font-weight:400;font-size:13px;margin-top:3px;opacity:.92">'+
+    'Tap through it exactly as if it were real. Nothing you record here reaches Finale — '+
+    'the office machine refuses a practice run on purpose.</div>';
+}
 function render(){
   renderUndoBar();
+  renderTestBanner();
   if(!PAYLOAD || !PAYLOAD.bays){ renderGate(); renderOfflineBadge(); return; }
   const a = $('#app');
   navArrows();
@@ -5877,6 +5899,9 @@ function askFinalize(){
       'row(s) and <b>'+n((m.adjustments||[]).length)+'</b> stock correction(s) into Finale.</p>'+
     ((m.settled||[]).length ? '<p class="sm dim">⭐ '+n((m.settled||[]).length)+' item(s) you '+
       'left alone are excluded — nothing about them reaches Finale.</p>' : '')+
+    (isTestRun() ? '<p style="color:#7a1216"><b>⛔ This is a PRACTICE RUN.</b> The office '+
+      'machine will refuse it, on purpose. Tap it anyway — that refusal is part of what we '+
+      'are testing.</p>' : '')+
     '<p class="sm dim">⛔ It checks everything again on the other side before it posts, and '+
     'it will stop rather than guess. You do not have to wait here.</p>'+
     '<p class="sm dim">⚠️ It does <b>not</b> close the shift out — that check runs tomorrow, '+
