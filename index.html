@@ -1288,7 +1288,10 @@ function askFound(loc){
   let b = null, p = null;
   PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
   if(!p) return;
+
   const all = [];
+  Object.keys(PAYLOAD.sku_names || {}).forEach(sku =>
+    all.push({k:sku + '|', sku:sku, lot:'', desc:PAYLOAD.sku_names[sku]}));
   PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => (q.lines || []).forEach(l => {
     if(l.kind === 'count') return;
     const k = l.sku + '|' + (l.lot || '');
@@ -1297,13 +1300,14 @@ function askFound(loc){
   all.sort((x, y) => String(x.sku).localeCompare(String(y.sku)));
   dlg('I found something that is not on the list',
     '<p class="sm dim">On <b>'+esc(p.pallet_id || loc)+'</b> at '+esc(loc)+'.</p>'+
-    '<label class="sm">Scan the box</label>'+ scanField('fx1') +
+    scanField('fx1', 'Scan the box <span class="dim">(the Finale lookup barcode)</span>',
+              'scan, or type the code on the box') +
     '<div class="sm dim" id="fx0" style="margin-top:6px">⭐ Most of our cases carry the '+
       'Finale <b>product lookup</b>, which gives the item <i>and</i> its lot in one scan.</div>'+
-    '<label class="sm" style="margin-top:12px">…or pick it from the plan</label>'+
+    '<label class="sm" style="margin-top:12px">…or pick it from the list</label>'+
     '<select id="fx2"><option value="">— not in the plan —</option>'+
-      all.map(z=>'<option value="'+esc(z.k)+'">'+esc(z.sku)+
-        (z.lot?' · lot '+esc(z.lot):' · no lot')+'</option>').join('')+'</select>'+
+      all.map(z=>'<option value="'+esc(z.k)+'">'+esc(z.sku)+' — '+esc(z.desc||'?')+
+        (z.lot?' · lot '+esc(z.lot):'')+'</option>').join('')+'</select>'+
     '<label class="sm" style="margin-top:12px">…or type the SKU</label>'+
     '<input id="fx3" type="text" autocomplete="off" placeholder="e.g. 170-1">'+
     '<label class="sm" style="margin-top:12px">How many</label>'+ qtyField('fx4','') +
@@ -1339,7 +1343,14 @@ function askFound(loc){
         if(!who.sku){ box.innerHTML = '<span class="dim">Identify it and we will tell you '+
           'where Finale thinks it is.</span>'; return; }
         const homes = homesFor(who.sku, who.lot);
-        box.innerHTML = homes.length
+
+        const nm = skuName(who.sku);
+        const head = nm
+          ? '<div style="font-size:17px"><b>'+esc(who.sku)+'</b> — '+esc(nm)+'</div>'
+          : '<div style="font-size:17px"><b>'+esc(who.sku)+'</b> — <span style="color:'+
+            'var(--aside)">we do not recognise this SKU</span><div class="sm dim">⭐ It is '+
+            'kept on the record either way. ⛔ Check the box before you save it.</div></div>';
+        box.innerHTML = head + (homes.length
           ? '<b style="color:var(--take)">⭐ Finale thinks '+esc(who.sku)+
             (who.lot?' lot '+esc(who.lot):'')+' is here:</b>'+
             '<select id="fxfrom" style="margin-top:6px">'+
@@ -1350,7 +1361,7 @@ function askFound(loc){
           : '<b style="color:var(--aside)">⚠️ Finale holds this nowhere.</b>'+
             '<div class="dim">So it really is a Found — pick the accounting code.</div>'+
             '<select id="fxr">'+(PAYLOAD.found_reasons||[]).map(x=>'<option value="'+esc(x)+
-              '">'+esc(x)+'</option>').join('')+'</select>';
+              '">'+esc(x)+'</option>').join('')+'</select>');
       };
 
       window.pickedItem = () => {
@@ -1381,8 +1392,8 @@ function askAttachLot(loc, sku){
         '<option value="__type__">— none of these, let me type it —</option></select>'
       : '<p class="sm dim">⚠️ Finale holds no lot for this SKU anywhere, so it has to be '+
         'typed or scanned off the box.</p>')+
-    '<div id="al2"'+(cands.length?' hidden':'')+'><label class="sm" style="margin-top:8px">'+
-      'Type or scan it off the box</label>'+ scanField('al3') +'</div>',
+    '<div id="al2"'+(cands.length?' hidden':'')+'>'+
+      scanField('al3', 'Type or scan the lot off the box', 'the date on the box, or its short code') +'</div>',
     [{t:'Cancel',c:'ghost'},
      {t:'Attach it',c:'pri',f:()=>{
         const sel = $('#al1');
@@ -1708,6 +1719,16 @@ function attachLot(where, sku, lot, how){
   return {ok:true};
 }
 
+function skuName(sku){
+  if(!sku) return '';
+  const n_ = (PAYLOAD.sku_names || {})[sku];
+  if(n_) return n_;
+  for(const b of PAYLOAD.bays)
+    for(const p of (b.pallets || []))
+      for(const l of (p.lines || []))
+        if(l.sku === sku && l.desc) return l.desc;
+  return '';
+}
 function homesFor(sku, lot){
   return ((PAYLOAD.sku_homes || {})[sku + '|' + (lot || '')]) || [];
 }
@@ -1720,10 +1741,11 @@ function identifyCode(code){
   if(hit) return {sku:hit[0], lot:(hit[1] || ''), how:'scanned', code:raw,
 
                   gave_lot:!!hit[1]};
-   
-  const known = PAYLOAD.bays.some(b => (b.pallets || []).some(p =>
+
+  if(skuName(raw)) return {sku:raw, lot:'', how:'typed', code:raw, gave_lot:false};
+  const onPlan = PAYLOAD.bays.some(b => (b.pallets || []).some(p =>
     (p.lines || []).some(l => l.sku === raw)));
-  if(known) return {sku:raw, lot:'', how:'typed', code:raw, gave_lot:false};
+  if(onPlan) return {sku:raw, lot:'', how:'typed', code:raw, gave_lot:false};
   return {sku:'', lot:'', how:'unknown', code:raw, gave_lot:false,
           why:'⚠️ we do not recognise ' + raw + '. ⭐ It is KEPT on the record either way — '+
               'pick the item from the list or type its SKU. ⛔ This does not mean the product '+
@@ -3559,11 +3581,12 @@ async function makeDetector(){
     }
   };
 }
-function scanField(id){
-  return '<label class="sm" style="margin-top:2px">Scan the placard <span class="dim">'+
-    '(or pick it below)</span></label>'+
+
+function scanField(id, label, placeholder){
+  return '<label class="sm" style="margin-top:2px">'+(label ||
+      'Scan the placard <span class="dim">(or pick it below)</span>')+'</label>'+
     '<input id="'+id+'" autocomplete="off" autocapitalize="characters" spellcheck="false" '+
-    'placeholder="scan or type, e.g. F2-A-03-2" style="font-size:17px">'+
+    'placeholder="'+esc(placeholder || 'scan or type, e.g. F2-A-03-2')+'" style="font-size:17px">'+
     (camScanSupported()
       ? '<button type="button" id="'+id+'cam" class="ghost" style="margin-top:8px;'+
         'min-height:48px;width:100%">📷 Use the camera instead</button>'+
