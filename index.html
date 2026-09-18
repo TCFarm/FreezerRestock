@@ -6353,9 +6353,21 @@ async function syncNow(quiet){
       if((found.value || []).length >= 999)
         toast('⚠️ the session list is large — ask for the Title column to be indexed');
     }
+
+    const SETTLED_STATUS = ['reconciled', 'draft'];
+    let rowFields = fields;
+    if(hit){
+      const curStatus = String(((hit.fields) || {}).Status || '').trim().toLowerCase();
+      if(SETTLED_STATUS.indexOf(curStatus) >= 0 &&
+         String(fields.Status || '').trim().toLowerCase() !== curStatus){
+        rowFields = {};
+        Object.keys(fields).forEach(k => { if(k !== 'Status') rowFields[k] = fields[k]; });
+        ev('status_preserved', {was: curStatus, not_written: fields.Status});
+      }
+    }
     let ack;
     if(hit){ ack = await graphWrite(
-        `/sites/${site.id}/lists/${lst.id}/items/${hit.id}/fields`, fields, 'PATCH'); }
+        `/sites/${site.id}/lists/${lst.id}/items/${hit.id}/fields`, rowFields, 'PATCH'); }
     else   { ack = await graphWrite(
         `/sites/${site.id}/lists/${lst.id}/items`, {fields: fields}, 'POST'); }
     if(!ack) throw new Error('the list write returned no acknowledgement');
