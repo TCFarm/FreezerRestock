@@ -6354,19 +6354,22 @@ async function syncNow(quiet){
         toast('⚠️ the session list is large — ask for the Title column to be indexed');
     }
 
-    const SETTLED_STATUS = ['reconciled', 'draft'];
+    const cur = hit ? String(((hit.fields) || {}).Status || '').trim().toLowerCase() : '';
+    const want = String(fields.Status || '').trim().toLowerCase();
+    const frozen = (cur === 'reconciled');
     let rowFields = fields;
-    if(hit){
-      const curStatus = String(((hit.fields) || {}).Status || '').trim().toLowerCase();
-      if(SETTLED_STATUS.indexOf(curStatus) >= 0 &&
-         String(fields.Status || '').trim().toLowerCase() !== curStatus){
-        rowFields = {};
-        Object.keys(fields).forEach(k => { if(k !== 'Status') rowFields[k] = fields[k]; });
-        ev('status_preserved', {was: curStatus, not_written: fields.Status});
-      }
+    if(hit && cur === 'draft' && want !== cur){
+      rowFields = {};
+      Object.keys(fields).forEach(k => { if(k !== 'Status') rowFields[k] = fields[k]; });
+      ev('status_preserved', {was: cur, not_written: fields.Status});
     }
     let ack;
-    if(hit){ ack = await graphWrite(
+    if(hit && frozen){
+       
+      ev('row_frozen', {was: cur, fields_not_written: Object.keys(fields).length});
+      ack = {skipped: 'reconciled'};
+    }
+    else if(hit){ ack = await graphWrite(
         `/sites/${site.id}/lists/${lst.id}/items/${hit.id}/fields`, rowFields, 'PATCH'); }
     else   { ack = await graphWrite(
         `/sites/${site.id}/lists/${lst.id}/items`, {fields: fields}, 'POST'); }
