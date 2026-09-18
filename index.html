@@ -299,6 +299,16 @@ function isDirty(){
             Object.keys(S.pallets || {}).length ||
             Object.keys(S.bays || {}).length || S.bay > 0);
 }
+
+function unsyncedWork(){
+  const sy = S.synced;
+  if(!sy || !sy.at) return true;                        
+  if(typeof sy.events === 'number')
+    return (S.events || []).length > sy.events;         
+  const evs = S.events || [];
+  const last = evs.length ? (evs[evs.length - 1].ts || '') : '';
+  return !!(last && last > sy.at);                      
+}
 function cachedPlan(){
   try{ const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
        return c && c.plan && c.plan.bays ? c : null; }catch(e){ return null; }
@@ -5876,7 +5886,7 @@ async function finalizeToFinale(){
 function askFinalize(){
   const m = moves();
   const blockers = [];
-  if(isDirty() || !S.synced_at)
+  if(unsyncedWork())
     blockers.push('this tablet has work that is not on the server yet — the drain reads '+
                   'SharePoint, not this device, so it would post an out-of-date shift');
   if((m.floor_unbalanced || []).length)
@@ -5890,7 +5900,7 @@ function askFinalize(){
   if(blockers.length){
 
     const jump = [];
-    if(isDirty() || !S.synced_at)
+    if(unsyncedWork())
       jump.push({t:'⇪ Sync now', c:'pri', f:()=>{ syncNow(); }});
     if(unplacedPallets().length || (m.floor_orphans || []).length)
       jump.push({t:'Take me there', c:'pri', f:()=>{ openFinish(); }});
@@ -6352,6 +6362,7 @@ async function syncNow(quiet){
 
     S.synced = {at: new Date().toISOString(), file: upj.name,
                 transfers: m.transfers.length, counts: m.counts.length,
+                events: (S.events || []).length,
                 moves_error: movesErr || null};
     ev(movesErr ? 'synced_facts_only' : 'synced',
        {file: upj.name, transfers: m.transfers.length, why: movesErr || undefined});
