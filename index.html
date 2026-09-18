@@ -6362,10 +6362,11 @@ async function syncNow(quiet){
 
     S.synced = {at: new Date().toISOString(), file: upj.name,
                 transfers: m.transfers.length, counts: m.counts.length,
-                events: (S.events || []).length,
                 moves_error: movesErr || null};
     ev(movesErr ? 'synced_facts_only' : 'synced',
        {file: upj.name, transfers: m.transfers.length, why: movesErr || undefined});
+
+    S.synced.events = (S.events || []).length;
     save(); render();
     if(movesErr){
 
