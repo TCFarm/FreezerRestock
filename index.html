@@ -704,6 +704,11 @@ function blank(){
           bays:{},            
           putback_actual:{},  
           new_pallets:{},     
+          unplanned:{},       
+          adhoc_counts:{},    
+          found_moves:[],     
+          found_here:[],      
+          load_order:{},      
           finished:null,      
           stopped_early:null, 
           split_contents:{},  
@@ -1068,8 +1073,894 @@ const n = x => (Math.round(Number(x||0)*100)/100);
 const lid = (bay, loc, ln, i) => bay+'|'+loc+'|'+(ln.sku||ln.serial||'')+'|'+(ln.lot||'')+'|'+ln.kind+'|'+i;
 function st(id){ return S.lines[id] || null; }
 
-const TERMINAL = ['done', 'missing', 'skipped'];
+const TERMINAL = ['done', 'missing', 'skipped', 'settled'];
 function isFinished(s){ return !!(s && TERMINAL.indexOf(s.state) >= 0); }
+
+function palletSettled(p){ return !!((S.pallets[(p && p.loc) || p] || {}).settled); }
+function lineSettled(bn, p, l, i){
+  if(palletSettled(p)) return true;
+  const s = S.lines[lid(bn, p.loc, l, i)];
+  return !!(s && s.state === 'settled');
+}
+
+function pileSettled(b, p, sku, lot){
+  if(palletSettled(p)) return true;
+  return (p.lines || []).some((l, i) =>
+    l.kind !== 'count' && l.sku === sku && (l.lot || '') === (lot || '') &&
+    (S.lines[lid(b.n, p.loc, l, i)] || {}).state === 'settled');
+}
+
+function settleBlockers(bn, p, l, i){
+  const out = [];
+  const one = (l2, i2) => {
+    const s2 = S.lines[lid(bn, p.loc, l2, i2)];
+    if(!s2) return;
+    const moved = Number(s2.actual || 0);
+    if(s2.state === 'done' && moved > 0)
+      out.push(l2.kind + ' of ' + moved + ' ' + l2.sku + ' you recorded as carried');
+    else if((s2.placements || []).length)
+      out.push(l2.sku + ' has ' + s2.placements.length + ' recorded placement(s)');
+    else if(s2.state === 'missing')
+      out.push(l2.sku + ' is recorded as NOT THERE, which is the opposite claim');
+    else if(Number(s2.adjustment || 0))
+      out.push(l2.sku + ' carries a stock correction of ' + s2.adjustment);
+    else if(s2.counted != null)
+      out.push(l2.sku + ' has a recorded count of ' + s2.counted);
+  };
+  if(l) one(l, i);
+  else (p.lines || []).forEach((l2, i2) => { if(l2.kind !== 'count') one(l2, i2); });
+  return out;
+}
+
+function settleLine(id, why){
+  const parts = String(id || '').split('|');
+  const bn = Number(parts[0]), loc = parts[1];
+  const b = PAYLOAD.bays.find(x => x.n === bn);
+  const p = b && (b.pallets || []).find(x => x.loc === loc);
+  if(!b || !p) return {ok:false, why:'that line is not on a pallet in this plan'};
+  let idx = -1, ln = null;
+  (p.lines || []).forEach((l2, i2) => { if(lid(bn, loc, l2, i2) === id){ idx = i2; ln = l2; } });
+  if(!ln) return {ok:false, why:'that line is not in this plan'};
+  const blockers = settleBlockers(bn, p, ln, idx);
+  if(blockers.length) return {ok:false, blockers:blockers,
+    why:'⛔ this line already records work: ' + blockers.join('; ') +
+        '. "Finale is already right" and "I moved it" cannot both be true — clear the '+
+        'recorded work first, or leave it as recorded.'};
+  if(!String(why || '').trim())
+    return {ok:false, why:'⛔ say why Finale is already right — a settle with no reason is '+
+                          'indistinguishable from a skip, and the two mean opposite things'};
+  setLine(id, {state:'settled', settled_why:String(why).trim(), as_planned:false});
+  ev('line_settled', {bay:bn, pallet:p.pallet_id||'', loc:loc, sku:ln.sku,
+                      lot:ln.lot||'', why:String(why).trim()});
+  return {ok:true};
+}
+
+const SETTLED_WHY = [
+  'I moved it in Finale myself',
+  'someone else already corrected it in Finale',
+  'Finale is right — the plan is out of date',
+  'it was moved before the shift started'];
+function settledWhyPicker(){
+  return '<label class="sm dim">Why is Finale already right?</label>'+
+    '<select id="sew">'+
+      SETTLED_WHY.map(r => '<option value="'+esc(r)+'">'+esc(r)+'</option>').join('')+
+      '<option value="'+WHY_OTHER+'">something else — let me type it</option>'+
+    '</select>'+
+    '<div id="sewo" style="display:none;margin-top:10px">'+
+      '<label class="sm dim">In your own words</label>'+
+      '<input id="sewt" type="text" maxlength="140" autocomplete="off" '+
+        'placeholder="e.g. Kaylyn re-slotted this pallet on Tuesday">'+
+    '</div>';
+}
+function settledWhyWire(){
+  const sel = $('#sew'), box = $('#sewo'), t = $('#sewt');
+  if(!sel || !box) return;
+  sel.onchange = () => { const o = (sel.value === WHY_OTHER);
+    box.style.display = o ? '' : 'none'; if(o && t) t.focus(); };
+}
+ 
+function settledWhyRead(){
+  const sel = $('#sew');
+  if(!sel) return null;
+  if(sel.value !== WHY_OTHER) return sel.value;
+  const t = $('#sewt'), v = ((t && t.value) || '').trim();
+  if(!v){ toast('⛔ say what happened — "something else" with nothing typed tells us less '+
+                'than the list did'); return null; }
+  return v;
+}
+
+function askTookFrom(id){
+  const f = find(id); if(!f) return;
+  const here = f.p.loc;
+  const opts = (f.b.pallets || []).filter(x => x.loc !== here)
+    .map(x => ({loc:x.loc, label:(x.pallet_id || x.loc) + ' · ' + x.loc + (x.spoil ? ' ⚠️ spoil' : '')}));
+  Object.keys(S.unplanned || {}).forEach(k => {
+    const u = S.unplanned[k];
+    if(u.bay === f.b.n && k !== here)
+      opts.push({loc:k, label:(u.pallet_id || k) + ' · ' + k + ' (not in the plan)'});
+  });
+  if(!opts.length)
+    return dlg('No other pallet here',
+      '<p class="sm dim">⭐ If you brought down a pallet the plan did not name, record that '+
+      'first — it needs a card of its own before anything can be attributed to it.</p>',
+      [{t:'OK',c:'ghost'}]);
+  dlg('It was on a different pallet',
+    '<p><b>'+esc(f.l.sku)+'</b>'+(f.l.lot?' · lot '+esc(f.l.lot):'')+' — the plan has it on <b>'+
+      esc(f.p.pallet_id || here)+'</b>.</p>'+
+    '<label class="sm">Which pallet was it really on</label>'+
+    '<select id="tf1">'+opts.map(o=>'<option value="'+esc(o.loc)+'">'+esc(o.label)+
+      '</option>').join('')+'</select>'+
+    '<label class="sm dim" style="margin-top:10px">What happened?</label>'+
+    '<input id="tf2" type="text" maxlength="140" autocomplete="off" '+
+      'placeholder="e.g. it was on the spoil pallet behind it">'+
+    '<div class="sm dim" style="margin-top:10px">⭐ <b>Finale still takes this stock out of '+
+      esc(here)+'</b>, because that is where Finale believes it is. ⛔ What changes is that '+
+      'whatever is left goes back up on the pallet it is really on.<br>⚠️ If Finale is also '+
+      '<b>wrong</b> about where this pile lives, say so separately — that is a different '+
+      'correction.</div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Record it',c:'pri',f:()=>{
+        const r = tookFrom(id, $('#tf1').value, ($('#tf2').value||'').trim());
+        if(!r.ok){ toast(r.why); return false; }
+        setTimeout(() => dlg('Recorded', '<p class="sm">'+esc(r.note)+'</p>',
+                             [{t:'OK',c:'pri'}]), 0);
+        render();
+      }}]);
+}
+
+function askMoveInstead(id){
+  const f = find(id); if(!f) return;
+  const l = f.l;
+  const cap = onPallet(f.b, f.p, l.sku, l.lot);
+  const others = palletChoices(f.b.n, f.p.pallet_id || '');
+  dlg('I moved it somewhere else',
+    '<p><b>'+esc(l.sku)+'</b>'+(l.lot?' · lot '+esc(l.lot):'')+' — <b>'+n(cap)+
+      '</b> on this pallet.</p>'+
+    '<p class="sm dim">⭐ Say what you actually did and it still reaches Finale. '+
+    '⛔ Skipping it would lose the work — Finale would keep this stock where it is not.</p>'+
+    '<label class="sm">How many did you move</label>'+ qtyField('mi1', n(cap))+
+    '<label class="sm" style="margin-top:10px">Where did it go</label>'+
+    '<select id="mi2">'+
+      '<optgroup label="into a spot on the floor">'+
+      f1Choices().map(x => '<option value="@'+esc(x)+'">'+esc(x)+'</option>').join('')+
+      '</optgroup>'+
+      (others.length ? '<optgroup label="onto another pallet in this bay">'+
+        others.map(o => '<option value="'+esc(o.id)+'">'+esc(o.id)+' · '+esc(o.why)+
+          (o.spoil?' ⚠️ spoil':'')+'</option>').join('')+'</optgroup>' : '')+
+      (tempLoc() ? '<optgroup label="we owe it but cannot find it">'+
+        '<option value="@'+esc(tempLoc())+'">'+esc(tempLoc())+
+        ' — park it until it turns up</option></optgroup>' : '')+
+    '</select>'+
+    '<label class="sm dim" style="margin-top:10px">Why did it not go where the plan said?</label>'+
+    '<input id="mi3" type="text" maxlength="140" autocomplete="off" '+
+      'placeholder="e.g. no room on the destination">',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Record what I did',c:'pri',f:()=>{
+        const q = readQty('mi1');
+        if(q === null){ toast('⛔ how many did you move?'); return false; }
+        const r = moveInstead(id, q, $('#mi2').value, ($('#mi3').value||'').trim());
+        if(!r.ok){ toast(r.why); return false; }
+        maybeDone(f.p.loc); render();
+      }}]);
+}
+
+function askLoadOrder(bayN){
+  const b = PAYLOAD.bays.find(x => x.n === bayN); if(!b) return;
+  const rec = (S.load_order || {})[bayN];
+  let order = (rec && rec.order && rec.order.slice()) ||
+              (b.putback || []).map(x => x.pallet_id).filter(Boolean);
+  if(order.length < 2)
+    return dlg('Only one pallet goes back', '<p class="sm dim">There is no order to change.</p>',
+               [{t:'OK',c:'ghost'}]);
+  const draw = () => {
+    const n_ = order.length;
+    return order.map((pid, i) =>
+      '<div class="ln"><span class="tag '+(n_ - i === 1 ? 't-take' : 't-stay')+'">'+(i+1)+
+        '</span><div class="grow"><div class="sku">'+esc(cardOf(pid) || pid)+'</div>'+
+        '<div class="sub">ends up at <b>'+esc(b.bay)+'-'+(n_ - i)+'</b>'+
+        (n_ - i === 1 ? ' — the FRONT' : '')+'</div></div>'+
+        '<button '+(i===0?'disabled':'')+' onclick="__lo('+bayN+','+i+',-1)">▲</button>'+
+        '<button '+(i===n_-1?'disabled':'')+' onclick="__lo('+bayN+','+i+',1)">▼</button>'+
+      '</div>').join('');
+  };
+  window.__lo = (bn, i, d) => {
+    const j = i + d;
+    if(j < 0 || j >= order.length) return;
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+    const box = $('#lobox'); if(box) box.innerHTML = draw();
+  };
+  dlg('What order did you actually load them?',
+    '<p class="sm dim">⭐ First in the list = <b>pushed in FIRST</b> = ends up deepest. The '+
+    'LAST one you push in sits at the front. ⛔ This is what decides every position in the '+
+    'lane, so if you loaded them differently it matters.</p>'+
+    '<div id="lobox">'+draw()+'</div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'That is the order',c:'pri',f:()=>{
+        const r = recordLoadOrder(bayN, order);
+        if(!r.ok){ toast(r.why); return false; }
+        toast(r.changed ? 'Recorded — the positions follow the order you loaded'
+                        : 'Same as planned — nothing changed');
+        render();
+      }}]);
+}
+
+function askFound(loc){
+  let b = null, p = null;
+  PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
+  if(!p) return;
+  const all = [];
+  PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => (q.lines || []).forEach(l => {
+    if(l.kind === 'count') return;
+    const k = l.sku + '|' + (l.lot || '');
+    if(!all.some(z => z.k === k)) all.push({k:k, sku:l.sku, lot:l.lot || '', desc:l.desc || ''});
+  })));
+  all.sort((x, y) => String(x.sku).localeCompare(String(y.sku)));
+  dlg('I found something that is not on the list',
+    '<p class="sm dim">On <b>'+esc(p.pallet_id || loc)+'</b> at '+esc(loc)+'.</p>'+
+    '<label class="sm">Scan the box</label>'+ scanField('fx1') +
+    '<div class="sm dim" id="fx0" style="margin-top:6px">⭐ Most of our cases carry the '+
+      'Finale <b>product lookup</b>, which gives the item <i>and</i> its lot in one scan.</div>'+
+    '<label class="sm" style="margin-top:12px">…or pick it from the plan</label>'+
+    '<select id="fx2"><option value="">— not in the plan —</option>'+
+      all.map(z=>'<option value="'+esc(z.k)+'">'+esc(z.sku)+
+        (z.lot?' · lot '+esc(z.lot):' · no lot')+'</option>').join('')+'</select>'+
+    '<label class="sm" style="margin-top:12px">…or type the SKU</label>'+
+    '<input id="fx3" type="text" autocomplete="off" placeholder="e.g. 170-1">'+
+    '<label class="sm" style="margin-top:12px">How many</label>'+ qtyField('fx4','') +
+    '<div id="fx5" class="sm" style="margin-top:10px"></div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Record it',c:'pri',f:()=>{
+        const who = pickedItem();
+        if(!who.sku){ toast('⛔ what is it? Scan it, pick it, or type the SKU.'); return false; }
+        const q = readQty('fx4');
+        if(q === null){ toast('⛔ how many did you find?'); return false; }
+        const homes = homesFor(who.sku, who.lot);
+        if(homes.length){
+          const sel = $('#fxfrom');
+          const from = sel ? sel.value : homes[0][0];
+          const r = moveFromHome(who.sku, who.lot, q, from, loc, 'found on ' +
+                                 (p.pallet_id || loc) + ', moved from where Finale had it');
+          if(!r.ok){ toast(r.why); return false; }
+          toast('Recorded as a MOVE from ' + from + ' — no variance, no money moved');
+          render(); return;
+        }
+        const rs = $('#fxr');
+        const r2 = foundHere(b.n, loc, who.sku, who.lot, q, rs ? rs.value : undefined,
+                             'found on ' + (p.pallet_id || loc) + ', Finale holds it nowhere');
+        if(!r2.ok){ toast(r2.why); return false; }
+        toast('Recorded as a Found of ' + n(q));
+        render();
+      }}],
+    () => {
+      wireScan('fx1');
+      const upd = () => {
+        const who = pickedItem();
+        const box = $('#fx5');
+        if(!who.sku){ box.innerHTML = '<span class="dim">Identify it and we will tell you '+
+          'where Finale thinks it is.</span>'; return; }
+        const homes = homesFor(who.sku, who.lot);
+        box.innerHTML = homes.length
+          ? '<b style="color:var(--take)">⭐ Finale thinks '+esc(who.sku)+
+            (who.lot?' lot '+esc(who.lot):'')+' is here:</b>'+
+            '<select id="fxfrom" style="margin-top:6px">'+
+              homes.map(h=>'<option value="'+esc(h[0])+'">'+esc(h[0])+' — '+n(h[1])+
+                '</option>').join('')+'</select>'+
+            '<div class="dim" style="margin-top:6px">⛔ So this is a <b>MOVE</b>, not a find. '+
+            'No money moves, and nothing has to be written off somewhere else later.</div>'
+          : '<b style="color:var(--aside)">⚠️ Finale holds this nowhere.</b>'+
+            '<div class="dim">So it really is a Found — pick the accounting code.</div>'+
+            '<select id="fxr">'+(PAYLOAD.found_reasons||[]).map(x=>'<option value="'+esc(x)+
+              '">'+esc(x)+'</option>').join('')+'</select>';
+      };
+
+      window.pickedItem = () => {
+        const code = ($('#fx1') && $('#fx1').value || '').trim();
+        if(code){ const r = identifyCode(code);
+          if(r && r.sku) return {sku:r.sku, lot:r.lot, how:r.how}; }
+        const pick = ($('#fx2') && $('#fx2').value || '');
+        if(pick){ const i = pick.indexOf('|');
+          return {sku:pick.slice(0, i), lot:pick.slice(i + 1), how:'picked'}; }
+        const typed = ($('#fx3') && $('#fx3').value || '').trim();
+        return typed ? {sku:typed, lot:'', how:'typed'} : {sku:'', lot:'', how:''};
+      };
+      ['fx1','fx2','fx3'].forEach(id => { const el = $('#' + id);
+        if(el){ el.oninput = upd; el.onchange = upd; } });
+      upd();
+    });
+}
+
+function askAttachLot(loc, sku){
+  const cands = lotChoices(sku);
+  dlg('Which lot is ' + sku + '?',
+    '<p class="sm dim">⛔ Without a lot nothing downstream can find this pile — two piles '+
+    'went through the last shift unmatchable for exactly this reason.</p>'+
+    (cands.length
+      ? '<label class="sm">Lots Finale holds for this SKU</label><select id="al1">'+
+        cands.map(c=>'<option value="'+esc(c.lot)+'">'+esc(c.lot)+
+          ' <span>(Finale id '+esc(c.raw)+')</span></option>').join('')+
+        '<option value="__type__">— none of these, let me type it —</option></select>'
+      : '<p class="sm dim">⚠️ Finale holds no lot for this SKU anywhere, so it has to be '+
+        'typed or scanned off the box.</p>')+
+    '<div id="al2"'+(cands.length?' hidden':'')+'><label class="sm" style="margin-top:8px">'+
+      'Type or scan it off the box</label>'+ scanField('al3') +'</div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Attach it',c:'pri',f:()=>{
+        const sel = $('#al1');
+        let v, how;
+        if(sel && sel.value !== '__type__'){ v = sel.value; how = 'picked'; }
+        else { v = ($('#al3') && $('#al3').value || '').trim(); how = 'typed'; }
+        const r = attachLot({unplanned:loc}, sku, v, how);
+        if(!r.ok){ toast(r.why); return false; }
+        render();
+      }}],
+    () => {
+      const sel = $('#al1'), box = $('#al2');
+      if(sel) sel.onchange = () => { box.hidden = (sel.value !== '__type__'); };
+      wireScan('al3');
+    });
+}
+
+function askUnplanned(bayN){
+  const b = PAYLOAD.bays.find(x => x.n === bayN); if(!b) return;
+  const beyond = ((b.lane || {}).beyond || []);
+  if(!beyond.length)
+    return dlg('Nothing else in this lane',
+      '<p class="sm dim">⛔ This plan carries no record of the rest of '+esc(b.bay)+'. '+
+      'That means it was built before the whole-lane change — ⭐ rebuild the plan rather '+
+      'than typing a position in, or the contents would be a guess.</p>',
+      [{t:'OK',c:'ghost'}]);
+  const rows = beyond.map(x => {
+    const on = (S.unplanned || {})[x.loc];
+    const n_ = (x.holds || []).length;
+    return '<option value="'+esc(x.loc)+'">'+esc(x.loc)+' · '+
+      (n_ ? n_+' item(s), '+n((x.holds||[]).reduce((t,h)=>t+Number(h.qty||0),0))+' units'
+          : 'Finale says empty')+
+      (on ? ' — already recorded as '+esc(on.pallet_id) : '')+'</option>';
+  }).join('');
+  dlg('I brought down a different pallet',
+    '<p class="sm dim">⭐ Whatever you bring down gets a card and is recorded — nothing is '+
+    'skipped, the plan just re-sorts behind you.</p>'+
+    '<label class="sm">Which position did you open</label>'+
+    '<select id="up1">'+rows+'</select>'+
+    '<div id="up0" class="sm dim" style="margin-top:8px"></div>'+
+    '<label class="sm dim" style="margin-top:10px">Why?</label>'+
+    '<input id="up2" type="text" maxlength="140" autocomplete="off" '+
+      'placeholder="e.g. had to dig past it to reach position 3">'+
+    '<label class="sm dim" style="margin-top:10px">Card number — we suggest <b>P-'+
+      nextFreeCard()+'</b>, change it if you used another</label>'+
+    '<input id="up3" inputmode="numeric" autocomplete="off" placeholder="'+nextFreeCard()+'">',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Record it',c:'pri',f:()=>{
+        const r = bringDownUnplanned(bayN, $('#up1').value, ($('#up2').value||'').trim(),
+                                     ($('#up3').value||'').trim());
+        if(!r.ok){ toast(r.why); return false; }
+        toast('Recorded as '+r.pallet_id+' — put that card on it');
+        render();
+      }}],
+    () => {
+      const sel = $('#up1'), box = $('#up0');
+      const show = () => {
+        const x = beyond.find(y => y.loc === sel.value) || {};
+        box.innerHTML = (x.holds || []).length
+          ? '<b>Finale says this holds:</b><br>' + (x.holds||[]).map(h =>
+              esc(h.sku)+(h.lot?' · lot '+esc(h.lot):' · no lot')+' — '+n(h.qty)).join('<br>')
+          : '⚠️ Finale shows nothing here. ⭐ If there IS a pallet, that is a <b>false '+
+            'empty</b> and worth telling someone — record it anyway.';
+      };
+      sel.onchange = show; show();
+    });
+}
+
+function askAdhocCount(loc){
+  let b = null, p = null;
+  PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
+  if(!p) return;
+  const opts = (p.lines || []).filter(l => l.kind !== 'count')
+    .filter((l, i, arr) => arr.findIndex(z => z.sku===l.sku && (z.lot||'')===(l.lot||'')) === i);
+  if(!opts.length)
+    return dlg('Nothing to count here', '<p class="sm dim">Finale lists nothing on this '+
+      'pallet.</p>', [{t:'OK',c:'ghost'}]);
+  dlg('Count something else on ' + (p.pallet_id || loc),
+    '<p class="sm dim">⭐ The pallet is already open, which is the cheapest moment there is '+
+    'to check a count. ⛔ It does not have to be on the plan.</p>'+
+    '<label class="sm">Which item</label>'+
+    '<select id="ac1">'+opts.map(l => '<option value="'+esc(l.sku+'|'+(l.lot||''))+'">'+
+      esc(l.sku)+(l.lot?' · lot '+esc(l.lot):' · no lot')+' — Finale says '+
+      n(l.system_qty)+'</option>').join('')+'</select>'+
+
+    '<label class="sm" style="margin-top:10px">How many were on this pallet <b>altogether</b> '+
+    '— before anything was taken off</label>'+ qtyField('ac2','')+
+    '<div id="ac3" class="sm dim" style="margin-top:8px"></div>'+
+    '<div id="ac4"></div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Save count',c:'pri',f:()=>{
+        const [sku, lot] = String($('#ac1').value).split('|');
+        const v = readQty('ac2');
+        if(v === null){ toast('⛔ enter the counted quantity'); return false; }
+        const sel = $('#acr');
+        const r = adhocCount(b.n, loc, sku, lot, v, sel ? sel.value : undefined,
+                             'counted while the pallet was open');
+         
+        if(!r.ok && r.needs_resolution){
+          setTimeout(() => dlg('Which one is right?',
+            '<p>You recorded carrying <b>'+n(r.carried)+'</b> off this pile, and you have '+
+            'just counted <b>'+n(r.counted)+'</b> on it.</p>'+
+            '<p class="sm dim">⭐ The usual answer is the first one: the plan was confirmed, '+
+            'and then the boxes were actually counted.</p>',
+            [{t:'Cancel',c:'ghost'},
+             {t:'I actually took '+n(r.counted),c:'pri',f:()=>{
+                const r2 = adhocCount(b.n, loc, sku, lot, v, sel ? sel.value : undefined,
+                                      'counted while the pallet was open',
+                                      {resolve:'took_less'});
+                if(!r2.ok){ toast(r2.why); return false; }
+                toast('Recorded as '+r2.serial+' — the pick was corrected to '+n(r.counted));
+                render();
+              }},
+             {t:'My count was wrong',c:'',f:()=>{ setTimeout(()=>askAdhocCount(loc),0); }}]), 0);
+          return;
+        }
+        if(!r.ok){ toast(r.why); return false; }
+        toast('Recorded as ' + r.serial);
+        render();
+      }}],
+    () => {
+      const sel = $('#ac1'), q = $('#ac2'), note = $('#ac3'), box = $('#ac4');
+      const show = () => {
+        const [sku, lot] = String(sel.value).split('|');
+        const l = opts.find(x => x.sku===sku && (x.lot||'')===(lot||'')) || {};
+        const v = readQty('ac2');
+        const vr = (v == null) ? 0 : Math.round((v - Number(l.system_qty||0))*1000)/1000;
+        note.textContent = (v == null) ? 'Finale says ' + n(l.system_qty) + '.'
+          : (Math.abs(vr) < 0.001 ? '✓ matches Finale'
+             : (vr < 0 ? '−' : '+') + n(Math.abs(vr)) + ' against Finale');
+
+        const list = vr < 0 ? (PAYLOAD.shrink_reasons||[]) : (PAYLOAD.found_reasons||[]);
+        box.innerHTML = (Math.abs(vr) < 0.001) ? '' :
+          '<label class="sm dim" style="margin-top:8px">Reason — this is a real Finale stock '+
+          'change</label><select id="acr"><option value="__none__">— pick one —</option>'+
+          list.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+'</select>';
+      };
+      sel.onchange = show; if(q) q.oninput = show; show();
+    });
+}
+
+function askSettleLine(id){
+  const f = find(id); if(!f) return;
+  const l = f.l;
+  const blockers = settleBlockers(f.b.n, f.p, l, f.i);
+  if(blockers.length)
+    return dlg('Cannot leave this one alone',
+      '<p>You have already recorded work on this line:</p><ul class="sm">'+
+        blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>'+
+      '<p class="sm dim">⛔ "Finale is already right" and "I moved it" cannot both be true. '+
+      'If the recorded work is wrong, change it first — <b>do not</b> settle over the top of '+
+      'it, or that work never reaches Finale and next week\u2019s plan asks for it again.</p>',
+      [{t:'OK',c:'ghost'}]);
+  dlg('Leave it — Finale is already right',
+    '<p><b>'+esc(l.sku)+'</b>'+(l.lot?' · lot '+esc(l.lot):'')+' — <b>'+n(l.system_qty)+
+      '</b> on this pallet.</p>'+
+    '<p class="sm dim">This tells us <b>not to move it at all</b>: no transfer, no '+
+    'correction, nothing about it reaches Finale. Use it when the stock has already been '+
+    'sorted out in Finale and touching it again would move it twice.</p>'+
+    '<p class="sm dim">⛔ This is <b>not</b> the same as skipping it. A skip says "we did not '+
+    'get to it". This says "it is already correct".</p>'+
+    settledWhyPicker(),
+    [{t:'Cancel',c:'ghost'},
+     {t:'Leave it alone',c:'warn',f:()=>{
+        const why = settledWhyRead();
+        if(why === null) return false;
+        const r = settleLine(id, why);
+        if(!r.ok){ toast(r.why); return false; }
+        maybeDone(f.p.loc); render();
+      }}],
+    settledWhyWire);
+}
+function askSettlePallet(loc){
+  let b = null, p = null;
+  PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
+  if(!p) return;
+  if(palletSettled(p))
+    return dlg('This pallet is left alone',
+      '<p class="sm dim">Nothing on '+esc(p.pallet_id||loc)+' will reach Finale.</p>'+
+      '<p class="sm dim">'+esc(((S.pallets[loc]||{}).settled||{}).why||'')+'</p>',
+      [{t:'Close',c:'ghost'},
+       {t:'Undo — put it back in the plan',c:'warn',f:()=>{ unsettlePallet(loc); render(); }}]);
+  const blockers = settleBlockers(b.n, p, null, -1);
+  if(blockers.length)
+    return dlg('Cannot leave this whole pallet alone',
+      '<p>Work is already recorded on it:</p><ul class="sm">'+
+        blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>'+
+      '<p class="sm dim">⛔ Leave alone the individual lines that really are already right. '+
+      'Settling the whole pallet on top of recorded work is exactly how <b>85 units</b> went '+
+      'missing on a real shift — the picks were suppressed with it and never reached Finale.</p>',
+      [{t:'OK',c:'ghost'}]);
+  dlg('Leave this whole pallet alone',
+    '<p><b>'+esc(p.pallet_id||loc)+'</b> at '+esc(loc)+' — '+
+      ((p.lines||[]).filter(x=>x.kind!=='count').length)+' line(s).</p>'+
+    '<p class="sm dim">Nothing on this pallet will reach Finale: it will not come down, it '+
+    'will not go back up, and none of its stock will move. Use it when the whole pallet has '+
+    'already been sorted out in Finale.</p>'+
+    settledWhyPicker(),
+    [{t:'Cancel',c:'ghost'},
+     {t:'Leave the whole pallet',c:'warn',f:()=>{
+        const why = settledWhyRead();
+        if(why === null) return false;
+        const r = settlePallet(loc, why);
+        if(!r.ok){ toast(r.why); return false; }
+        render();
+      }}],
+    settledWhyWire);
+}
+
+function tookFrom(id, actualLoc, why){
+  const f = find(id);
+  if(!f) return {ok:false, why:'that line is not in this plan'};
+  const loc = String(actualLoc || '').trim();
+  if(!loc) return {ok:false, why:'⛔ which pallet was it actually on?'};
+  if(loc === f.p.loc) return {ok:false, why:'⛔ that is the pallet the plan already names.'};
+  const other = (f.b.pallets || []).find(x => x.loc === loc);
+  const un = (S.unplanned || {})[loc];
+  if(!other && !un)
+    return {ok:false, why:'⛔ ' + loc + ' is not a pallet in this bay. ⭐ If you brought it '+
+                          'down and it was not in the plan, record that first — it needs a '+
+                          'card of its own.'};
+  if(!String(why || '').trim())
+    return {ok:false, why:'⛔ say what happened — this is the signal that the plan had this '+
+                          'pile in the wrong place, and nothing else carries it'};
+  setLine(id, {from_actual:loc, from_actual_why:String(why).trim()});
+  ev('took_from_other_pallet', {line:id, bay:f.b.n, planned:f.p.loc, actual:loc,
+                                sku:f.l.sku, lot:f.l.lot || '', why:String(why).trim()});
+  return {ok:true,
+           
+          note:'Recorded. ⭐ Finale still takes this stock out of ' + f.p.loc + ', because '+
+               'that is where Finale believes it is — what changes is that the leftover goes '+
+               'back up on ' + (other ? (other.pallet_id || loc) : (un && un.pallet_id) || loc) +
+               '. ⛔ If Finale is also WRONG about where this pile lives, record that '+
+               'separately.'};
+}
+
+function pileOnPallet(b, p, sku, lot){
+   
+  let moved = '';
+  (p.lines || []).forEach((l, i) => {
+    if(l.kind === 'count' || l.sku !== sku || (l.lot || '') !== (lot || '')) return;
+    const st_ = S.lines[lid(b.n, p.loc, l, i)] || {};
+    if(st_.from_actual) moved = st_.from_actual;
+  });
+  return moved;
+}
+ 
+function pilesClaimedBy(b, p){
+  const out = [];
+  (b.pallets || []).forEach(q => {
+    if(q.loc === p.loc) return;
+    (q.lines || []).forEach((l, i) => {
+      if(l.kind === 'count') return;
+      const st_ = S.lines[lid(b.n, q.loc, l, i)] || {};
+      if(st_.from_actual !== p.loc) return;
+      if(out.some(z => z.sku === l.sku && (z.lot || '') === (l.lot || ''))) return;
+      out.push({sku:l.sku, lot:l.lot || '', qty:Number(l.system_qty || 0), from:q.loc});
+    });
+  });
+  return out;
+}
+
+function moveInstead(id, qty, dest, why){
+  const f = find(id);
+  if(!f) return {ok:false, why:'that line is not in this plan'};
+  const l = f.l;
+  const q = Number(qty);
+  if(!isFinite(q) || q <= 0) return {ok:false, why:'⛔ how many did you actually move?'};
+  const cap = onPallet(f.b, f.p, l.sku, l.lot);
+  if(q > cap + 0.001)
+    return {ok:false, why:'⛔ that is more than the ' + n(cap) + ' this pallet holds'};
+  if(!String(why || '').trim())
+    return {ok:false, why:'⛔ say what happened — "I did something else" with no words is a '+
+                          'skip wearing a better name'};
+  const d = String(dest || '');
+  if(!d) return {ok:false, why:'⛔ where did it actually go?'};
+  const place = d.charAt(0) === '@' ? {location:d.slice(1)} : {pallet:d};
+  setLine(id, Object.assign({state:'done', actual:q, why_different:String(why).trim(),
+                             did_different:true},
+                            {placements:[Object.assign({qty:q, deviated:true}, place)]}));
+  ev('moved_instead', {line:id, bay:f.b.n, pallet:f.p.pallet_id||'', sku:l.sku,
+                       lot:l.lot||'', qty:q, to:d, why:String(why).trim()});
+  return {ok:true};
+}
+
+function unplannedPallets(){ return S.unplanned || {}; }
+
+function lotChoices(sku){
+  const out = [];
+  Object.keys(PAYLOAD.lot_ids || {}).forEach(k => {
+    const i = k.indexOf('|');
+    if(i > 0 && k.slice(0, i) === sku) out.push({lot:k.slice(i + 1), raw:PAYLOAD.lot_ids[k]});
+  });
+  return out.sort((a, b) => String(a.lot).localeCompare(String(b.lot)));
+}
+
+function attachLot(where, sku, lot, how){
+  const v = String(lot || '').trim();
+  if(!v) return {ok:false, why:'⛔ which lot? A blank lot is why two piles went through the '+
+                               'last shift unmatchable.'};
+  if(where && where.unplanned){
+    const u = (S.unplanned || {})[where.unplanned];
+    if(!u) return {ok:false, why:'that pallet is not recorded'};
+    let hit = false;
+    (u.holds || []).forEach(h => { if(h.sku === sku && !(h.lot || '')){ h.lot = v;
+                                     h.lot_source = how || 'typed'; hit = true; } });
+    if(!hit) return {ok:false, why:'⛔ ' + sku + ' on that pallet already carries a lot — '+
+                                   'changing a lot Finale already holds is forbidden '+
+                                   '(a lot id is an identity, and moving it re-points the '+
+                                   'FIFO sort, the placards and the barcodes at once).'};
+    save(); ev('lot_attached', {loc:where.unplanned, sku:sku, lot:v, how:how || 'typed'});
+    return {ok:true};
+  }
+  const id = where && where.line;
+  const f = id && find(id);
+  if(!f) return {ok:false, why:'that line is not in this plan'};
+  if((f.l.lot || '').trim())
+    return {ok:false, why:'⛔ this line already carries lot ' + f.l.lot + '. ⛔⛔ ONCE A LOT '+
+                          'DATE IS IN FINALE, NOTHING MAY CHANGE IT (ruling: Jack, '+
+                          'Jack) — record what you found as a separate pile instead.'};
+  setLine(id, {lot_attached:v, lot_source:how || 'typed'});
+  ev('lot_attached', {line:id, sku:sku, lot:v, how:how || 'typed'});
+  return {ok:true};
+}
+
+function homesFor(sku, lot){
+  return ((PAYLOAD.sku_homes || {})[sku + '|' + (lot || '')]) || [];
+}
+
+function identifyCode(code){
+  const raw = String(code || '').trim();
+  if(!raw) return null;
+  const tab = PAYLOAD.product_lookup || {};
+  const hit = tab[raw];
+  if(hit) return {sku:hit[0], lot:(hit[1] || ''), how:'scanned', code:raw,
+
+                  gave_lot:!!hit[1]};
+   
+  const known = PAYLOAD.bays.some(b => (b.pallets || []).some(p =>
+    (p.lines || []).some(l => l.sku === raw)));
+  if(known) return {sku:raw, lot:'', how:'typed', code:raw, gave_lot:false};
+  return {sku:'', lot:'', how:'unknown', code:raw, gave_lot:false,
+          why:'⚠️ we do not recognise ' + raw + '. ⭐ It is KEPT on the record either way — '+
+              'pick the item from the list or type its SKU. ⛔ This does not mean the product '+
+              'does not exist: the lookup covers what the freezer holds, not the whole catalog.'};
+}
+
+function foundHere(bayN, loc, sku, lot, qty, reason, why){
+  const q = Number(qty);
+  if(!isFinite(q) || q <= 0) return {ok:false, why:'⛔ how many did you find?'};
+  if(!sku) return {ok:false, why:'⛔ what is it? Scan it, pick it from the list, or type the SKU.'};
+  const homes = homesFor(sku, lot);
+  if(homes.length)
+    return {ok:false, homes:homes, offer:'move',
+            why:'⛔ Finale already holds ' + sku + (lot ? ' lot ' + lot : '') + ' at ' +
+                homes.map(h => h[0] + ' (' + n(h[1]) + ')').join(', ') +
+                '. ⭐ That is almost certainly this stock — record it as a MOVE from there. '+
+                'A Found here books a gain for inventory we already own, and the other pile '+
+                'then waits to be written off in another month.'};
+  const list = (PAYLOAD.found_reasons || []);
+  if(list.indexOf(reason) < 0)
+    return {ok:false, why:'⛔ pick a reason — a Found is a real Finale stock change and a '+
+                          'defaulted accounting code is worse than a missing row'};
+  S.found_here = (S.found_here || []).concat([{bay:bayN, loc:loc, sku:sku, lot:lot || '',
+    qty:q, reason:reason, why:String(why || '').trim(), ts:new Date().toISOString()}]);
+  save();
+  ev('found_here', {bay:bayN, loc:loc, sku:sku, lot:lot || '', qty:q, reason:reason});
+  return {ok:true};
+}
+
+function recordLoadOrder(bayN, order){
+  const b = PAYLOAD.bays.find(x => x.n === bayN);
+  if(!b) return {ok:false, why:'no bay ' + bayN};
+  const planned = (b.putback || []).map(x => x.pallet_id).filter(Boolean);
+  const got = (order || []).filter(Boolean);
+
+  const a_ = planned.slice().sort().join('|'), b_ = got.slice().sort().join('|');
+  if(a_ !== b_)
+    return {ok:false, why:'⛔ the order must name exactly the pallets this lane reloads (' +
+                          (planned.join(', ') || 'none') + '). A missing or extra pallet '+
+                          'changes the POSITION of every pallet behind it, not just its own.'};
+  const same = got.join('|') === planned.join('|');
+  S.load_order = Object.assign({}, S.load_order || {});
+  if(same) delete S.load_order[bayN];
+  else S.load_order[bayN] = {order:got, ts:new Date().toISOString()};
+  save();
+  ev('load_order_recorded', {bay:bayN, order:got.join(','), changed:!same});
+
+  const n_ = got.length;
+  return {ok:true, changed:!same,
+          positions:got.map((pid, i) => ({pallet_id:pid, position:n_ - i}))};
+}
+
+function loadOrderPos(pid){
+  const keys = Object.keys(S.load_order || {});
+  for(const k of keys){
+    const rec = S.load_order[k], i = (rec.order || []).indexOf(pid);
+    if(i < 0) continue;
+    const b = PAYLOAD.bays.find(x => String(x.n) === String(k));
+    if(!b) continue;
+    const lane = (b.bay || '');
+    return lane + '-' + ((rec.order.length - i));
+  }
+  return '';
+}
+
+function moveFromHome(sku, lot, qty, fromLoc, toLoc, why){
+  const q = Number(qty);
+  if(!isFinite(q) || q <= 0) return {ok:false, why:'⛔ how many?'};
+  if(!fromLoc) return {ok:false, why:'⛔ where does Finale think it is?'};
+  if(!toLoc) return {ok:false, why:'⛔ where is it really?'};
+  if(fromLoc === toLoc) return {ok:false, why:'⛔ that is the same place — nothing moved.'};
+  const homes = homesFor(sku, lot);
+  const at = homes.find(h => h[0] === fromLoc);
+  if(!at) return {ok:false, why:'⛔ Finale does not hold ' + sku + ' at ' + fromLoc +
+                                '. ⛔ Moving stock out of a pile that is not there drives it '+
+                                'negative — pick one of: ' +
+                                (homes.map(h => h[0]).join(', ') || 'nowhere it is held')};
+  if(q > Number(at[1]) + 0.001)
+    return {ok:false, why:'⛔ Finale only holds ' + n(at[1]) + ' at ' + fromLoc + '.'};
+  S.found_moves = (S.found_moves || []).concat([{sku:sku, lot:lot || '', qty:q,
+    from:fromLoc, to:toLoc, why:String(why || '').trim(), ts:new Date().toISOString()}]);
+  save();
+  ev('found_as_move', {sku:sku, lot:lot || '', qty:q, from:fromLoc, to:toLoc});
+  return {ok:true};
+}
+
+function adhocSerial(){
+  let k = 1;
+  const used = new Set(Object.values(S.adhoc_counts || {}).map(x => x.serial));
+  while(used.has('A' + k)) k++;
+  return 'A' + k;
+}
+function adhocCount(bayN, loc, sku, lot, counted, reason, why, opts){
+  const b = PAYLOAD.bays.find(x => x.n === bayN);
+  const p = b && (b.pallets || []).find(x => x.loc === loc);
+  if(!p) return {ok:false, why:'no pallet at ' + loc + ' in bay ' + bayN};
+  const v = Number(counted);
+  if(!isFinite(v) || v < 0) return {ok:false, why:'⛔ enter the counted quantity'};
+   
+  const line = (p.lines || []).find(l => l.kind !== 'count' && l.sku === sku &&
+                                         (l.lot || '') === (lot || ''));
+  if(!line){
+    const homes = ((PAYLOAD.sku_homes || {})[sku + '|' + (lot || '')]) || [];
+    const where = homes.length
+      ? ' ⭐ Finale holds it at ' + homes.map(h => h[0] + ' (' + n(h[1]) + ')').join(', ') +
+        ' — so this is very likely a MOVE, not a find. Record it as moved from there.'
+      : ' ⚠️ Finale does not hold this SKU-lot anywhere, so a count here would book stock '+
+        'out of nothing.';
+    return {ok:false, homes:homes,
+            why:'⛔ Finale does not list ' + sku + (lot ? ' lot ' + lot : '') + ' at ' + loc +
+                ', so there is no baseline to count against — recording 0 would post a ' +
+                n(v) + '-unit Found.' + where};
+  }
+  const base = Number(line.system_qty || 0);
+
+  let carried = 0;
+  (p.lines || []).forEach((l2, i2) => {
+    if(l2.kind !== 'take' && l2.kind !== 'aside') return;
+    if(l2.sku !== sku || (l2.lot || '') !== (lot || '')) return;
+    const s2 = S.lines[lid(bayN, loc, l2, i2)];
+    if(s2 && s2.state === 'done') carried += Number(s2.actual || 0);
+  });
+
+  if(v + 0.001 < carried){
+    if(!(opts && opts.resolve === 'took_less'))
+      return {ok:false, needs_resolution:true, carried:carried, counted:v,
+              why:'⛔ you have already recorded carrying ' + n(carried) + ' off this pile, so '+
+                  'it cannot have held only ' + n(v) + '. ⭐ Either you actually took ' + n(v) +
+                  ', or the count is of what is LEFT rather than what was on it.'};
+
+    let budget = v;
+    (p.lines || []).forEach((l2, i2) => {
+      if(l2.kind !== 'take' && l2.kind !== 'aside') return;
+      if(l2.sku !== sku || (l2.lot || '') !== (lot || '')) return;
+      const id2 = lid(bayN, loc, l2, i2), s2 = S.lines[id2];
+      if(!(s2 && s2.state === 'done')) return;
+      const had = Number(s2.actual || 0);
+      const now = Math.max(0, Math.min(had, budget));
+      budget = Math.round((budget - now) * 1000) / 1000;
+      if(Math.abs(now - had) > 0.001)
+        setLine(id2, {actual: now, as_planned: false,
+                      why_different: 'corrected by count ' + adhocSerial() + ': the pile held ' +
+                                     n(v) + ', not ' + n(had)});
+    });
+    ev('count_corrected_take', {bay:bayN, loc:loc, sku:sku, lot:lot||'',
+                                was:carried, now:v});
+  }
+  const vr = Math.round((v - base) * 1000) / 1000;
+  const list = vr < 0 ? (PAYLOAD.shrink_reasons || []) : (PAYLOAD.found_reasons || []);
+  if(Math.abs(vr) > 0.001 && list.indexOf(reason) < 0)
+    return {ok:false, why:'⛔ pick a reason — a count variance is a real Finale stock change, '+
+                          'and a defaulted accounting code is worse than a missing row'};
+  const key = loc + '|' + sku + '|' + (lot || '');
+  const had = (S.adhoc_counts || {})[key];
+  S.adhoc_counts = Object.assign({}, S.adhoc_counts || {});
+  S.adhoc_counts[key] = {bay:bayN, bay_name:b.bay, loc:loc, pallet_id:p.pallet_id || '',
+                         sku:sku, lot:lot || '', system_qty:base, counted:v, variance:vr,
+                         reason:(Math.abs(vr) > 0.001 ? reason : undefined),
+                         why:String(why || '').trim(),
+                         serial:(had && had.serial) || adhocSerial(),
+                         ts:new Date().toISOString()};
+  save();
+  ev('adhoc_count', {bay:bayN, loc:loc, sku:sku, lot:lot || '', counted:v, variance:vr,
+                     serial:S.adhoc_counts[key].serial});
+  return {ok:true, serial:S.adhoc_counts[key].serial, variance:vr};
+}
+function undoAdhocCount(key){
+  if(!(S.adhoc_counts || {})[key]) return {ok:false};
+  delete S.adhoc_counts[key]; save(); render(); return {ok:true};
+}
+function bringDownUnplanned(bayN, loc, why, pick){
+  const b = PAYLOAD.bays.find(x => x.n === bayN);
+  if(!b) return {ok:false, why:'no bay ' + bayN};
+  if((b.pallets || []).some(p => p.loc === loc))
+    return {ok:false, why:'⛔ ' + loc + ' is already in the plan for this bay — work it there '+
+                          'rather than recording it twice'};
+  const spot = ((b.lane || {}).beyond || []).find(x => x.loc === loc);
+  if(!spot)
+    return {ok:false, why:'⛔ ' + loc + ' is not a position in this lane. ⚠️ If the payload '+
+                          'predates the whole-lane change it carries no `lane` at all — '+
+                          'rebuild the plan rather than typing a position in.'};
+  if((S.unplanned || {})[loc]) return {ok:true, already:true};
+  if(!String(why || '').trim())
+    return {ok:false, why:'⛔ say why you went deeper — it is the signal that the plan was '+
+                          'wrong about this lane, and nothing else carries it'};
+
+  let card = 'P-' + nextFreeCard();
+  if(pick != null && String(pick).trim() !== ''){
+    const want = 'P-' + String(pick).trim().replace(/^P-?/i, '');
+    if(cardInUse(want))
+      return {ok:false, why:'⛔ ' + want + ' is already on another pallet. Two pallets '+
+                            'wearing one card is how stock gets recorded against the wrong '+
+                            'one — pick a free number.'};
+    card = want;
+  }
+  S.unplanned = Object.assign({}, S.unplanned || {});
+  S.unplanned[loc] = {bay:bayN, bay_name:b.bay, loc:loc, pos:spot.pos, pallet_id:card,
+                      why:String(why).trim(), ts:new Date().toISOString(),
+
+                      holds:(spot.holds || []).map(h => ({sku:h.sku, lot:h.lot || '',
+                                                          qty:Number(h.qty || 0),
+                                                          desc:h.desc || ''}))};
+  save();
+  ev('unplanned_down', {bay:bayN, loc:loc, pallet:card, why:String(why).trim(),
+                        piles:(spot.holds || []).length});
+  return {ok:true, pallet_id:card};
+}
+function undoUnplanned(loc){
+  if(!(S.unplanned || {})[loc]) return {ok:false, why:'not recorded'};
+  delete S.unplanned[loc]; save(); ev('unplanned_undone', {loc:loc}); return {ok:true};
+}
+
+function settlePallet(loc, why){
+  let b = null, p = null;
+  PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => {
+    if(q.loc === loc){ b = x; p = q; } }));
+  if(!p) return {ok:false, why:'no pallet at ' + loc + ' in this plan'};
+  const blockers = settleBlockers(b.n, p, null, -1);
+  if(blockers.length) return {ok:false, blockers:blockers,
+    why:'⛔ this pallet already records work: ' + blockers.join('; ') +
+        '. Settle the individual lines that really are already right, not the whole pallet '+
+        '— that is exactly how 85 units were lost on a real shift.'};
+  if(!String(why || '').trim())
+    return {ok:false, why:'⛔ say why Finale is already right for this whole pallet'};
+  S.pallets[loc] = Object.assign({}, S.pallets[loc] || {},
+                                 {settled:{why:String(why).trim(), ts:new Date().toISOString()}});
+  save();
+  ev('pallet_settled', {bay:b.n, pallet:p.pallet_id||'', loc:loc, why:String(why).trim()});
+  return {ok:true};
+}
+function unsettlePallet(loc){
+  if(!(S.pallets[loc] || {}).settled) return {ok:false, why:'that pallet is not settled'};
+  delete S.pallets[loc].settled;
+  save();
+  ev('pallet_unsettled', {loc:loc});
+  return {ok:true};
+}
 
 const ACTIONABLE = ['take', 'aside', 'count'];
 function isActionable(l){ return ACTIONABLE.indexOf(l.kind) >= 0; }
@@ -1423,6 +2314,29 @@ function renderBay(a){
   }
 
   b.pallets.forEach(p => { h += pallet(b, p); });
+
+  (function(){
+    const mine = Object.keys(S.unplanned || {})
+                       .filter(k => (S.unplanned[k] || {}).bay === b.n);
+    mine.forEach(k => {
+      const u = S.unplanned[k];
+      h += '<div class="card"><b>'+esc(u.pallet_id)+'</b> <span class="pill">not in the plan'+
+        '</span><div class="sub">you brought '+esc(u.loc)+' down — '+esc(u.why||'')+'</div>'+
+        (u.holds||[]).map(x => '<div class="sub">'+esc(x.sku)+
+          (x.lot
+            ? ' · lot '+esc(x.lot)+(x.lot_source?' <span class="pill">'+esc(x.lot_source)+'</span>':'')
+
+            : ' · <b style="color:var(--aside)">NO LOT</b> <button class="ghost" '+
+              'onclick="askAttachLot(\''+esc(k)+'\',\''+esc(x.sku)+'\')">add it</button>')+
+          ' — '+n(x.qty)+'</div>').join('')+
+        '<div class="pad row"><button class="ghost" onclick="undoUnplanned(\''+
+          esc(k)+'\');render()">Undo — I did not bring it down</button></div></div>';
+    });
+    const beyond = ((b.lane || {}).beyond || []).length;
+    if(beyond)
+      h += '<div class="pad row"><button class="ghost" onclick="askUnplanned('+b.n+')">'+
+           '▼ I brought down a different pallet</button></div>';
+  })();
   h += putbackCard(b);
   a.innerHTML = h;
 
@@ -1604,6 +2518,11 @@ function pallet(b, p){
                      : '<button disabled>⊙ '+groups.count.length+' counted</button>';
        })() : '')+
       '<button onclick="skipRest(\''+p.loc+'\')">↷ Skip the rest</button>'+
+
+      '<button onclick="askAdhocCount(\''+p.loc+'\')">⊙ Count something else</button>'+
+      '<button onclick="askFound(\''+p.loc+'\')">⊕ Found something not on the list</button>'+
+      '<button class="ghost" onclick="askSettlePallet(\''+p.loc+'\')">⊘ '+
+        (palletSettled(p) ? 'Left alone — undo?' : 'Leave this pallet alone')+'</button>'+
       '</div>';
   }
   return h + '</div>';
@@ -1700,6 +2619,11 @@ function openLine(id){
       '<div id="scalc" class="sm dim" style="margin-top:8px">Change the number to record a '+
       'correction.</div>',
       [{t:'Cancel',c:'ghost'},
+
+       {t:'⊘ Leave it alone',c:'ghost',f:()=>{ setTimeout(()=>askSettleLine(id),0); }},
+
+       {t:'⇢ I moved it',c:'',f:()=>{ setTimeout(()=>askMoveInstead(id),0); }},
+       {t:'⇱ Different pallet',c:'ghost',f:()=>{ setTimeout(()=>askTookFrom(id),0); }},
        {t:'Correct the count',c:'warn',f:()=>{
           const v=readQty('q1');
           if(v===null){ toast('⛔ not a quantity'); return false; }
@@ -1808,6 +2732,10 @@ function openLine(id){
             ev('line_missing',{line:id, reason:rsn}); maybeDone(f.p.loc); render(); }}]), 0); }},
       
      {t:'Skip',c:'',f:()=>{ setTimeout(() => skipLine(id), 0); }},
+
+     {t:'⊘ Leave it alone',c:'ghost',f:()=>{ setTimeout(() => askSettleLine(id), 0); }},
+      
+     {t:'⇱ Different pallet',c:'ghost',f:()=>{ setTimeout(() => askTookFrom(id), 0); }},
      {t:'Save',c:'pri',f:()=>{
 
         const mv=readQty('q1');
@@ -2182,6 +3110,9 @@ function putbackCard(b){
     'top.</b> The list on every pallet below is already in that order — first one named goes '+
     'on last, so it is the first thing you reach next time. <span class="dim">Nothing moves '+
     'between pallets; this is only the order it goes back on.</span></div>'+
+
+    '<div class="pad row"><button class="ghost" onclick="askLoadOrder('+b.n+')">↕ I loaded '+
+      'them in a different order</button></div>'+
     '</div><div class="body">';
   b.putback.forEach((pb, i) => {
     const waiting = (pb.waits_for||[]).length;
@@ -3674,7 +4605,26 @@ function renderDone(a){
     '<div class="sm dim" style="margin-top:8px">⚠️ Nothing is in Finale until the CSV is '+
     'imported. This stays marked as pending until the next movement export confirms it.</div>'+
     '</div></div>'+
-    '<div class="card"><div class="pad row">'+
+
+    '<div class="card"><div class="pad">'+
+      (S.finalize_requested
+        ? '<div class="okbox"><b>⭐ Sent to Finale at '+
+          esc(String(S.finalize_requested).slice(11,16))+'</b><div class="sm dim">The office '+
+          'machine posts it. ⛔ It never posts half a shift — if anything is wrong it stops '+
+          'and tells Jack. ⚠️ The close-out check runs tomorrow.</div></div>'+
+          '<div class="pad row"><button class="ghost" onclick="askFinalize()">Ask again'+
+          '</button></div>'
+        : '<button class="big pri" onclick="askFinalize()">⇪ Finalize — send this shift to '+
+          'Finale</button><div class="sm dim" style="margin-top:8px">⭐ This asks the office '+
+          'machine to post it. ⛔ Nothing here holds a Finale key, and nothing on this tablet '+
+          'ever will.</div>')+
+    '</div></div>'+
+    '<div class="card"><div class="pad"><div class="sm dim">⚠️ The CSVs below are the '+
+      'FALLBACK, for the day the network is down — ⛔ not the route. '+
+      '<a href="#" onclick="event.preventDefault();this.parentNode.parentNode.nextSibling&&0;'+
+      'this.closest(\'.card\').nextElementSibling.hidden=!this.closest(\'.card\')'+
+      '.nextElementSibling.hidden">show them</a></div></div></div>'+
+    '<div class="card" hidden><div class="pad row">'+
     '<button class="pri" onclick="dl(\'transfers\')">Transfers CSV</button>'+
     '<button class="warn" onclick="dl(\'adjustments\')">Corrections CSV</button>'+
     '<button onclick="dl(\'counts\')">Counts CSV</button>'+
@@ -3802,6 +4752,9 @@ function palletFinalLoc(pid){
   const a = actualFor(pid);
   if(a && a.loc) return a.loc;
   if(a && a.state === 'floor') return '';        
+
+  const lop = loadOrderPos(pid);
+  if(lop) return lop;
   for(const b of PAYLOAD.bays)
     for(const pb of (b.putback || []))
       if(pb.pallet_id === pid) return pb.loc;
@@ -3858,8 +4811,25 @@ function moves(){
                fullness:[], lane_room:[],
 
                pallet_moves:[],
-                
+
+               settled: [],
                backstock: S.backstock ? [Object.assign({plan_date:PAYLOAD.plan_date}, S.backstock)] : []};
+  PAYLOAD.bays.forEach(b => (b.pallets || []).forEach(p => {
+    const ps = S.pallets[p.loc] || {};
+    if(ps.settled)
+      out.settled.push({scope:'pallet', bay:b.bay, from_location:p.loc,
+                        pallet_id:p.pallet_id || '', sku:'', lot:'',
+                        why:(ps.settled.why || ''), ts:ps.settled.ts || ''});
+    (p.lines || []).forEach((l, i) => {
+      if(l.kind === 'count') return;
+      const st_ = S.lines[lid(b.n, p.loc, l, i)] || {};
+      if(st_.state !== 'settled') return;
+      out.settled.push({scope:'item', bay:b.bay, from_location:p.loc,
+                        pallet_id:p.pallet_id || '', sku:l.sku, lot:l.lot || '',
+                        system_qty:Number(l.system_qty || 0),
+                        why:(st_.settled_why || ''), ts:st_.ts || ''});
+    });
+  }));
   PAYLOAD.bays.forEach(b => {
     (b.pallets || []).forEach(p => {
       const ps_ = S.pallets[p.loc] || {};
@@ -3961,6 +4931,8 @@ function moves(){
     (b.pallets || []).forEach(p => {
 
       if(!palletCameDown(b, p)) return;
+
+      if(palletSettled(p)) return;
       floorPallets.add(p.loc);
       if(p.pallet_id) floorPalletIds.add(p.pallet_id);
 
@@ -3969,7 +4941,9 @@ function moves(){
         if(l.kind === 'count') return;
         const k = l.sku + ' ' + (l.lot || '');
         if(k in seen) return;
+
         seen[k] = true;
+        if(pileSettled(b, p, l.sku, l.lot)) return;
         const q = Number(l.system_qty || 0);
         if(!(q > 0)) return;
         downQty[p.loc + '|' + k] = q;
@@ -4175,8 +5149,10 @@ function moves(){
             to_location: pdest,
             on_floor_src: fromFloor,
 
-            from_pallet_loc: loc,
-            onto_pallet: l.kind === 'aside' ? (pt.pallet||'') : '',
+            from_pallet_loc: (s.from_actual || loc),
+
+            onto_pallet: (s.did_different ? (pt.pallet || '')
+                                          : (l.kind === 'aside' ? (pt.pallet||'') : '')),
             sku:l.sku, lot:l.lot||'', quantity:pt.qty,
             planned_qty:l.planned_qty, approved_qty:(s.approved!=null?s.approved:l.planned_qty),
 
@@ -4185,7 +5161,10 @@ function moves(){
              
             took_from_sibling: s.took_from_sibling || '',
             sibling_line: s.sibling_line || '',
-            kind:l.kind, bay:b.bay, ts:s.ts});
+            kind:(s.did_different ? (pt.pallet ? 'aside' : 'take') : l.kind),
+
+            why_different: s.did_different ? (s.why_different || '') : '',
+            bay:b.bay, ts:s.ts});
         });
       }
 
@@ -4254,6 +5233,58 @@ function moves(){
       push(null, o, i, 'ORPHAN', o.from_location || 'ORPHAN'));
   });
 
+  (S.found_here || []).forEach(fh => {
+    const camedown = (downQty[fh.loc + '|' + fh.sku + ' ' + (fh.lot || '')] || 0) > 0;
+    const at = (FLOOR && camedown) ? FLOOR : fh.loc;
+    out.adjustments.push({location:at, origin:fh.loc,
+      posted_at: at === FLOOR ? 'restock floor' : 'origin',
+      sku:fh.sku, lot:fh.lot || '', change:Number(fh.qty || 0), direction:'increase',
+      baseline:0, sibling_took:0, reason:fh.reason,
+      system_qty:0, moved:'', left_on_pallet:'',
+
+      from_count:true, found_here:true, why:fh.why || '', ts:fh.ts});
+  });
+
+  (S.found_moves || []).forEach(fm => {
+    out.transfers.push({from_location:fm.from, to_location:fm.to, onto_pallet:'',
+      sku:fm.sku, lot:fm.lot || '', quantity:Number(fm.qty || 0),
+      planned_qty:'', approved_qty:'', as_planned:false, planned_pallet:'',
+      took_from_sibling:'', sibling_line:'', bay:'', spoil:false,
+      kind:'found_move', why_different:fm.why || '', ts:fm.ts});
+  });
+
+  Object.keys(S.adhoc_counts || {}).forEach(k => {
+    const c = S.adhoc_counts[k];
+    if(c.counted == null) return;               
+    const b = PAYLOAD.bays.find(x => x.n === c.bay);
+    const p = b && (b.pallets || []).find(x => x.loc === c.loc);
+    out.counts.push({serial:c.serial, location:c.loc, sku:c.sku, lot:c.lot || '',
+      final_location:(p ? (palletFinalLoc(p.pallet_id) || '') : ''),
+      onto_pallet:(p ? (p.pallet_id || '') : ''),
+      system_qty:c.system_qty, counted:c.counted, variance:c.variance,
+      ad_hoc:true, why:c.why || '', ts:c.ts});
+    const cv = Number(c.variance || 0);
+    if(Math.abs(cv) <= 0.001) return;
+    const list = cv < 0 ? (PAYLOAD.shrink_reasons || []) : (PAYLOAD.found_reasons || []);
+    if(!(c.reason && list.indexOf(c.reason) >= 0)){
+      out.unresolved = out.unresolved || [];
+      out.unresolved.push({bay:c.bay_name || '', from:c.loc, sku:c.sku, lot:c.lot || '',
+        qty:cv, onto_pallet:c.pallet_id || '',
+        why:'ad-hoc count ' + c.serial + ' found ' + n(c.counted) + ' against Finale\u2019s ' +
+            n(c.system_qty) + ' with no accounting reason — the variance is never posted'});
+      return;
+    }
+    const camedown = (downQty[c.loc + '|' + c.sku + ' ' + (c.lot || '')] || 0) > 0;
+    const at = (FLOOR && camedown) ? FLOOR : c.loc;
+    out.adjustments.push({location:at, origin:c.loc,
+      posted_at: at === FLOOR ? 'restock floor' : 'origin',
+      sku:c.sku, lot:c.lot || '', change:cv,
+      direction: cv < 0 ? 'decrease' : 'increase',
+      baseline:c.system_qty, sibling_took:0, reason:c.reason,
+      system_qty:c.system_qty, moved:'', left_on_pallet:c.counted,
+      from_count:true, ad_hoc:true, serial:c.serial, counted:c.counted, ts:c.ts});
+  });
+
   PAYLOAD.bays.forEach(b => {
 
     const bs = S.bays[b.n] || {};
@@ -4262,6 +5293,8 @@ function moves(){
     (b.pallets || []).forEach(p => {
 
       if(!palletCameDown(b, p)) return;
+
+      if(palletSettled(p)) return;
       const origin = p.loc;
       const a = actualFor(p.pallet_id);
       const final = palletFinalLoc(p.pallet_id);
@@ -4314,7 +5347,17 @@ function moves(){
       (p.lines || []).forEach(l => {
         if (l.kind === 'count') return;
         const k = key(l.sku, l.lot);
+
+        if (pileSettled(b, p, l.sku, l.lot)) return;
+
+        if (pileOnPallet(b, p, l.sku, l.lot)) return;
         if (!(k in onIt)) onIt[k] = {sku: l.sku, lot: l.lot || '', qty: Number(l.system_qty || 0)};
+      });
+
+      pilesClaimedBy(b, p).forEach(x => {
+        const k = key(x.sku, x.lot);
+        if (k in onIt) onIt[k].qty += x.qty;
+        else onIt[k] = {sku: x.sku, lot: x.lot, qty: x.qty, claimed_from: x.from};
       });
 
       if (FLOOR && p.pallet_id) {
@@ -4468,6 +5511,36 @@ function moves(){
     });
   });
 
+  if(FLOOR) Object.keys(S.unplanned || {}).forEach(loc => {
+    const u = S.unplanned[loc] || {};
+    const act = actualFor(u.pallet_id);
+
+    const parked = !!(act && act.state === 'floor');
+    const dest = parked ? '' : ((act && act.loc) || loc);
+    (u.holds || []).forEach(h => {
+      const q = Number(h.qty || 0);
+      if(!(q > 0)) return;
+      const common = {onto_pallet: u.pallet_id || '', sku: h.sku, lot: h.lot || '',
+                      quantity: q, planned_qty: '', approved_qty: '', planned_pallet: '',
+                      took_from_sibling: '', sibling_line: '', bay: u.bay_name || '',
+                      spoil: false, unplanned: true, why: u.why || '',
+                      ts: u.ts || new Date().toISOString()};
+      out.transfers.push(Object.assign({}, common,
+        {from_location: loc, to_location: FLOOR, on_floor: true, as_planned: false,
+         kind: 'pallet_down'}));
+      if(!dest) {
+        strand({bay:u.bay_name || '', origin:loc, sku:h.sku, lot:h.lot || '', units:q,
+                pallet:u.pallet_id || '', cause:'pallet_down',
+                why:'you brought ' + loc + ' down although the plan never named it, and '+
+                    'nobody has said where ' + (u.pallet_id||'it') + ' went'});
+        return;
+      }
+      out.transfers.push(Object.assign({}, common,
+        {from_location: FLOOR, from_pallet_loc: loc, to_location: dest,
+         on_floor: !!(act && act.loc), as_planned: false, kind: 'pallet_move'}));
+    });
+  });
+
   const down = [], rest = [];
   out.transfers.forEach(t => (t.kind === 'pallet_down' ? down : rest).push(t));
   out.transfers = down.concat(rest);
@@ -4573,8 +5646,16 @@ function moves(){
         const keySet = new Map();
         (p.lines || []).forEach(l => {
           if(l.kind === 'count') return;
+
+          if(pileSettled(b, p, l.sku, l.lot)) return;
+
+          if(pileOnPallet(b, p, l.sku, l.lot)) return;
           const k = l.sku + ' ' + (l.lot || '');
           if(!keySet.has(k)) keySet.set(k, Number(l.system_qty || 0));
+        });
+        pilesClaimedBy(b, p).forEach(x => {
+          const k = x.sku + ' ' + (x.lot || '');
+          if(!keySet.has(k)) keySet.set(k, x.qty);
         });
         arr.forEach(x => {
           const k = x.sku + ' ' + (x.lot || '');
@@ -4721,6 +5802,81 @@ function allBaysClosed(){
     }catch(e){ return false; }   
   }
   return false;
+}
+
+const JOB_LIST = 'AgentJobs';
+async function finalizeToFinale(){
+  const sp = CFG.sharepoint;    
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
+  const lst = (lists.value || []).find(l => l.displayName === JOB_LIST);
+  if(!lst) throw new Error('the ' + JOB_LIST + ' queue does not exist on this site yet — ' +
+                           'a person has to run `jobs.py provision --push` once');
+
+  const open = await graph(`/sites/${site.id}/lists/${lst.id}/items?expand=fields&$top=200`);
+  const dup = (open.value || []).find(it => {
+    const f = it.fields || {};
+    return f.Kind === 'freezer.drain' && f.Subject === PAYLOAD.plan_date &&
+           ['queued','claimed','running'].indexOf(f.State) >= 0;
+  });
+  if(dup) return {already: dup.id};
+
+  return graphWrite(`/sites/${site.id}/lists/${lst.id}/items`,
+    {fields: {Title: 'freezer.drain:' + PAYLOAD.plan_date, Kind: 'freezer.drain',
+              Subject: PAYLOAD.plan_date, State: 'queued', Params: '{}',
+              RequestedBy: 'freezer app ' + deviceId(),
+              RequestedUtc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+              Attempts: 0}});
+}
+function askFinalize(){
+  const m = moves();
+  const blockers = [];
+  if(isDirty() || !S.synced_at)
+    blockers.push('this tablet has work that is not on the server yet — the drain reads '+
+                  'SharePoint, not this device, so it would post an out-of-date shift');
+  if((m.floor_unbalanced || []).length)
+    blockers.push((m.floor_unbalanced || []).length + ' pile(s) do not balance — the app is '+
+                  'telling you its own file is wrong');
+  const orph = (m.floor_orphans || []).filter(o => !o.fixed && o.cause !== 'awaiting_bay');
+  if(orph.length) blockers.push(orph.length + ' item(s) are on the restock floor with nowhere '+
+                                'to go — say where they went first');
+  if(unplacedPallets().length)
+    blockers.push(unplacedPallets().length + ' pallet(s) have no recorded position');
+  if(blockers.length)
+    return dlg('Not ready to finalize',
+      '<p>⛔ These have to be answered first — the drain cannot ask you:</p><ul class="sm">'+
+        blockers.map(x => '<li>' + esc(x) + '</li>').join('')+'</ul>'+
+      '<p class="sm dim">⭐ Each one is a real question about where stock is. Finale is told '+
+      'exactly what this record says, so a record that contradicts itself posts a '+
+      'contradiction.</p>', [{t:'OK',c:'ghost'}]);
+  dlg('Send this shift to Finale',
+    '<p>This asks the office machine to post <b>'+n((m.transfers||[]).length)+'</b> movement '+
+      'row(s) and <b>'+n((m.adjustments||[]).length)+'</b> stock correction(s) into Finale.</p>'+
+    ((m.settled||[]).length ? '<p class="sm dim">⭐ '+n((m.settled||[]).length)+' item(s) you '+
+      'left alone are excluded — nothing about them reaches Finale.</p>' : '')+
+    '<p class="sm dim">⛔ It checks everything again on the other side before it posts, and '+
+    'it will stop rather than guess. You do not have to wait here.</p>'+
+    '<p class="sm dim">⚠️ It does <b>not</b> close the shift out — that check runs tomorrow, '+
+    'because Finale’s movement report only reaches yesterday.</p>',
+    [{t:'Not yet',c:'ghost'},
+     {t:'Send it',c:'pri',f:()=>{
+        toast('Asking the office machine…');
+        finalizeToFinale().then((r) => {
+          S.finalize_requested = new Date().toISOString();
+          ev('finalize_requested', {plan:PAYLOAD.plan_date, already:!!(r && r.already)});
+          save(); render();
+          dlg('Sent', '<p>⭐ The office machine will post it. You can close the app.</p>'+
+            ((r && r.already) ? '<p class="sm dim">⭐ It was already asked for — this did '+
+              'not queue it a second time.</p>' : '')+
+            '<p class="sm dim">If anything is wrong it stops and tells Jack rather than '+
+            'guessing — ⛔ it never posts half a shift.</p>', [{t:'OK',c:'pri'}]);
+        }).catch(e => {
+
+          dlg('Could not ask', '<p>⛔ '+esc((e && e.message) || e)+'</p>'+
+            '<p class="sm dim">⭐ Nothing was posted and nothing was lost — your record is '+
+            'still saved and synced. Try again, or tell Jack.</p>', [{t:'OK',c:'ghost'}]);
+        });
+      }}]);
 }
 
 async function graphWrite(path, body, method){
@@ -5055,6 +6211,8 @@ async function syncNow(quiet){
     const rec = {schema: 1, plan_date: PAYLOAD.plan_date, device: deviceId(),
 
                  plan_built: (PAYLOAD.built || ''),
+
+                 qty_basis: 'units',
 
                  pull_day: (PAYLOAD.pull_day || ''),
 
