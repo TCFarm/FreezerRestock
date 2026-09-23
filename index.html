@@ -3010,6 +3010,14 @@ function openLine(id){
 
         let stolen = 0;
         const toClear = [];
+
+        const unpark = [];
+        if(f.p) (f.p.lines||[]).forEach((l2, i2) => {
+          if(i2 === f.i || l2.sku !== l.sku || (l2.lot||'') !== (l.lot||'')) return;
+          if(l2.kind !== 'take' && l2.kind !== 'aside') return;
+          const id2 = lid(f.b.n, f.p.loc, l2, i2), s2 = st(id2);
+          if(s2 && s2.parked_not_here) unpark.push(id2);
+        });
         if(f.p) (f.p.lines||[]).forEach((l2, i2) => {
           if(i2 === f.i) return;
           if(l2.sku !== l.sku || (l2.lot||'') !== (l.lot||'')) return;
@@ -3033,7 +3041,8 @@ function openLine(id){
                        pile_adj: (Math.abs(adj2) > 0.001) || undefined,
                        placements: qtyMoved ? undefined : prev.placements,
                        took_from_sibling: keepRealloc ? prev.took_from_sibling : undefined,
-                       sibling_line: keepRealloc ? prev.sibling_line : undefined};
+                       sibling_line: keepRealloc ? prev.sibling_line : undefined,
+                       parked_not_here: undefined, temp_lot: undefined};
 
         if(Math.abs(adj2) <= 0.001){ patch.reason = undefined; patch.direction = undefined; }
 
@@ -3073,6 +3082,13 @@ function openLine(id){
         toClear.forEach(id2 => setLine(id2, {adjustment:0, to_temp:undefined,
           from_temp:undefined, reason:undefined, direction:undefined, adj_why:undefined,
           pile_adj:undefined}));
+        unpark.forEach(id2 => {
+          const s2 = st(id2) || {};
+          if(Number(s2.actual || 0) > 0.001) { setLine(id2, {parked_not_here:undefined}); return; }
+          setLine(id2, {state:undefined, actual:undefined, adjustment:undefined,
+            to_temp:undefined, temp_sku:undefined, temp_lot:undefined, pile_adj:undefined,
+            reason:undefined, direction:undefined, parked_not_here:undefined});
+        });
         setLine(id, patch);
         if(hadPlacements && qtyMoved)
           toast('⚠️ the quantity changed — say again where it went');
@@ -3092,7 +3108,9 @@ function openLine(id){
         const adj = tal.over ? tal.over : (tal.short ? -tal.short : 0);
         const patch = {state:'done', actual:mv, adjustment:adj,
                        left:undefined, baseline:undefined, sibling_took:undefined,
-                       pile_adj:(Math.abs(adj) > 0.001) || undefined};
+                       pile_adj:(Math.abs(adj) > 0.001) || undefined,
+                        
+                       parked_not_here:undefined, to_temp:undefined, temp_lot:undefined};
         if(Math.abs(adj) > 0.001){
           const got = pileAdjFields(adj, tal, f.p, ($('#rsn')||{}).value);
           if(!got){
@@ -3410,9 +3428,10 @@ function putbackCard(b){
       })()+
 
       (!pb.items.length && !arrivalsFor(pb.pallet_id).some(x => !x.gone)
-        ? '<div class="sub" style="color:var(--aside)"><b>⚠️ This deck is EMPTY — push the '+
-          'empty deck back in anyway.</b> It holds the pallets behind it in their positions. '+
-          'If you leave it out, tap <b>went elsewhere?</b> and say so.</div>'
+
+        ? '<div class="sub" style="color:var(--aside)"><b>⚠️ This deck is EMPTY — it does not '+
+          'go back in.</b> Tap <b>went elsewhere?</b> and record it as left out, so the pallets '+
+          'behind it are recorded in their new spots.</div>'
         : '<div class="sub"><b>'+pb.items.length+' SKU — stack in this order, first on top:</b> '+
         pb.items.map(x=>esc(x.sku)+(x.next_needed_wk != null
               ? ' <span class="dim">('+n(x.next_needed_wk)+'w)</span>' : '')).join(' · ')+
@@ -4741,8 +4760,9 @@ function moveOutOfTemp(sku, lot){
 
 function fixOrphan(i, action){
   const m = moves();
-  const o = (m.floor_orphans || []).filter(x => !x.fixed)[i];
-  if(!o) return toast('That one is already sorted — reopening the list.') || render();
+
+  const o = (m.floor_orphans || [])[i];
+  if(!o || o.fixed) return toast('That one is already sorted — reopening the list.') || render();
   const head = '<p><b>'+esc(o.sku)+'</b> ×'+n(o.units)+(o.lot?' · lot '+esc(o.lot):'')+
     '<br><span class="sm dim">came off '+esc(o.origin)+
     (o.pallet ? ' · card '+esc(o.pallet) : '')+'</span></p>'+
