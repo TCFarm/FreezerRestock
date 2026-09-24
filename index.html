@@ -1497,6 +1497,8 @@ function askFound(loc){
           const c_ = checkNewLot(w.sku, w.lot);
           if(c_.ok){ w.lot_new = true; w.lot_source = 'scanned'; }
           else if(c_.held){ w.lot = c_.held; }
+           
+          else { w.lot_unknown = true; w.lot_bad = c_.why; }
         }
         return w;
       };
@@ -1589,6 +1591,31 @@ function askUnplanned(bayN){
     });
 }
 
+function parkedSiblings(f, l){
+  const ids = [];
+  if(f && f.p) (f.p.lines || []).forEach((l2, i2) => {
+    if(i2 === f.i || l2.sku !== l.sku || (l2.lot || '') !== (l.lot || '')) return;
+    if(l2.kind !== 'take' && l2.kind !== 'aside') return;
+    const id2 = lid(f.b.n, f.p.loc, l2, i2), s2 = st(id2);
+    if(s2 && s2.parked_not_here) ids.push(id2);
+  });
+  return ids;
+}
+function unparkSiblings(ids){
+  let reopened = 0;
+  (ids || []).forEach(id2 => {
+    const s2 = st(id2) || {};
+    if(Number(s2.actual || 0) > 0.001) { setLine(id2, {parked_not_here:undefined}); return; }
+    setLine(id2, {state:undefined, actual:undefined, adjustment:undefined, to_temp:undefined,
+      temp_sku:undefined, temp_lot:undefined, pile_adj:undefined, reason:undefined,
+      direction:undefined, parked_not_here:undefined});
+    reopened++;
+  });
+  if(reopened) setTimeout(() => toast('⚠️ ' + reopened + ' other line' + (reopened===1?'':'s') +
+    ' of this pile had been marked "not here" — answer ' + (reopened===1?'it':'them') + ' again'), 400);
+  return reopened;
+}
+
 function askLotFix(loc){
   let b = null, p = null;
   PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
@@ -1601,7 +1628,8 @@ function askLotFix(loc){
                [{t:'OK',c:'ghost'}]);
   dlg('The lot on a box is different',
     (done.length ? '<div class="okbox sm"><b>Already corrected on this pallet:</b><br>'+
-      done.map((x, i) => esc(x.sku)+': '+esc(x.from_lot||'(no lot)')+' → <b>'+esc(x.to_lot)+'</b> '+
+      done.map((x, i) => esc(x.sku)+': '+esc(x.from_lot||'(no lot)')+' → <b>'+esc(x.to_lot)+'</b>'+
+        (x.qty ? ' ×'+n(x.qty) : '')+' '+
         '<button type="button" class="ghost" onclick="undoLotFix(\''+esc(loc)+'\','+i+')">undo</button>')
         .join('<br>')+'</div>' : '')+
     '<p class="sm dim">⛔ Only for a lot you are <b>reading off the box</b>. Finale will be told '+
@@ -1612,11 +1640,24 @@ function askLotFix(loc){
     '</select>'+
     '<label class="sm" style="margin-top:10px">The lot actually on the box</label>'+
     '<input id="lf2" type="text" autocomplete="off" placeholder="type or scan it, exactly as printed">'+
-    '<div id="lf3" class="sm dim" style="margin-top:4px"></div>',
+    '<div id="lf3" class="sm dim" style="margin-top:4px"></div>'+
+     
+    '<label class="sm" style="margin-top:10px">How many carry that lot? '+
+      '<span class="dim">(the whole pile, unless you change it)</span></label>'+
+    qtyField('lf4','') +
+    '<div id="lf5" class="sm dim" style="margin-top:4px"></div>',
     [{t:'Cancel',c:'ghost'},
      {t:'Next →',c:'pri',f:()=>{
         const [sku, from] = String($('#lf1').value).split('|');
-        const typed = ($('#lf2').value || '').replace(/^Lot:\s*/i, '').trim();
+        let typed = ($('#lf2').value || '').replace(/^Lot:\s*/i, '').trim();
+         
+        if(typed.indexOf(',') >= 0){
+          const r_ = identifyCode(typed);
+          if(r_ && r_.sku && r_.sku !== sku){ toast('⛔ that box is ' + r_.sku + ', not ' + sku); return false; }
+          if(r_ && r_.sku === sku && r_.lot) typed = r_.lot;
+          else { const i_ = typed.indexOf(',');
+            if(typed.slice(0, i_).trim() === sku) typed = typed.slice(i_ + 1).trim(); }
+        }
         if(!typed) { toast('⛔ type or scan the lot on the box'); return false; }
         if(decodedLot(sku, typed) === (from || '') || typed === (from || '')) {
           toast('⛔ that is the lot Finale already has — nothing to change'); return false; }
@@ -1626,10 +1667,22 @@ function askLotFix(loc){
         else if(c_.held){ to = c_.held; isNew = false; }
         else { toast(c_.why); return false; }
         if(to === (from || '')) { toast('⛔ that is the lot Finale already has'); return false; }
-        setTimeout(() => confirmLotFix(b, p, sku, from || '', to, isNew, typed), 0);
+        const whole = onPallet(b, p, sku, from || '');
+        const q = readQty('lf4');
+        if(q === null || !(q > 0)) { toast('⛔ how many carry that lot?'); return false; }
+
+        const isWhole = whole > 0 && q >= whole - 0.0005;
+        setTimeout(() => confirmLotFix(b, p, sku, from || '', to, isNew, typed,
+                                       isWhole ? 0 : q, whole), 0);
       }}],
     () => {
       const t_ = $('#lf2'), h = $('#lf3');
+      const setWhole = () => { const [sku, from] = String($('#lf1').value).split('|');
+        const w = onPallet(b, p, sku, from || '');
+        const q_ = $('#lf4'); if(q_) q_.value = w > 0 ? String(w) : '';
+        const h5 = $('#lf5'); if(h5) h5.textContent = w > 0 ? ('Finale has ' + n(w) + ' of it on this pallet.') : ''; };
+      $('#lf1').onchange = () => { setWhole(); t_.oninput(); };
+      setWhole();
       t_.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); t_.blur(); } };
       t_.oninput = () => {
         const sku = String($('#lf1').value).split('|')[0];
@@ -1640,11 +1693,12 @@ function askLotFix(loc){
                      : '<span style="color:var(--aside)">'+esc(c_.why)+'</span>'); };
     });
 }
-function confirmLotFix(b, p, sku, from, to, isNew, typed){
+function confirmLotFix(b, p, sku, from, to, isNew, typed, qty, whole){
   dlg('Are you certain?',
     '<div class="badbox"><b>This changes a lot in Finale.</b><div class="sm" style="margin-top:6px">'+
     esc(sku)+' ('+esc(skuName(sku) || '')+') on '+esc(p.pallet_id || p.loc)+':<br>'+
     'lot <b>'+esc(from || '(none)')+'</b> → lot <b>'+esc(to)+'</b>'+(isNew ? ' <i>(a lot Finale has never had)</i>' : '')+
+    '<br>'+(qty ? '<b>'+n(qty)+'</b> of the '+n(whole)+' on this pallet' : '<b>the whole pile</b>')+
     '</div></div>'+
     '<p class="sm">⛔ The lot decides which stock gets pulled first and what the placards and '+
     'barcodes match. Only confirm if you are reading <b>'+esc(typed)+'</b> off the box itself.</p>',
@@ -1653,9 +1707,9 @@ function confirmLotFix(b, p, sku, from, to, isNew, typed){
         S.lot_fix = (S.lot_fix || []).filter(x => !(x.loc === p.loc && x.sku === sku &&
                                                     (x.from_lot||'') === from));
         S.lot_fix.push({bay:b.n, loc:p.loc, pallet_id:p.pallet_id || '', sku:sku,
-                        from_lot:from, to_lot:to, to_new:!!isNew, typed:typed,
+                        from_lot:from, to_lot:to, to_new:!!isNew, typed:typed, qty:qty,
                         by:'crew', confirmed:true, ts:new Date().toISOString()});
-        ev('lot_fix_confirmed', {loc:p.loc, sku:sku, from_lot:from, to_lot:to, to_new:!!isNew});
+        ev('lot_fix_confirmed', {loc:p.loc, sku:sku, from_lot:from, to_lot:to, to_new:!!isNew, qty:qty});
         save(); render(); toast('✓ lot recorded as ' + to + ' — Finale is told when the shift is sent');
      }}]);
 }
@@ -1949,17 +2003,30 @@ function decodedLot(sku, rawLot){
   return r;
 }
 
-function lotReadsAs(raw){
-  const r = String(raw || '').trim();
-  let m = r.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if(m) return m[1] + '-' + m[2] + '-' + m[3];
-  m = r.match(/^(\d{2})(\d{3})(?!\d)/);
-  if(m){ const yy = +m[1], dd = +m[2];
-    if(yy >= 20 && yy <= 35 && dd >= 1 && dd <= 366){
-      const d = new Date(Date.UTC(2000 + yy, 0, 1) + (dd - 1) * 86400000);
-      return d.toISOString().slice(0, 10); } }
-  return '';
+function lotReadings(raw){
+  const s = String(raw || '').trim().replace(/^(L_|Lot:\s*)/i, '').trim();
+  if(!s) return [];
+  const iso = (y, mo, d) => {
+    const t = new Date(Date.UTC(y, mo - 1, d));
+    return (t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d)
+      ? t.toISOString().slice(0, 10) : ''; };
+  const jul = (yy, ddd) => (ddd >= 1 && ddd <= 366)
+    ? new Date(Date.UTC(2000 + yy, 0, 1) + (ddd - 1) * 86400000).toISOString().slice(0, 10) : '';
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/);
+  if(m){ const d = iso(+m[1], +m[2], +m[3]); if(d) return [d];
+
+         if(/^(\d{4})-(\d{1,2})-(\d{1,2})$/.test(s)) return []; }
+  m = s.match(/^(\d{4})-(\d{1,2})(?!\d)/);
+  if(m && +m[1] >= 2000 && +m[1] <= 2099 && +m[2] >= 1 && +m[2] <= 12)
+    return [m[1] + '-' + String(+m[2]).padStart(2, '0') + '-01'];
+  const out = [];
+  m = s.match(/^(\d{4})(?!\d)/);
+  if(m && +m[1] >= 2020 && +m[1] <= 2029) out.push(m[1] + '-01-01');
+  m = s.match(/^(\d{2})(\d{1,3})(?![0-9A-Za-z])/);
+  if(m){ const d = jul(+m[1], +m[2]); if(d) out.push(d); }
+  return out;
 }
+function lotReadsAs(raw){ const r = lotReadings(raw); return r.length === 1 ? r[0] : (r[r.length-1] || ''); }
 function checkNewLot(sku, raw){
   const v = String(raw || '').replace(/^Lot:\s*/i, '').trim();
   if(!v) return {ok:false, why:'⛔ type or scan the lot off the box'};
@@ -1969,12 +2036,21 @@ function checkNewLot(sku, raw){
   const same = held.find(x => x.lot === v || decodedLot(sku, v) === x.lot);
   if(same) return {ok:false, held:same.lot,
                    why:'⭐ Finale already holds ' + sku + ' lot ' + same.lot + ' — pick it from the list instead'};
-  const d = lotReadsAs(v);
-  const twin = d && held.find(x => x.lot === d || lotReadsAs(x.lot) === d);
-  if(twin) return {ok:false, held:twin.lot,
-                   why:'⛔ ' + v + ' reads as ' + d + ', which Finale already holds as lot ' +
-                       twin.lot + '. Pick that one — a second spelling makes a duplicate lot.'};
-  return {ok:true, lot:v, reads_as:d};
+
+  if(lotReadings(v).length > 1)
+    return {ok:false, why:'⛔ ' + v + ' could be a year or a Julian date — type the full date '+
+                          'from the box, year-month-day'};
+
+  const mine = lotReadings(v);
+  const heldDates = x => { const raw = (PAYLOAD.lot_ids || {})[sku + '|' + x.lot];
+    return [x.lot].concat(lotReadings(x.lot), raw ? lotReadings(raw) : []); };
+  for(const d of mine){
+    const twin = held.find(x => heldDates(x).indexOf(d) >= 0);
+    if(twin) return {ok:false, held:twin.lot,
+                     why:'⛔ ' + v + ' reads as ' + d + ', which Finale already holds as lot ' +
+                         twin.lot + '. Pick that one — a second spelling makes a duplicate lot.'};
+  }
+  return {ok:true, lot:v, reads_as:lotReadsAs(v)};
 }
 function lotsHeld(sku){
   const out = [];
@@ -3153,13 +3229,7 @@ function openLine(id){
         let stolen = 0;
         const toClear = [];
 
-        const unpark = [];
-        if(f.p) (f.p.lines||[]).forEach((l2, i2) => {
-          if(i2 === f.i || l2.sku !== l.sku || (l2.lot||'') !== (l.lot||'')) return;
-          if(l2.kind !== 'take' && l2.kind !== 'aside') return;
-          const id2 = lid(f.b.n, f.p.loc, l2, i2), s2 = st(id2);
-          if(s2 && s2.parked_not_here) unpark.push(id2);
-        });
+        const unpark = parkedSiblings(f, l);
         if(f.p) (f.p.lines||[]).forEach((l2, i2) => {
           if(i2 === f.i) return;
           if(l2.sku !== l.sku || (l2.lot||'') !== (l.lot||'')) return;
@@ -3224,13 +3294,7 @@ function openLine(id){
         toClear.forEach(id2 => setLine(id2, {adjustment:0, to_temp:undefined,
           from_temp:undefined, reason:undefined, direction:undefined, adj_why:undefined,
           pile_adj:undefined}));
-        unpark.forEach(id2 => {
-          const s2 = st(id2) || {};
-          if(Number(s2.actual || 0) > 0.001) { setLine(id2, {parked_not_here:undefined}); return; }
-          setLine(id2, {state:undefined, actual:undefined, adjustment:undefined,
-            to_temp:undefined, temp_sku:undefined, temp_lot:undefined, pile_adj:undefined,
-            reason:undefined, direction:undefined, parked_not_here:undefined});
-        });
+        unparkSiblings(unpark);
         setLine(id, patch);
         if(hadPlacements && qtyMoved)
           toast('⚠️ the quantity changed — say again where it went');
@@ -3269,6 +3333,7 @@ function openLine(id){
             from_temp:undefined, reason:undefined, direction:undefined, adj_why:undefined,
             pile_adj:undefined});
         });
+        unparkSiblings(parkedSiblings(f, l));
         setLine(id, patch);
         ev('line_done',{line:id, actual:mv, adjustment:adj, didnt_fit:true,
                         pile_out:tal.movedOut, pile_system:tal.system});
@@ -4762,6 +4827,15 @@ function floorCard(m){
   const done_ = orph.filter(o => o.fixed);
   const units = hold.reduce((a, x) => a + x.units, 0);
   let out = '';
+
+  const lcu = (m.lot_changes_unapplied || []).filter(u => !u.bay || (S.bays[u.bay] || {}).closed ||
+                                                     S.stopped_early || S.finished);
+  if(lcu.length)
+    out += '<div class="badbox"><b>⛔ '+lcu.length+' lot correction'+(lcu.length===1?'':'s')+
+      ' cannot be sent to Finale as recorded.</b><div class="sm" style="margin-top:4px">'+
+      lcu.map(u => esc(u.sku)+': '+esc(u.from_lot || '(no lot)')+' → '+esc(u.to_lot)+
+        (u.qty ? ' ×'+n(u.qty) : '')+' at '+esc(u.loc)+' — '+esc(u.why)).join('<br>')+
+      '<br>⭐ Tell Jack, or fix the lot in Finale by hand.</div></div>';
 
   const waiting = open_.filter(o => o.cause === 'awaiting_bay' &&
                                     !PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed));
@@ -6308,29 +6382,78 @@ function moves(){
   const FLR = floorLoc();
   (S.lot_fix || []).forEach(fx => {
     if(!fx || !fx.confirmed || fx.by !== 'crew') return;
+
+    const bS = PAYLOAD.bays.find(x => x.n === fx.bay);
+    const pS = bS && (bS.pallets || []).find(q => q.loc === fx.loc);
+    if(bS && pS && (palletSettled(pS) || pileSettled(bS, pS, fx.sku, fx.from_lot || ''))){
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+        loc:fx.loc, qty:fx.qty || '', why:'this pile was marked "leave it — Finale is right", so '+
+        'this lot correction is not sent (if it was sent earlier, Finale already has it); '+
+        'otherwise fix the lot in Finale by hand'});
+      return;
+    }
     const up = {};
+
     (out.transfers || []).forEach(t => {
       if(t.sku !== fx.sku || (t.lot || '') !== (fx.from_lot || '')) return;
-      if(t.onto_pallet !== fx.pallet_id || t.from_location !== FLR) return;
-      if(!/^F[23]-/.test(t.to_location || '')) return;
-      up[t.to_location] = (up[t.to_location] || 0) + Number(t.quantity || 0);
+      if(t.from_location !== FLR || !/^F[23]-/.test(t.to_location || '')) return;
+      const mine = t.from_pallet_loc ? t.from_pallet_loc === fx.loc : t.onto_pallet === fx.pallet_id;
+      if(mine) up[t.to_location] = (up[t.to_location] || 0) + Number(t.quantity || 0);
     });
     const came = downedPalletAt(fx.loc);
     if(!Object.keys(up).length && !came){
       const b_ = PAYLOAD.bays.find(x => x.n === fx.bay);
       const p_ = b_ && (b_.pallets || []).find(q => q.loc === fx.loc);
-      const q_ = p_ ? onPallet(b_, p_, fx.sku, fx.from_lot) : 0;
+
+      let q_ = 0;
+      if(p_) (p_.lines || []).forEach(l => { if(l.sku === fx.sku && (l.lot || '') === (fx.from_lot || ''))
+        q_ = Math.max(q_, Number(l.system_qty || 0)); });
       if(q_ > 0) up[fx.loc] = q_;
     }
-    const keys = Object.keys(up).filter(k => up[k] > 0.0005);
+
+    (out.adjustments || []).forEach(a => {
+      if(a.sku !== fx.sku || (a.lot || '') !== (fx.from_lot || '')) return;
+      if((a.origin || a.location) !== fx.loc || !/^F[23]-/.test(a.location || '')) return;
+      if(up[a.location] === undefined && Number(a.change) < 0) return;
+      up[a.location] = (up[a.location] || 0) + Number(a.change || 0);
+    });
+    let want = Number(fx.qty) > 0 ? Number(fx.qty) : Infinity;
+    const keys = Object.keys(up).filter(k => up[k] > 0.0005).sort();
     if(!keys.length){
-      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot,
-        loc:fx.loc, why:'nothing of it went back up into reserve on this pallet, so there is no pile to change'});
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+        loc:fx.loc, qty:fx.qty || '', why:'none of it went back up into reserve from this pallet '+
+        '(taken to the floor faces, or the pallet is still down), so there is no pile to relabel'});
       return;
     }
-    keys.forEach(k => out.lot_changes.push({location:k, origin:fx.loc, pallet:fx.pallet_id,
-      sku:fx.sku, from_lot:fx.from_lot || '', to_lot:fx.to_lot, quantity:up[k],
-      to_new:!!fx.to_new, by:'crew', confirmed_ts:fx.ts}));
+
+    const toFace = (out.transfers || []).some(t => t.sku === fx.sku &&
+      (t.lot || '') === (fx.from_lot || '') && t.from_location === FLR &&
+      t.from_pallet_loc === fx.loc && !/^F[23]-/.test(t.to_location || '') &&
+      t.kind !== 'to_temp' &&      
+      Number(t.quantity || 0) > 0);
+    if(isFinite(want) && toFace){
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+        loc:fx.loc, qty:want, why:'part of this pile also went to the floor faces — we cannot tell '+
+        'whether those boxes are in the rack or on the face; fix that lot in Finale by hand'});
+      return;
+    }
+
+    if(isFinite(want) && keys.length > 1 && want < keys.reduce((t, k) => t + up[k], 0) - 0.0005){
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+        loc:fx.loc, qty:want, why:'part of this pile went to ' + keys.join(' and ') +
+        ' — we cannot tell which place holds those boxes; fix that lot in Finale by hand'});
+      return;
+    }
+    const asked = want;
+    keys.forEach(k => { if(want <= 0.0005) return;
+      const q = Math.min(up[k], want); want -= q;
+      out.lot_changes.push({location:k, origin:fx.loc, pallet:fx.pallet_id,
+        sku:fx.sku, from_lot:fx.from_lot || '', to_lot:fx.to_lot, quantity:q,
+        to_new:!!fx.to_new, by:'crew', confirmed_ts:fx.ts}); });
+    if(isFinite(asked) && want > 0.0005)
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+        loc:fx.loc, qty:want, why:'only ' + n(asked - want) + ' of the ' + n(asked) +
+        ' went back up into reserve; the other ' + n(want) + ' cannot be relabelled here'});
   });
   const LOTIDS = PAYLOAD.lot_ids || {};
 
