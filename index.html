@@ -1497,8 +1497,11 @@ function askFound(loc){
           const c_ = checkNewLot(w.sku, w.lot);
           if(c_.ok){ w.lot_new = true; w.lot_source = 'scanned'; }
           else if(c_.held){ w.lot = c_.held; }
-           
-          else { w.lot_unknown = true; w.lot_bad = c_.why; }
+
+          else { w.lot_unknown = true;
+                 w.lot_bad = '⛔ the lot on this barcode (' + w.lot + ') could mean two different '+
+                             'dates. Clear the scan, pick the item from the list with "no lot / not '+
+                             'sure", and tell the office.'; }
         }
         return w;
       };
