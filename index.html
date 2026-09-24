@@ -743,6 +743,7 @@ function blank(){
           adhoc_counts:{},    
           found_moves:[],     
           found_here:[],      
+          lot_fix:[],         
           load_order:{},      
           finished:null,      
           stopped_early:null, 
@@ -1368,8 +1369,8 @@ function askFound(loc){
      {t:'Record it',c:'pri',f:()=>{
         const who = pickedItem();
         if(!who.sku){ toast('⛔ what is it? Scan it, pick it, or type the SKU.'); return false; }
-        if(who.lot_unknown){ toast('⛔ which lot? Pick the date on the box, or "no lot / not '+
-                                   'sure".'); return false; }
+        if(who.lot_unknown){ toast(who.lot_bad || ('⛔ which lot? Pick the date on the box, '+
+                                   'type it, or "no lot / not sure".')); return false; }
         const q = readQty('fx4');
         if(q === null){ toast('⛔ how many did you find?'); return false; }
         const homes = homesFor(who.sku, who.lot);
@@ -1384,7 +1385,8 @@ function askFound(loc){
         }
         const rs = $('#fxr');
         const r2 = foundHere(b.n, loc, who.sku, who.lot, q, rs ? rs.value : undefined,
-                             'found on ' + (p.pallet_id || loc) + ', Finale holds it nowhere');
+                             'found on ' + (p.pallet_id || loc) + ', Finale holds it nowhere',
+                             who.lot_new ? {lot_new:true, lot_source:who.lot_source} : null);
         if(!r2.ok){ toast(r2.why); return false; }
         toast('Recorded as a Found of ' + n(q));
         render();
@@ -1398,20 +1400,28 @@ function askFound(loc){
          
         const held = who.lot_choice ? lotsHeld(who.sku).filter(x => x.lot) : [];
         const lotPick = FX_LOT.v;
-        const lotBox = held.length
+
+        const newBox = (lotPick === '__new__')
+          ? '<input id="fxnewlot" type="text" autocomplete="off" style="margin-top:6px" '+
+            'placeholder="the lot on the box, exactly as printed" value="'+esc(FX_LOT.typed||'')+'">'+
+            '<div id="fxnewhint" class="dim" style="margin-top:4px"></div>'
+          : '';
+        const lotBox = (who.lot_choice || (who.sku && !who.lot))
           ? '<label class="sm" style="margin-top:8px">Which lot is it? <span class="dim">'+
             '(the date on the box)</span></label><select id="fxlot">'+
             '<option value="">— choose the lot —</option>'+
             held.map(x => '<option value="'+esc(x.lot)+'"'+(x.lot===lotPick?' selected':'')+'>'+
               esc(x.lot)+' — Finale has '+n(x.homes.reduce((s,h)=>s+Number(h[1]||0),0))+
               '</option>').join('')+
+            '<option value="__new__"'+(lotPick==='__new__'?' selected':'')+
+              '>'+(held.length ? 'a different lot — type or scan it' : 'type or scan the lot')+'</option>'+
             '<option value="__none__"'+(lotPick==='__none__'?' selected':'')+
-              '>no lot on the box / not sure</option></select>'
+              '>no lot on the box / not sure</option></select>' + newBox
           : '';
-        if(held.length && !lotPick){
-          box.innerHTML = lotBox + '<div class="dim" style="margin-top:6px">⭐ Finale holds '+
-            esc(who.sku)+' under '+held.length+' lot(s). Pick the one on the box and we will '+
-            'tell you where Finale thinks it is.</div>';
+        if(lotBox && (!lotPick || (lotPick === '__new__' && !who.lot))){
+          box.innerHTML = lotBox + '<div class="dim" style="margin-top:6px">⭐ '+
+            (held.length ? 'Finale holds '+esc(who.sku)+' under '+held.length+' lot(s). ' : '')+
+            'Pick or type the lot on the box and we will tell you where Finale thinks it is.</div>';
           wireLot();
           return;
         }
@@ -1438,9 +1448,21 @@ function askFound(loc){
         wireLot();
       };
 
-      const FX_LOT = {v:'', sku:''};
+      const FX_LOT = {v:'', sku:'', typed:''};
       const wireLot = () => { const s_ = $('#fxlot');
-        if(s_) s_.onchange = () => { FX_LOT.v = s_.value; upd(); }; };
+        if(s_) s_.onchange = () => { FX_LOT.v = s_.value; upd(); };
+        const t_ = $('#fxnewlot');
+        if(t_){
+          const hint = () => { const h = $('#fxnewhint'); if(!h) return;
+            const w_ = _pi(); const c_ = checkNewLot(w_ && w_.sku, t_.value);
+            h.innerHTML = !t_.value.trim() ? '' : c_.ok
+              ? '⭐ new lot <b>'+esc(c_.lot)+'</b>'+(c_.reads_as ? ' — reads as '+esc(c_.reads_as) : ' — ⚠️ not a date we recognise; check the box')
+              : '<span style="color:var(--aside)">'+esc(c_.why)+'</span>'; };
+           
+          t_.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); t_.blur(); } };
+          t_.oninput = () => { FX_LOT.typed = t_.value; hint(); };
+          t_.onchange = () => { FX_LOT.typed = t_.value; upd(); };
+          hint(); } };
 
       window.pickedItem = () => {
         const code = ($('#fx1') && $('#fx1').value || '').trim();
@@ -1459,10 +1481,22 @@ function askFound(loc){
       window.pickedItem = () => {
         const w = _pi();
         if(w && w.sku !== FX_LOT.sku){ FX_LOT.sku = w.sku; FX_LOT.v = ''; }
-        if(w && w.sku && !w.lot && lotsHeld(w.sku).some(x => x.lot)){
+        if(w && w.sku && !w.lot){
           w.lot_choice = true;
-          if(FX_LOT.v && FX_LOT.v !== '__none__') w.lot = FX_LOT.v;
-          w.lot_unknown = !FX_LOT.v;
+          if(FX_LOT.v === '__new__'){
+            const c_ = checkNewLot(w.sku, FX_LOT.typed);
+            if(c_.ok){ w.lot = c_.lot; w.lot_new = true; w.lot_source = 'typed'; }
+            else { w.lot_unknown = true; w.lot_bad = c_.why; }
+          } else {
+            if(FX_LOT.v && FX_LOT.v !== '__none__') w.lot = FX_LOT.v;
+            w.lot_unknown = !FX_LOT.v;
+          }
+        }
+         
+        if(w && w.sku && w.lot && w.how === 'scanned' && !lotsHeld(w.sku).some(x => x.lot === w.lot)){
+          const c_ = checkNewLot(w.sku, w.lot);
+          if(c_.ok){ w.lot_new = true; w.lot_source = 'scanned'; }
+          else if(c_.held){ w.lot = c_.held; }
         }
         return w;
       };
@@ -1555,6 +1589,84 @@ function askUnplanned(bayN){
     });
 }
 
+function askLotFix(loc){
+  let b = null, p = null;
+  PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
+  if(!p) return;
+  const piles = (p.lines || []).filter(l => l.kind !== 'count')
+    .filter((l, i, arr) => arr.findIndex(z => z.sku===l.sku && (z.lot||'')===(l.lot||'')) === i);
+  const done = (S.lot_fix || []).filter(x => x.loc === loc);
+  if(!piles.length)
+    return dlg('Nothing here', '<p class="sm dim">Finale lists nothing on this pallet.</p>',
+               [{t:'OK',c:'ghost'}]);
+  dlg('The lot on a box is different',
+    (done.length ? '<div class="okbox sm"><b>Already corrected on this pallet:</b><br>'+
+      done.map((x, i) => esc(x.sku)+': '+esc(x.from_lot||'(no lot)')+' → <b>'+esc(x.to_lot)+'</b> '+
+        '<button type="button" class="ghost" onclick="undoLotFix(\''+esc(loc)+'\','+i+')">undo</button>')
+        .join('<br>')+'</div>' : '')+
+    '<p class="sm dim">⛔ Only for a lot you are <b>reading off the box</b>. Finale will be told '+
+    'to change the lot for what goes back up on this pallet.</p>'+
+    '<label class="sm">Which item</label><select id="lf1">'+
+      piles.map(l => '<option value="'+esc(l.sku+'|'+(l.lot||''))+'">'+esc(l.sku)+' — '+
+        esc(l.desc || skuName(l.sku) || '')+' · Finale lot '+esc(l.lot || '(none)')+'</option>').join('')+
+    '</select>'+
+    '<label class="sm" style="margin-top:10px">The lot actually on the box</label>'+
+    '<input id="lf2" type="text" autocomplete="off" placeholder="type or scan it, exactly as printed">'+
+    '<div id="lf3" class="sm dim" style="margin-top:4px"></div>',
+    [{t:'Cancel',c:'ghost'},
+     {t:'Next →',c:'pri',f:()=>{
+        const [sku, from] = String($('#lf1').value).split('|');
+        const typed = ($('#lf2').value || '').replace(/^Lot:\s*/i, '').trim();
+        if(!typed) { toast('⛔ type or scan the lot on the box'); return false; }
+        if(decodedLot(sku, typed) === (from || '') || typed === (from || '')) {
+          toast('⛔ that is the lot Finale already has — nothing to change'); return false; }
+        const c_ = checkNewLot(sku, typed);
+        let to, isNew;
+        if(c_.ok){ to = c_.lot; isNew = true; }
+        else if(c_.held){ to = c_.held; isNew = false; }
+        else { toast(c_.why); return false; }
+        if(to === (from || '')) { toast('⛔ that is the lot Finale already has'); return false; }
+        setTimeout(() => confirmLotFix(b, p, sku, from || '', to, isNew, typed), 0);
+      }}],
+    () => {
+      const t_ = $('#lf2'), h = $('#lf3');
+      t_.onkeydown = e => { if(e.key === 'Enter'){ e.preventDefault(); t_.blur(); } };
+      t_.oninput = () => {
+        const sku = String($('#lf1').value).split('|')[0];
+        const c_ = checkNewLot(sku, t_.value);
+        h.innerHTML = !t_.value.trim() ? '' : c_.ok
+          ? 'new lot <b>'+esc(c_.lot)+'</b>'+(c_.reads_as?' — reads as '+esc(c_.reads_as):' — ⚠️ not a date we recognise; check the box')
+          : (c_.held ? '⭐ Finale already has this as lot <b>'+esc(c_.held)+'</b> — that is what will be used'
+                     : '<span style="color:var(--aside)">'+esc(c_.why)+'</span>'); };
+    });
+}
+function confirmLotFix(b, p, sku, from, to, isNew, typed){
+  dlg('Are you certain?',
+    '<div class="badbox"><b>This changes a lot in Finale.</b><div class="sm" style="margin-top:6px">'+
+    esc(sku)+' ('+esc(skuName(sku) || '')+') on '+esc(p.pallet_id || p.loc)+':<br>'+
+    'lot <b>'+esc(from || '(none)')+'</b> → lot <b>'+esc(to)+'</b>'+(isNew ? ' <i>(a lot Finale has never had)</i>' : '')+
+    '</div></div>'+
+    '<p class="sm">⛔ The lot decides which stock gets pulled first and what the placards and '+
+    'barcodes match. Only confirm if you are reading <b>'+esc(typed)+'</b> off the box itself.</p>',
+    [{t:'No, go back',c:'ghost'},
+     {t:'Yes, I am certain — change the lot',c:'warn',f:()=>{
+        S.lot_fix = (S.lot_fix || []).filter(x => !(x.loc === p.loc && x.sku === sku &&
+                                                    (x.from_lot||'') === from));
+        S.lot_fix.push({bay:b.n, loc:p.loc, pallet_id:p.pallet_id || '', sku:sku,
+                        from_lot:from, to_lot:to, to_new:!!isNew, typed:typed,
+                        by:'crew', confirmed:true, ts:new Date().toISOString()});
+        ev('lot_fix_confirmed', {loc:p.loc, sku:sku, from_lot:from, to_lot:to, to_new:!!isNew});
+        save(); render(); toast('✓ lot recorded as ' + to + ' — Finale is told when the shift is sent');
+     }}]);
+}
+function undoLotFix(loc, i){
+  const mine = (S.lot_fix || []).filter(x => x.loc === loc), x = mine[i];
+  if(!x) return;
+  S.lot_fix = S.lot_fix.filter(y => y !== x);
+  ev('lot_fix_undone', {loc:loc, sku:x.sku, from_lot:x.from_lot, to_lot:x.to_lot});
+  save(); render(); toast('lot correction removed');
+  const d = document.querySelector('dialog[open]'); if(d) d.close();
+}
 function askAdhocCount(loc){
   let b = null, p = null;
   PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
@@ -1804,9 +1916,9 @@ function attachLot(where, sku, lot, how){
   const f = id && find(id);
   if(!f) return {ok:false, why:'that line is not in this plan'};
   if((f.l.lot || '').trim())
-    return {ok:false, why:'⛔ this line already carries lot ' + f.l.lot + '. ⛔⛔ ONCE A LOT '+
-                          'DATE IS IN FINALE, NOTHING MAY CHANGE IT (ruling: Jack, '+
-                          'Jack) — record what you found as a separate pile instead.'};
+    return {ok:false, why:'⛔ this line already carries lot ' + f.l.lot + '. If the box says '+
+                          'otherwise, use "✎ The lot on a box is different" on the pallet — it '+
+                          'asks you to confirm twice.'};
   setLine(id, {lot_attached:v, lot_source:how || 'typed'});
   ev('lot_attached', {line:id, sku:sku, lot:v, how:how || 'typed'});
   return {ok:true};
@@ -1837,6 +1949,33 @@ function decodedLot(sku, rawLot){
   return r;
 }
 
+function lotReadsAs(raw){
+  const r = String(raw || '').trim();
+  let m = r.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m) return m[1] + '-' + m[2] + '-' + m[3];
+  m = r.match(/^(\d{2})(\d{3})(?!\d)/);
+  if(m){ const yy = +m[1], dd = +m[2];
+    if(yy >= 20 && yy <= 35 && dd >= 1 && dd <= 366){
+      const d = new Date(Date.UTC(2000 + yy, 0, 1) + (dd - 1) * 86400000);
+      return d.toISOString().slice(0, 10); } }
+  return '';
+}
+function checkNewLot(sku, raw){
+  const v = String(raw || '').replace(/^Lot:\s*/i, '').trim();
+  if(!v) return {ok:false, why:'⛔ type or scan the lot off the box'};
+  if(v.length > 40 || /[,\n\t]/.test(v))
+    return {ok:false, why:'⛔ that does not look like a lot — no commas, 40 characters at most'};
+  const held = lotsHeld(sku).filter(x => x.lot);
+  const same = held.find(x => x.lot === v || decodedLot(sku, v) === x.lot);
+  if(same) return {ok:false, held:same.lot,
+                   why:'⭐ Finale already holds ' + sku + ' lot ' + same.lot + ' — pick it from the list instead'};
+  const d = lotReadsAs(v);
+  const twin = d && held.find(x => x.lot === d || lotReadsAs(x.lot) === d);
+  if(twin) return {ok:false, held:twin.lot,
+                   why:'⛔ ' + v + ' reads as ' + d + ', which Finale already holds as lot ' +
+                       twin.lot + '. Pick that one — a second spelling makes a duplicate lot.'};
+  return {ok:true, lot:v, reads_as:d};
+}
 function lotsHeld(sku){
   const out = [];
   Object.keys(PAYLOAD.sku_homes || {}).forEach(k => {
@@ -1864,7 +2003,7 @@ function identifyCode(code){
               'does not exist: the lookup covers what the freezer holds, not the whole catalog.'};
 }
 
-function foundHere(bayN, loc, sku, lot, qty, reason, why){
+function foundHere(bayN, loc, sku, lot, qty, reason, why, extra){
   const q = Number(qty);
   if(!isFinite(q) || q <= 0) return {ok:false, why:'⛔ how many did you find?'};
   if(!sku) return {ok:false, why:'⛔ what is it? Scan it, pick it from the list, or type the SKU.'};
@@ -1880,8 +2019,10 @@ function foundHere(bayN, loc, sku, lot, qty, reason, why){
   if(list.indexOf(reason) < 0)
     return {ok:false, why:'⛔ pick a reason — a Found is a real Finale stock change and a '+
                           'defaulted accounting code is worse than a missing row'};
-  S.found_here = (S.found_here || []).concat([{bay:bayN, loc:loc, sku:sku, lot:lot || '',
-    qty:q, reason:reason, why:String(why || '').trim(), ts:new Date().toISOString()}]);
+  S.found_here = (S.found_here || []).concat([Object.assign({bay:bayN, loc:loc, sku:sku,
+    lot:lot || '', qty:q, reason:reason, why:String(why || '').trim(),
+    ts:new Date().toISOString()}, (extra && extra.lot_new) ? {lot_new:true,
+    lot_source:extra.lot_source || 'typed'} : {})]);
   save();
   ev('found_here', {bay:bayN, loc:loc, sku:sku, lot:lot || '', qty:q, reason:reason});
   return {ok:true};
@@ -2702,6 +2843,7 @@ function pallet(b, p){
 
       '<button onclick="askAdhocCount(\''+p.loc+'\')">⊙ Count something else</button>'+
       '<button onclick="askFound(\''+p.loc+'\')">⊕ Found something not on the list</button>'+
+      '<button onclick="askLotFix(\''+p.loc+'\')">✎ The lot on a box is different</button>'+
       '<button class="ghost" onclick="askSettlePallet(\''+p.loc+'\')">⊘ '+
         (palletSettled(p) ? 'Left alone — undo?' : 'Leave this pallet alone')+'</button>'+
       '</div>';
@@ -5631,7 +5773,9 @@ function moves(){
       baseline:0, sibling_took:0, reason:fh.reason,
       system_qty:0, moved:'', left_on_pallet:'',
 
-      from_count:true, found_here:true, why:fh.why || '', ts:fh.ts});
+      from_count:true, found_here:true, why:fh.why || '', ts:fh.ts,
+
+      lot_new: fh.lot_new ? true : undefined, lot_source: fh.lot_new ? (fh.lot_source || 'typed') : undefined});
   });
 
   (S.found_moves || []).forEach(fm => {
@@ -6160,20 +6304,58 @@ function moves(){
       .sort((a, b) => (b.negative_floor ? 1 : 0) - (a.negative_floor ? 1 : 0));
   }
 
+  out.lot_changes = []; out.lot_changes_unapplied = [];
+  const FLR = floorLoc();
+  (S.lot_fix || []).forEach(fx => {
+    if(!fx || !fx.confirmed || fx.by !== 'crew') return;
+    const up = {};
+    (out.transfers || []).forEach(t => {
+      if(t.sku !== fx.sku || (t.lot || '') !== (fx.from_lot || '')) return;
+      if(t.onto_pallet !== fx.pallet_id || t.from_location !== FLR) return;
+      if(!/^F[23]-/.test(t.to_location || '')) return;
+      up[t.to_location] = (up[t.to_location] || 0) + Number(t.quantity || 0);
+    });
+    const came = downedPalletAt(fx.loc);
+    if(!Object.keys(up).length && !came){
+      const b_ = PAYLOAD.bays.find(x => x.n === fx.bay);
+      const p_ = b_ && (b_.pallets || []).find(q => q.loc === fx.loc);
+      const q_ = p_ ? onPallet(b_, p_, fx.sku, fx.from_lot) : 0;
+      if(q_ > 0) up[fx.loc] = q_;
+    }
+    const keys = Object.keys(up).filter(k => up[k] > 0.0005);
+    if(!keys.length){
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot,
+        loc:fx.loc, why:'nothing of it went back up into reserve on this pallet, so there is no pile to change'});
+      return;
+    }
+    keys.forEach(k => out.lot_changes.push({location:k, origin:fx.loc, pallet:fx.pallet_id,
+      sku:fx.sku, from_lot:fx.from_lot || '', to_lot:fx.to_lot, quantity:up[k],
+      to_new:!!fx.to_new, by:'crew', confirmed_ts:fx.ts}));
+  });
   const LOTIDS = PAYLOAD.lot_ids || {};
 
   (PAYLOAD.temp_stock || []).forEach(r => {
     const k = r.sku + '|' + (r.lot || '');
     if(!LOTIDS[k] && r.lot_id) LOTIDS[k] = r.lot_id;
   });
+
+  const NEWLOT = {};
+  (S.found_here || []).forEach(fh => { if(fh.lot_new && fh.lot) NEWLOT[fh.sku + '|' + fh.lot] = fh.lot; });
+  (S.lot_fix || []).forEach(fx => { if(fx.to_new && fx.to_lot) NEWLOT[fx.sku + '|' + fx.to_lot] = fx.to_lot; });
   ['transfers', 'adjustments', 'counts', 'pallet_moves', 'unresolved', 'fullness']
     .forEach(bucket => {
       (out[bucket] || []).forEach(r => {
         if(!r || !r.sku) return;
-        const raw = LOTIDS[r.sku + '|' + (r.lot || '')];
+        const k = r.sku + '|' + (r.lot || '');
+        const raw = LOTIDS[k] || NEWLOT[k];
         r.lot_id = (r.lot ? (raw || '') : '');
+        if(NEWLOT[k] && !LOTIDS[k]) r.lot_new = true;
       });
     });
+  out.lot_changes.forEach(r => {
+    r.from_lot_id = r.from_lot ? (LOTIDS[r.sku + '|' + r.from_lot] || '') : '';
+    r.to_lot_id = LOTIDS[r.sku + '|' + r.to_lot] || NEWLOT[r.sku + '|' + r.to_lot] || '';
+  });
   return out;
 }
 function csv(rows){
@@ -6351,7 +6533,7 @@ async function graphWrite(path, body, method){
 const META_EV = {app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1};
  
 const EXTRA_STORES = ['unplanned', 'found_moves', 'found_here', 'load_order', 'adhoc_counts',
-                      'finalize_requested'];
+                      'finalize_requested', 'lot_fix'];
 function workEvents(o){
   return (((o && o.events) || [])).filter(e => e && !META_EV[e.kind]);
 }
@@ -6370,7 +6552,8 @@ function hasRecordedWork(o){
   return ['putback_actual','new_pallets','split_contents','floor_fix','left_down','opened',
           'unplanned','load_order','adhoc_counts']
     .some(k => Object.keys(o[k] || {}).length) || (o.temp_out || []).length > 0 ||
-    (o.found_moves || []).length > 0 || (o.found_here || []).length > 0;
+    (o.found_moves || []).length > 0 || (o.found_here || []).length > 0 ||
+    (o.lot_fix || []).length > 0;
 }
 
 function isPrefix(a, b){
