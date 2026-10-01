@@ -5412,6 +5412,7 @@ function plannedLocFor(pid){
 }
 
 function moves(){
+  const FLOOR_KEPT = [];    
   const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[],
 
                fullness:[], lane_room:[],
@@ -5567,6 +5568,7 @@ function moves(){
   PAYLOAD.bays.forEach(b => {
 
     const push = (p, l, i, key, loc) => {
+
       const id = lid(b.n, key, l, i), s = S.lines[id];
       if(!s) return;
 
@@ -5691,8 +5693,8 @@ function moves(){
 
             if(l.kind === 'take'){
 
-              floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
-                (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+              floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] =
+                (floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
               strand({bay:b.bay, origin:loc, sku:l.sku, lot:l.lot||'', units:pt.qty,
                 pallet:'', cause:'no_f1_home', handedOff:true,
                 why: rawDest
@@ -5716,8 +5718,8 @@ function moves(){
 
             if(fromFloor){
 
-              floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
-                (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+              floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] =
+                (floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
               return;
             }
           }
@@ -5729,8 +5731,8 @@ function moves(){
               why:'set aside for pallet ' + pt.pallet +
                   (l.onto_bay ? ' in bay ' + l.onto_bay : '') + ', which has not been ' +
                   'worked yet — the stock is on the restock floor waiting for it'});
-            floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
-              (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
             return;
           }
 
@@ -5740,22 +5742,29 @@ function moves(){
               pallet:pt.pallet, cause:'receiver_already_up', handedOff:true,
               why:'set aside for pallet ' + pt.pallet + ', but that pallet had already gone '+
                   'back up before this was recorded — the stock is on the restock floor'});
-            floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
-              (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
             return;
           }
           if(l.kind === 'aside' && fromFloor && pt.pallet &&
              floorPalletIds.has(pt.pallet)){
 
-            floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] =
-              (floorHandoff[loc + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            return;
+          }
+
+          if(src === pdest && FLOOR && pdest === FLOOR){
+            floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] =
+              (floorHandoff[(pileOnPallet(b, p, l.sku, l.lot) || loc) + '|' + l.sku + ' ' + (l.lot || '')] || 0) + pt.qty;
+            FLOOR_KEPT.push({sku:l.sku, lot:l.lot || '', units:pt.qty});
             return;
           }
           out.transfers.push({from_location: src,
             to_location: pdest,
             on_floor_src: fromFloor,
 
-            from_pallet_loc: (s.from_actual || loc),
+            from_pallet_loc: (s.from_actual || pileOnPallet(b, p, l.sku, l.lot) || loc),
 
             onto_pallet: (s.did_different ? (pt.pallet || '')
                                           : (l.kind === 'aside' ? (pt.pallet||'') : '')),
@@ -6347,6 +6356,8 @@ function moves(){
       }
       bump(expected, o.sku + ' ' + (o.lot || ''), o.units);
     });
+     
+    FLOOR_KEPT.forEach(x => bump(expected, x.sku + ' ' + (x.lot || ''), x.units));
     const keys = new Set(Object.keys(net).concat(Object.keys(expected)));
 
   out.clamped = [];
