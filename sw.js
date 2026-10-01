@@ -20,7 +20,7 @@
    strictly worse than no service worker, because nothing on screen says so.
    ⭐ deploy_freezer_page.py rewrites it from the built page's own byte length, so it cannot
    be forgotten — see STAMP below. */
-const VERSION = 'b51c52d571b3';
+const VERSION = '146205d2441e';
 const CACHE = 'freezer-shell-' + VERSION;
 /* ⛔⛔ `zxing.js` IS IN THE SHELL, AND THAT IS THE WHOLE POINT OF PRECACHING IT.
    It is the barcode decoder for every device whose browser has none (Safari, i.e. the crew's
@@ -32,9 +32,28 @@ const CACHE = 'freezer-shell-' + VERSION;
 const SHELL = ['./', './index.html', './zxing.js'];
 
 self.addEventListener('install', e => {
-  /* ⭐ addAll is ATOMIC: if any entry fails the whole install fails and the OLD worker keeps
-     serving. That is the behaviour we want — a half-cached shell is a blank screen. */
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  /* ⭐ The install is ATOMIC: if any entry fails the whole install fails and the OLD worker keeps
+     serving. That is the behaviour we want — a half-cached shell is a blank screen.
+     ⛔⛔ ROUND 4: AND IT MUST CACHE THE PAGE OF *THIS* BUILD. `addAll(SHELL)` fetched `./` with the default
+     cache mode, so the browser or the Fastly edge (`max-age=600`) could hand the NEW worker the OLD page,
+     and that is what the freezer would then open offline. ⭐ So the page is fetched as `./?v=<VERSION>`
+     (a URL the CDN has never cached) with `cache:'reload'`, and the install FAILS unless the body carries
+     this worker's own stamp (`let BUILD = '<VERSION>'`) — the old worker keeps serving and the page's next
+     version check retries. Stored under `./` and `./index.html`; the decoder the same way. */
+  e.waitUntil((async () => {
+    const c = await caches.open(CACHE);
+    const page = await fetch('./?v=' + VERSION, {cache: 'reload'});
+    if (!page || !page.ok) throw new Error('shell page fetch failed');
+    const a = page.clone(), b = page.clone();
+    const txt = await page.text();
+    if (txt.indexOf("let BUILD = '" + VERSION + "'") < 0)
+      throw new Error('the page served is not build ' + VERSION + ' yet — not installing');
+    await c.put('./', a);
+    await c.put('./index.html', b);
+    const zx = await fetch('./zxing.js?v=' + VERSION, {cache: 'reload'});
+    if (!zx || !zx.ok) throw new Error('zxing.js fetch failed');
+    await c.put('./zxing.js', zx);
+  })().then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
@@ -58,6 +77,11 @@ self.addEventListener('fetch', e => {
      to a public device cache. */
   if (/payload.*\.json$/i.test(url.pathname)) return;
 
+  /* ⛔⛔ ROUND 3 (A0): `version.json` IS HOW A PAGE LEARNS A NEWER BUILD IS DEPLOYED, so it is never cached
+     and never answered from a cache — a stale answer would say "nothing new" for ever. The page asks with
+     a cache-busting query and `cache:'no-store'`; this keeps the worker out of the way entirely. */
+  if (/version\.json$/i.test(url.pathname)) return;
+
   /* ⛔⛔ AND THE PKCE REDIRECT LANDS ON THIS ORIGIN CARRYING THE AUTHORIZATION CODE.
      `redirect_uri` is `location.origin + location.pathname` with `response_mode: 'query'`,
      so the navigation back from Microsoft is
@@ -74,12 +98,39 @@ self.addEventListener('fetch', e => {
   /* ⭐ NETWORK FIRST, CACHE AS THE FLOOR. Cache-first would be faster and is the wrong
      trade: the crew sign in warm at the desk, where the network is there, and that is
      exactly the moment a new build must land. Offline, the cache answers. */
+  /* ⛔⛔ ROUND 3 (A0): NETWORK-FIRST MUST REALLY BE NETWORK-FIRST. A plain `fetch(req)` goes through the
+     browser HTTP cache, and GitHub Pages sends `max-age=600` — so for up to ten minutes after a push the
+     "network" answer was the old page. ⭐ The page itself (a navigation, `./`, `index.html`) is fetched
+     with `cache:'no-cache'` — revalidated with the server every time — and a redirected answer falls back
+     to the plain fetch (a navigation may not be answered with a redirected response). */
+  const isPage = req.mode === 'navigate' || /\/(index\.html)?$/i.test(url.pathname);
   e.respondWith((async () => {
     try {
-      const fresh = await fetch(req);
+      let fresh = null;
+      if (isPage) {
+        fresh = await fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' });
+        if (fresh && fresh.redirected) fresh = await fetch(req);
+      } else {
+        fresh = await fetch(req);
+      }
+      /* ⛔⛔ ROUND 4 RE-CHECK: THE ONLINE PATH MUST NOT UNDO THE INSTALL'S CHECK. `cache:'no-cache'` gets
+         past the browser cache, not the Fastly edge — so for ~10 min after a push a launch at the desk can
+         be answered with the PREVIOUS page, and storing it overwrote the verified copy the freezer opens
+         offline. ⭐ A page is stored only if it carries THIS worker's own build, and only under the two
+         canonical keys the offline path reads; anything else is shown but not kept. The decoder was verified
+         at install and is never overwritten at run time. */
       if (fresh && fresh.status === 200 && fresh.type === 'basic') {
         const c = await caches.open(CACHE);
-        c.put(req, fresh.clone());
+        if (isPage) {
+          const txt = await fresh.clone().text();
+          if (txt.indexOf("let BUILD = '" + VERSION + "'") >= 0) {
+            const hdr = { headers: { 'Content-Type': 'text/html; charset=utf-8' } };
+            await c.put('./', new Response(txt, hdr));
+            await c.put('./index.html', new Response(txt, hdr));
+          }
+        } else if (!/\/zxing\.js$/i.test(url.pathname)) {
+          c.put(req, fresh.clone());
+        }
       }
       return fresh;
     } catch (err) {
