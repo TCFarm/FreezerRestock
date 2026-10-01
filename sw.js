@@ -20,7 +20,7 @@
    strictly worse than no service worker, because nothing on screen says so.
    ⭐ deploy_freezer_page.py rewrites it from the built page's own byte length, so it cannot
    be forgotten — see STAMP below. */
-const VERSION = '146205d2441e';
+const VERSION = '80985b27319a';
 const CACHE = 'freezer-shell-' + VERSION;
 /* ⛔⛔ `zxing.js` IS IN THE SHELL, AND THAT IS THE WHOLE POINT OF PRECACHING IT.
    It is the barcode decoder for every device whose browser has none (Safari, i.e. the crew's
@@ -29,7 +29,7 @@ const CACHE = 'freezer-shell-' + VERSION;
    worked perfectly at the desk. ⭐ Precaching it at install means it is on the device before
    anyone needs it. ⚠️ `addAll` is atomic, so if this file ever fails to publish the install
    fails loudly and the old worker keeps serving — which is the correct failure. */
-const SHELL = ['./', './index.html', './zxing.js'];
+const SHELL = ['./', './index.html', './zxing.js', './domshot.js'];
 
 self.addEventListener('install', e => {
   /* ⭐ The install is ATOMIC: if any entry fails the whole install fails and the OLD worker keeps
@@ -53,6 +53,10 @@ self.addEventListener('install', e => {
     const zx = await fetch('./zxing.js?v=' + VERSION, {cache: 'reload'});
     if (!zx || !zx.ok) throw new Error('zxing.js fetch failed');
     await c.put('./zxing.js', zx);
+    /* ⭐ FEEDBACK (2026-10-01): the screenshot renderer, lazy-loaded like the decoder, precached the same way */
+    const ds = await fetch('./domshot.js?v=' + VERSION, {cache: 'reload'});
+    if (!ds || !ds.ok) throw new Error('domshot.js fetch failed');
+    await c.put('./domshot.js', ds);
   })().then(() => self.skipWaiting()));
 });
 
@@ -128,7 +132,7 @@ self.addEventListener('fetch', e => {
             await c.put('./', new Response(txt, hdr));
             await c.put('./index.html', new Response(txt, hdr));
           }
-        } else if (!/\/zxing\.js$/i.test(url.pathname)) {
+        } else if (!/\/(zxing|domshot)\.js$/i.test(url.pathname)) {
           c.put(req, fresh.clone());
         }
       }
