@@ -1252,6 +1252,13 @@ function askTookFrom(id){
       '<b>wrong</b> about where this pile lives, say so separately — that is a different '+
       'correction.</div>',
     [{t:'Cancel',c:'ghost'},
+
+     ...(((S.lines[id] || {}).from_actual) ? [{t:'No — it was on THIS pallet after all', c:'warn', f:()=>{
+        const was = (S.lines[id] || {}).from_actual;
+        setLine(id, {from_actual:undefined, from_actual_why:undefined});
+        ev('took_from_other_pallet_undone', {line:id, was:was});
+        toast('Undone — ' + f.l.sku + ' is back on ' + (f.p.pallet_id || here));
+        render(); }}] : []),
      {t:'Record it',c:'pri',f:()=>{
         const r = tookFrom(id, $('#tf1').value, ($('#tf2').value||'').trim());
         if(!r.ok){ toast(r.why); return false; }
