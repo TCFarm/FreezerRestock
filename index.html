@@ -112,6 +112,12 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
 #breakveil{position:fixed;inset:0;background:#000000f0;z-index:100;display:none;
   flex-direction:column;align-items:center;justify-content:center;gap:20px;text-align:center;padding:24px}
 #breakveil.on{display:flex}
+
+button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
+#fbdlg .fbrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+#fbdlg .fbrow>button{min-height:44px}
+#fbdlg textarea{width:100%;min-height:88px;font:inherit;font-size:16px;border:2px solid var(--line);border-radius:12px;padding:10px;background:var(--bg);color:var(--ink);box-sizing:border-box}
+#fbshot{max-width:100%;max-height:160px;border:1px solid var(--line);border-radius:8px;display:block;margin-top:6px}
 </style>
 </head>
 <body>
@@ -122,6 +128,7 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
   recorded. Your work is saved.</p>
   <p class="dim" id="breakclock" style="font-variant-numeric:tabular-nums;font-size:20px"></p>
   <button class="big ok" style="max-width:320px" onclick="endBreak()">Back to work</button>
+  <button class="ghost" style="max-width:320px" id="fbveilbtn" onclick="openFeedback()">🎤 Send feedback</button>
 </div>
 
 <div class="bar">
@@ -132,6 +139,7 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
   </div>
   <button class="ghost" id="navprev" onclick="goBay(-1)" title="Previous bay">‹</button>
   <button class="ghost" id="navnext" onclick="goBay(1)" title="Next bay">›</button>
+  <button class="ghost fbmic" id="fbbarbtn" onclick="openFeedback()" title="Feedback" aria-label="Send feedback about the app"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z"/></svg></button>
   <button class="ghost" onclick="startBreak()" title="Break">☕</button>
   <button class="ghost" onclick="openFinish()" title="Finish &amp; export">⇪</button>
 </div>
@@ -141,16 +149,22 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
 <div class="foot"><div class="wrap"><button class="big pri" id="mainbtn"></button></div></div>
 
 <dialog id="dlg"><form method="dialog">
-  <div class="dh" id="dlgh"></div><div class="db" id="dlgb"></div>
+  <div class="dh" style="display:flex;align-items:flex-start;gap:8px;padding:8px 8px 8px 14px">
+    <div id="dlgh" style="flex:1;padding-top:6px"></div>
+    <button type="button" class="ghost fbmic" id="fbdlgbtn" onclick="openFeedback()" title="Feedback" aria-label="Send feedback about this screen"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-2.08A7 7 0 0 0 19 12h-2z"/></svg></button></div>
+  <div class="db" id="dlgb"></div>
   <div class="df" id="dlgf"></div>
 </form></dialog>
+
+<dialog id="fbdlg"><div class="dh" id="fbh">Feedback about the app</div><div class="db" id="fbb"></div>
+  <div class="df" id="fbf"></div></dialog>
 
 <script>
 "use strict";
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '146205d2441e';
+let BUILD = '80985b27319a';
 
 let VER_ARRIVED = (function(){
   try{
@@ -1492,7 +1506,7 @@ function askTookFrom(id){
     if(x.b.n !== f.b.n) opts.push({loc:x.p.loc, label:x.p.pallet_id + ' · in ' + x.b.bay +
       ' · came down from ' + x.p.loc + (x.p.off_plan ? ' (not in the plan)' : '')}); });
   if(!opts.length)
-    return dlg('No other pallet here',
+    return dlgL(id, 'No other pallet here',
       '<p class="sm dim">⭐ If you brought down a pallet the plan did not name, record that '+
       'first — it needs a card of its own before anything can be attributed to it.</p>',
       [{t:'OK',c:'ghost'}]);
@@ -1501,7 +1515,7 @@ function askTookFrom(id){
                  o.x.sku === f.l.sku && (o.x.lot || '') === (f.l.lot || ''));
   const sibTxt = sibs.map(o => { const t_ = pileRecordText(f.b, f.p, o.x, o.ix);
     return esc(o.x.kind) + (o.x.planned_qty != null ? ' ' + n(o.x.planned_qty) : '') + ': ' + (t_ ? esc(t_) : 'nothing recorded yet'); });
-  dlg('It was on a different pallet',
+  dlgL(id, 'It was on a different pallet',
     '<p><b>'+esc(f.l.sku)+'</b>'+(f.l.lot?' · lot '+esc(f.l.lot):'')+' — the plan has it on <b>'+
       esc(f.p.pallet_id || here)+'</b>.</p>'+
     '<div class="warnbox sm"><b>This moves the WHOLE pile:</b> all <b>'+n(f.l.system_qty)+'</b>'+
@@ -1529,7 +1543,7 @@ function askTookFrom(id){
      {t:'Record it',c:'pri',f:()=>{
         const r = tookFrom(id, $('#tf1').value, ($('#tf2').value||'').trim());
         if(!r.ok){ toast(r.why); return false; }
-        setTimeout(() => dlg('Recorded', '<p class="sm">'+esc(r.note)+'</p>',
+        setTimeout(() => dlgL(id, 'Recorded', '<p class="sm">'+esc(r.note)+'</p>',
                              [{t:'OK',c:'pri'}]), 0);
         render();
       }}]);
@@ -1586,7 +1600,7 @@ function askMoveInstead(id){
                                        : pileLeft(f.b, f.p, l.sku, l.lot, id);
   const leftAdd = pileLeft(f.b, f.p, l.sku, l.lot);                 
   const dest_ = pt => pt.location || (pt.pallet ? pt.pallet : (pt.planned && l.kind === 'take' ? (l.dest || 'F1') : '?'));
-  dlg('I moved it somewhere else',
+  dlgL(id, 'I moved it somewhere else',
     '<p><b>'+esc(l.sku)+'</b>'+(l.lot?' · lot '+esc(l.lot):'')+' — <b>'+n(cap)+
       '</b> on this pallet'+(leftAdd < cap - 0.001 ? ', <b>'+n(leftAdd)+'</b> still on it by what is recorded' : '')+'.</p>'+
     (recorded.length
@@ -2138,14 +2152,14 @@ function askSettleLine(id){
   const l = f.l;
   const blockers = settleBlockers(f.b.n, f.p, l, f.i);
   if(blockers.length)
-    return dlg('Cannot leave this one alone',
+    return dlgL(id, 'Cannot leave this one alone',
       '<p>You have already recorded work on this line:</p><ul class="sm">'+
         blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>'+
       '<p class="sm dim">⛔ "Finale is already right" and "I moved it" cannot both be true. '+
       'If the recorded work is wrong, change it first — <b>do not</b> settle over the top of '+
       'it, or that work never reaches Finale and next week\u2019s plan asks for it again.</p>',
       [{t:'OK',c:'ghost'}]);
-  dlg('Leave it — Finale is already right',
+  dlgL(id, 'Leave it — Finale is already right',
     '<p><b>'+esc(l.sku)+'</b>'+(l.lot?' · lot '+esc(l.lot):'')+' — <b>'+n(l.system_qty)+
       '</b> on this pallet.</p>'+
     '<p class="sm dim">This tells us <b>not to move it at all</b>: no transfer, no '+
@@ -3212,7 +3226,7 @@ function askNotHere(id){
   const l = f.l, here = f.p;
   const floor = floorPalletList(here.loc);
   const cap = onPallet(f.b, here, l.sku, l.lot);
-  dlg('Not here — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+  dlgL(id, 'Not here — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
     '<p>Finale has <b>'+n(cap)+'</b> on <b>'+esc(here.pallet_id || here.loc)+'</b>. Where is it?</p>'+
     '<label class="sm">Where is it really</label>'+
     '<select id="nh1">'+
@@ -3230,7 +3244,7 @@ function askNotHere(id){
           const to = ($('#nhp') || {}).value;
           const r = tookFrom(id, to, why);
           if(!r.ok){ toast(r.why); return false; }
-          setTimeout(() => dlg('Recorded', '<p class="sm">'+esc(r.note)+'</p>', [{t:'OK', c:'pri'}]), 0);
+          setTimeout(() => dlgL(id, 'Recorded', '<p class="sm">'+esc(r.note)+'</p>', [{t:'OK', c:'pri'}]), 0);
           render(); return;
         }
         const q = readQty('nhq'), to = ($('#nhs') || {}).value;
@@ -3280,7 +3294,7 @@ function askNotFoundAnywhere(id){
   const l = f.l, tl = tempLoc();
   const left = pileLeft(f.b, f.p, l.sku, l.lot);
   if(!tl) return openLine(id);           
-  dlg('Not found — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+  dlgL(id, 'Not found — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
     '<p>Finale has <b>'+n(onPallet(f.b, f.p, l.sku, l.lot))+'</b> on <b>'+esc(f.p.pallet_id || f.p.loc)+
       '</b>'+(left < onPallet(f.b, f.p, l.sku, l.lot) - 0.001 ? ' (<b>'+n(left)+'</b> by what is recorded)' : '')+
       ' and you cannot find it.</p>'+
@@ -4071,7 +4085,8 @@ function toast(m){
     'background:#22272e;border:1px solid #30363d;padding:12px 18px;border-radius:12px;'+
     'z-index:200;max-width:90vw;text-align:center';
 
-  const dl = document.querySelector('dialog[open]');
+  const opens = [].slice.call(document.querySelectorAll('dialog[open]'));
+  const dl = opens.filter(x => x.id === 'fbdlg')[0] || opens[opens.length - 1] || null;
 
   if(dl){
     const body = dl.querySelector('.db') || dl;
@@ -4242,7 +4257,7 @@ function openWhy(id){
   const l = f.l, w = l.why || {};
   S.opened[id] = true; ev('review_open', {line:id}); save();
   const s = st(id); const cur = s && s.approved!=null ? s.approved : l.planned_qty;
-  dlg('Why ' + l.sku + '?',
+  dlgL(id, 'Why ' + l.sku + '?',
     '<table>'+
       row('On F1 now', w.on_f1_now) + row('Target', w.target) +
       row('Cover after this pull', w.cover_after ? w.cover_after+' wk' : '') +
@@ -4763,7 +4778,7 @@ function openLine(id, opts){
                 : (s.approved != null ? s.approved : l.planned_qty);
   if(l.kind === 'stay'){
     const prevStay = s || {};
-    return dlg('Stays — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+    return dlgL(id, 'Stays — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
       '<p class="dim">Nothing to do: reload this exactly as it was.</p>'+
       '<p class="sm dim">Finale says <b>'+n(l.system_qty)+'</b> on this pallet. If that is wrong, '+
       'correct it — a pallet that is already open is the cheapest time to fix a count.</p>'+
@@ -4832,7 +4847,7 @@ function openLine(id, opts){
   const tal0 = pileTally(f.b, f.p, l.sku, l.lot);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
 
-  dlg(l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
+  dlgL(id, l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
 
     (function(){ const c = pileClaim(f.b, f.p, l.sku, l.lot);
       if(!c || c.id === id) return '';
@@ -4868,7 +4883,7 @@ function openLine(id, opts){
     '<div id="calc" style="margin-top:10px"></div>',
     [{t:'Cancel',c:'ghost'},
 
-     {t:'Not here at all',c:'',f:()=>{ setTimeout(() => dlg(
+     {t:'Not here at all',c:'',f:()=>{ setTimeout(() => dlgL(id, 
         'Not here at all — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
         '<div class="warnbox"><b>This says Finale is WRONG.</b><div class="sm" '+
         'style="margin-top:6px">Finale believes <b>'+n(l.system_qty)+'</b> of '+esc(l.sku)+
@@ -5219,7 +5234,7 @@ function skipLine(id, bulk, typed){
   if(bulk){ setLine(id, {state:'skipped', actual:0, reason:bulk,
                          reason_source:(typed ? 'typed' : 'picked')});
             ev('line_skipped',{line:id, why:bulk, typed:!!typed}); return; }
-  dlg('Skip ' + f.l.sku + '?',
+  dlgL(id, 'Skip ' + f.l.sku + '?',
     '<p class="dim">This records that you DID NOT do it — not that the stock is missing. '+
     'Nothing will be transferred and Finale will not be corrected.</p>'+
     whyPicker(),
@@ -5269,7 +5284,7 @@ function orphanMissing(id){
   const l = f.l, prev = (S.lines[id] || {});
   const list = PAYLOAD.shrink_reasons || [];
   const ph = list.length > 1 ? '<option value="__none__" selected>— choose a reason —</option>' : '';
-  dlg('Not here at all — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+  dlgL(id, 'Not here at all — ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
     '<div class="badbox"><b>This says Finale is wrong about all '+n(l.system_qty || l.planned_qty)+
       '.</b><div class="sm" style="margin-top:6px">It writes a stock decrease, so it needs the '+
       'accounting code you would choose yourself. If you simply ran out of time, close the '+
@@ -5358,7 +5373,7 @@ function doCount(id, rest){
   const basisOf = () => { const r_ = document.querySelector && document.querySelector('input[name="cbasis"]:checked');
                           return r_ ? r_.value : ''; };
   const totalOf = v => (v == null) ? null : (basisOf() === 'left' ? Math.round((v + carried.units) * 1000) / 1000 : v);
-  dlg('Count ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
+  dlgL(id, 'Count ' + l.sku + (l.lot ? ' · lot ' + l.lot : ''),
     '<p class="sm dim">'+esc(l.desc||'')+'<br>Serial <b>'+esc(l.serial)+'</b> · on '+esc(f.p.loc)+
     '<br>Finale says <b>'+n(l.system_qty)+'</b>.</p>'+
     (hasCarry
@@ -6221,7 +6236,7 @@ function askSplit(id){
   const total = st.actual != null ? st.actual : l.planned_qty;
   const want = l.onto_pallet || '';
   const others = palletChoices(f.b.n, want);
-  dlg('Where did the ' + n(total) + ' actually go?',
+  dlgL(id, 'Where did the ' + n(total) + ' actually go?',
     '<p class="sm dim">We asked for all of it on <b>' + esc(want || 'one pallet') + '</b>. If it '+
     'would not fit, say what really happened — the split is what Finale gets told, and it is '+
     'how we learn that this pallet space is smaller than we think.</p>'+
@@ -9064,27 +9079,8 @@ function allBaysClosed(){
 
 const JOB_LIST = 'AgentJobs';
 async function finalizeToFinale(){
-  const sp = CFG.sharepoint;    
-  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
-  const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
-  const lst = (lists.value || []).find(l => l.displayName === JOB_LIST);
-  if(!lst) throw new Error('the ' + JOB_LIST + ' queue does not exist on this site yet — ' +
-                           'a person has to run `jobs.py provision --push` once');
 
-  const open = await graph(`/sites/${site.id}/lists/${lst.id}/items?expand=fields&$top=200`);
-  const dup = (open.value || []).find(it => {
-    const f = it.fields || {};
-    return f.Kind === 'freezer.drain' && f.Subject === PAYLOAD.plan_date &&
-           ['queued','claimed','running'].indexOf(f.State) >= 0;
-  });
-  if(dup) return {already: dup.id};
-
-  return graphWrite(`/sites/${site.id}/lists/${lst.id}/items`,
-    {fields: {Title: 'freezer.drain:' + PAYLOAD.plan_date, Kind: 'freezer.drain',
-              Subject: PAYLOAD.plan_date, State: 'queued', Params: '{}',
-              RequestedBy: 'freezer app ' + deviceId(),
-              RequestedUtc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
-              Attempts: 0}});
+  return queueJob('freezer.drain', PAYLOAD.plan_date);
 }
 function askFinalize(){
   const m = moves();
@@ -9175,7 +9171,8 @@ async function graphWrite(path, body, method){
   return j;                                   
 }
 
-const META_EV = {app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1};
+const META_EV = {app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1,
+                 feedback_sent:1, job_queue_check:1};    
  
 const EXTRA_STORES = ['unplanned', 'found_moves', 'found_here', 'load_order', 'adhoc_counts',
                       'finalize_requested', 'lot_fix', 'lane_push', 'deck_freed',
@@ -9770,9 +9767,17 @@ function closedBox(b){
     + 'You can still tap a line to correct it.</div></div>';
 }
 
+let DLG_LINE_ARG = null;
+ 
+function dlgL(lineId, title, bodyHtml, buttons, after){
+  DLG_LINE_ARG = lineId || null;
+  try{ return dlg(title, bodyHtml, buttons, after); } finally { DLG_LINE_ARG = null; }
+}
 function dlg(title, bodyHtml, buttons, after){
   const d = $('#dlg');
   $('#dlgh').textContent = title; $('#dlgb').innerHTML = bodyHtml;
+
+  d.dataset.line = DLG_LINE_ARG ? String(DLG_LINE_ARG) : '';
   const f = $('#dlgf'); f.innerHTML = '';
 
   if(!d._noSubmit){
@@ -9798,6 +9803,503 @@ function dlg(title, bodyHtml, buttons, after){
   if(after) after();
 }
 
+const FB_DB = 'freezer.feedback', FB_STORE_NAME = 'outbox';
+const FB_MAX_SECONDS = 180;
+ 
+let FB_STORE = {
+  _db: null,
+  open(){
+    if(this._db) return Promise.resolve(this._db);
+    return new Promise((res, rej) => {
+      try{
+        const rq = indexedDB.open(FB_DB, 1);
+        rq.onupgradeneeded = () => { const db = rq.result;
+          if(!db.objectStoreNames.contains(FB_STORE_NAME)) db.createObjectStore(FB_STORE_NAME, {keyPath:'id'}); };
+        rq.onsuccess = () => { this._db = rq.result; res(this._db); };
+        rq.onerror = () => rej(rq.error || new Error('IndexedDB would not open'));
+      }catch(e){ rej(e); }
+    });
+  },
+  _tx(mode, f){ return this.open().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(FB_STORE_NAME, mode), st_ = tx.objectStore(FB_STORE_NAME);
+    let out; const r = f(st_); if(r) r.onsuccess = () => { out = r.result; };
+    tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error('aborted')); })); },
+  put(rec){ return this._tx('readwrite', s_ => s_.put(rec)); },
+  all(){ return this._tx('readonly', s_ => s_.getAll()).then(x => x || []); },
+  del(id){ return this._tx('readwrite', s_ => s_.delete(id)); }
+};
+let FB_PENDING = 0, FB_DRAFTS = 0, FB_SENDING = false, FB_CUR = null, FB_REC = null;
+ 
+function whoAmI(){
+  const t = tokStore() || {};
+  for(const jwt of [t.id_token, t.access_token]){
+    try{
+      if(!jwt) continue;
+      const p = jwt.split('.')[1]; if(!p) continue;
+      const c = JSON.parse(decodeURIComponent(escape(atob(p.replace(/-/g, '+').replace(/_/g, '/')))));
+      const name = c.name || null, email = c.preferred_username || c.upn || c.email || null;
+      if(name || email) return {name:name, email:email};
+    }catch(e){}
+  }
+  return {name:null, email:null};
+}
+ 
+function fbContext(){
+  const ctx = {ts:new Date().toISOString(),
+    screen:(PAYLOAD ? (S && S.screen) || 'review' : 'gate'),
+    plan_date:(PAYLOAD && PAYLOAD.plan_date) || null, plan_built:(PAYLOAD && PAYLOAD.built) || null,
+    pull_day:(PAYLOAD && PAYLOAD.pull_day) || null,
+    device:(function(){ try{ return deviceId(); }catch(e){ return ''; } })(),
+    user:whoAmI(), bay:null, pallet:null, pallets_open:[], dialog:null,
+    online:navigator.onLine !== false, signed_in:!!haveToken(),
+    on_break:!!(S && S.break_open)};
+  if(PAYLOAD && S && S.screen === 'bay'){
+    const b = PAYLOAD.bays[S.bay];
+    if(b){
+      ctx.bay = {lane:b.bay || '', n:b.n, index:S.bay};
+      (b.pallets || []).forEach(p => { if((S.pallets[p.loc] || {}).open)
+        ctx.pallets_open.push({loc:p.loc, card:cardOf(p) || p.pallet_id || ''}); });
+
+      const evs = (S.events || []), locs = ctx.pallets_open.map(x => x.loc);
+      let last = null;
+      for(let k = evs.length - 1; k >= 0 && !last; k--)
+        if(evs[k] && evs[k].kind === 'pallet_open' && locs.indexOf(evs[k].pallet) >= 0) last = evs[k].pallet;
+      ctx.pallet = ctx.pallets_open.filter(x => x.loc === last)[0] || ctx.pallets_open[ctx.pallets_open.length - 1] || null;
+    }
+  }
+  const open = [].slice.call(document.querySelectorAll('dialog[open]')).filter(d => d.id !== 'fbdlg');
+  const d = open[open.length - 1];
+  if(d){
+    const h = d.querySelector('#dlgh') || d.querySelector('.dh') || d.querySelector('h1,h2,h3');
+    const title = h ? h.textContent.trim() : '';
+    ctx.dialog = {title:title.slice(0, 200), header_text:(h ? h.textContent : '').replace(/\s+/g, ' ').trim().slice(0, 300),
+                  line_id:(d.dataset && d.dataset.line) || null};
+    if(ctx.dialog.line_id && PAYLOAD){ const f = find(ctx.dialog.line_id);
+      if(f && f.p) ctx.pallet = {loc:f.p.loc, card:cardOf(f.p) || f.p.pallet_id || ''}; }
+  }
+  return ctx;
+}
+
+function domSnapshot(){
+  const W = window.innerWidth, H = window.innerHeight, sy = window.scrollY || 0;
+  const css = [].slice.call(document.querySelectorAll('style')).map(x => x.textContent).join('\n');
+  const live = [].slice.call(document.body.querySelectorAll('*'));
+  const pins = new Map();
+  live.forEach(el => { const cs = getComputedStyle(el);
+    if(cs.position === 'fixed' || cs.position === 'sticky') pins.set(el, el.getBoundingClientRect()); });
+  const clone = document.body.cloneNode(true);
+  const cl = [].slice.call(clone.querySelectorAll('*'));
+  live.forEach((el, i) => {
+    const c = cl[i]; if(!c) return;
+    if(el.tagName === 'INPUT' && el.type !== 'file') c.setAttribute('value', el.value || '');
+    if(el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')){ if(el.checked) c.setAttribute('checked', ''); else c.removeAttribute('checked'); }
+    if(el.tagName === 'TEXTAREA') c.textContent = el.value || '';
+    if(el.tagName === 'SELECT'){ [].slice.call(c.querySelectorAll('option')).forEach((o, k) => {
+      if(k === el.selectedIndex) o.setAttribute('selected', ''); else o.removeAttribute('selected'); }); }
+    if(el.tagName === 'CANVAS'){ try{ const im = document.createElement('img'); im.src = el.toDataURL(); im.style.cssText = el.style.cssText; c.replaceWith(im); }catch(e){} }
+    if(pins.has(el)){ const r = pins.get(el);
+      c.style.position = 'absolute'; c.style.top = (r.top + sy) + 'px'; c.style.left = r.left + 'px';
+      c.style.width = r.width + 'px'; c.style.zIndex = '50'; }
+    if(el.tagName === 'DIALOG'){
+      if(!el.open || el.id === 'fbdlg'){ c.remove(); return; }
+      const r = el.getBoundingClientRect();
+      c.setAttribute('open', ''); c.style.position = 'absolute'; c.style.margin = '0';
+      c.style.top = (r.top + sy) + 'px'; c.style.left = r.left + 'px'; c.style.width = r.width + 'px';
+      c.style.zIndex = '200';
+      const bd = document.createElement('div');
+      bd.style.cssText = 'position:absolute;left:0;top:' + sy + 'px;width:' + W + 'px;height:' + H + 'px;background:#000b;z-index:199';
+      c.parentNode.insertBefore(bd, c);
+    }
+  });
+  [].slice.call(clone.querySelectorAll('script,video')).forEach(x => x.remove());
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:relative;width:' + W + 'px;margin-top:' + (-sy) + 'px';
+  wrap.appendChild(clone);
+   
+  const body = document.createElement('div'); body.className = document.body.className;
+  const bcs = getComputedStyle(document.body);        
+  body.style.cssText = 'margin:0;font-family:' + bcs.fontFamily.replace(/"/g, "'") + ';font-size:' + bcs.fontSize +
+                       ';color:' + bcs.color + ';background:' + bcs.backgroundColor + ';line-height:' + bcs.lineHeight;
+  while(clone.firstChild) body.appendChild(clone.firstChild);
+  wrap.replaceChild(body, clone);
+  const html = new XMLSerializer().serializeToString(wrap);
+  const bg = getComputedStyle(document.body).backgroundColor || '#ffffff';
+  return {html:html, css:css, width:W, height:H, background:bg};
+}
+let DOMSHOT_LOADING = null;
+function loadDomShot(){
+  if(window.DomShot) return Promise.resolve(window.DomShot);
+  if(DOMSHOT_LOADING) return DOMSHOT_LOADING;
+  DOMSHOT_LOADING = new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = './domshot.js';
+    el.onload = () => window.DomShot ? resolve(window.DomShot) : reject(new Error('domshot.js loaded but defined nothing'));
+    el.onerror = () => { DOMSHOT_LOADING = null; reject(new Error('could not load the screenshot renderer')); };
+    document.head.appendChild(el);
+  });
+  return DOMSHOT_LOADING;
+}
+ 
+function fbScreenshot(snap){
+  if(!snap) return Promise.resolve({error:'the screen could not be captured'});
+  return loadDomShot().then(D => D.rasterize(snap, {maxWidth:1280, background:snap.background, timeoutMs:8000}))
+    .then(b => ({blob:b}), e => ({error:String((e && e.message) || e)}));
+}
+function fbNewId(){
+  const st = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  let dev = ''; try{ dev = deviceId(); }catch(e){}
+  return 'fb-' + st + '-' + (dev || 'device') + '-' + Math.random().toString(36).slice(2, 6);
+}
+function fbAudioMime(){
+  const MR = window.MediaRecorder;
+  if(!MR || !MR.isTypeSupported) return '';
+  for(const m of ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']) if(MR.isTypeSupported(m)) return m;
+  return '';
+}
+function fbExt(mime){ return /mp4|aac|m4a/.test(mime || '') ? 'm4a' : /webm/.test(mime || '') ? 'webm' : 'audio'; }
+ 
+function openFeedback(){
+  let ctx = null, snap = null, snapErr = '';
+  try{ ctx = fbContext(); }catch(e){ ctx = {ts:new Date().toISOString(), context_error:String((e && e.message) || e)}; }
+  try{ snap = domSnapshot(); }catch(e){ snapErr = 'the screen could not be captured: ' + ((e && e.message) || e); }
+  FB_CUR = {id:fbNewId(), context:ctx, note:'', audio:null, audio_mime:null, audio_seconds:null, shot:null,
+            shot_error:snapErr || null, photo:null, photo_name:null};
+  const cur = FB_CUR;
+   
+  cur.shotP = snap ? fbScreenshot(snap).then(r => {
+    if(r.blob){ cur.shot = r.blob; } else cur.shot_error = r.error;
+    if(FB_CUR === cur) renderFbShot(); }) : Promise.resolve();
+  renderFeedback();
+}
+function fbWhere(c){
+  if(!c) return '';
+  const bits = [c.screen === 'bay' ? 'the bay screen' : c.screen === 'done' ? 'the finish screen'
+                : c.screen === 'review' ? 'the review screen' : (c.screen || 'the app')];
+  if(c.bay) bits.push('bay ' + c.bay.lane);
+  if(c.pallet) bits.push((c.pallet.card || c.pallet.loc));
+  if(c.dialog && c.dialog.title) bits.push('"' + c.dialog.title + '"');
+  return bits.join(' · ');
+}
+function renderFbShot(){
+  const box = document.getElementById('fbshotbox'); if(!box || !FB_CUR) return;
+  if(FB_CUR.shot){ try{ box.innerHTML = '<div class="sm dim">Screenshot attached:</div><img id="fbshot" alt="screenshot">';
+      document.getElementById('fbshot').src = URL.createObjectURL(FB_CUR.shot); }catch(e){} }
+  else if(FB_CUR.shot_error) box.innerHTML = '<div class="sm dim">No screenshot (' + esc(FB_CUR.shot_error) + ') — the feedback still goes.</div>';
+  else box.innerHTML = '<div class="sm dim">Taking a screenshot of what you were looking at…</div>';
+}
+function renderFeedback(){
+  const d = document.getElementById('fbdlg'); if(!d || !FB_CUR) return;
+  const signed = !!(tokStore() && (tokStore() || {}).refresh_token || haveToken());
+  const canRec = signed && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && !!window.MediaRecorder;
+  document.getElementById('fbb').innerHTML =
+    '<div class="sm">You were on <b>' + esc(fbWhere(FB_CUR.context)) + '</b> — that is sent with it.</div>' +
+    '<div id="fbshotbox"></div>' +
+    '<div class="fbrow"><label class="sm" style="min-height:44px;display:flex;align-items:center;gap:6px">📷 attach a photo ' +
+      '<input type="file" id="fbphoto" accept="image/*" style="max-width:170px"></label></div>' +
+    (canRec
+      ? '<div class="fbrow" id="fbrecrow"><button type="button" class="pri" id="fbrec" onclick="fbRecStart()">🎤 Record</button>' +
+        '<span id="fbtimer" class="sm" style="font-variant-numeric:tabular-nums"></span></div>' +
+        '<div id="fbmicmsg" class="sm dim"></div>'
+      : '<div class="sm dim" style="margin-top:8px">' + (signed ? 'This device cannot record sound here — type it instead.'
+          : 'Voice needs sign-in — type it now; it is kept on this iPad and sent once you sign in.') + '</div>') +
+    '<label class="sm" style="margin-top:10px;display:block">What is it? A bug, an idea, anything — type it here too if you like</label>' +
+    '<textarea id="fbnote" maxlength="2000" placeholder="e.g. the putback card showed the wrong placard for P-…"></textarea>';
+  const f = document.getElementById('fbf'); f.innerHTML = '';
+  [['Cancel', 'ghost', fbCancel], ['Send', 'pri', fbSend]].forEach(x => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = x[0]; b.className = x[1];
+    b.id = 'fb-' + x[0].toLowerCase(); b.onclick = x[2]; f.appendChild(b); });
+  const ph = document.getElementById('fbphoto');
+  if(ph) ph.onchange = () => { const file = ph.files && ph.files[0];
+    if(file){ FB_CUR.photo = file; FB_CUR.photo_name = 'photo.' + ((file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'); } };
+  renderFbShot();
+
+  if(!d._fbWired){ d._fbWired = true;
+    d.addEventListener('cancel', e => { e.preventDefault(); fbCancel(); });
+    d.addEventListener('close', () => { if(FB_REC){ FB_REC.cancelled = true; try{ FB_REC.mr.stop(); }catch(e){} fbReleaseMic(FB_REC); FB_REC = null; } }); }
+  if(!d.open) d.showModal();
+   
+  const me = FB_CUR;
+  FB_STORE.all().then(all => {
+    const dr = all.filter(x => x.state === 'draft' && x.id !== (me && me.id))
+                  .sort((a, b) => String(b.id).localeCompare(String(a.id)))[0];
+    const box = document.getElementById('fbb');
+    if(!dr || !box || FB_CUR !== me || document.getElementById('fbdraft')) return;
+    const el = document.createElement('div'); el.id = 'fbdraft'; el.className = 'warnbox sm';
+    el.innerHTML = '<b>You have an unsent feedback</b> from ' + esc(localHM(dr.meta.created)) +
+      (dr.meta.files.audio ? ' (a ' + n(dr.meta.files.audio_seconds || 0) + ' s recording)' : '') +
+      (dr.meta.note ? ' — "' + esc(dr.meta.note.slice(0, 60)) + '"' : '') +
+      '<div class="fbrow"><button type="button" class="pri" onclick="fbDraftSend(\'' + esc(dr.id) + '\')">Send it</button>' +
+      '<button type="button" class="ghost" onclick="fbDraftDiscard(\'' + esc(dr.id) + '\')">Discard it</button></div>';
+    box.insertBefore(el, box.firstChild);
+  }).catch(() => {});
+}
+ 
+async function fbRecStart(){
+  const cur = FB_CUR; if(!cur) return;
+  const msg = document.getElementById('fbmicmsg');
+  let stream = null;
+  try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){
+    if(msg) msg.innerHTML = '⛔ <b>The microphone is not allowed on this iPad</b> (' + esc(String((e && e.name) || e)) +
+      '). Type it below instead — that works just as well.';
+    const rb = document.getElementById('fbrec'); if(rb) rb.disabled = true;
+    return;
+  }
+  const mime = fbAudioMime();
+  let mr;
+  try{ mr = mime ? new MediaRecorder(stream, {mimeType:mime}) : new MediaRecorder(stream); }
+  catch(e){ stream.getTracks().forEach(t => t.stop()); if(msg) msg.textContent = '⛔ Recording is not possible here — type it instead.'; return; }
+  const chunks = [], t0 = Date.now();
+
+  let doneRes = null;
+  const rec_ = {mr:mr, stream:stream, t0:t0, timer:null, chunks:chunks, cur:cur, mime:mime,
+                done:new Promise(r => { doneRes = r; })};
+  FB_REC = rec_;
+  mr.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = () => {
+    fbReleaseMic(rec_);
+    const cancelled = rec_.cancelled; if(FB_REC === rec_) FB_REC = null;
+    if(cancelled){ doneRes(null); return; }
+    const type = mr.mimeType || mime || 'audio/webm';
+    cur.audio = new Blob(chunks, {type:type}); cur.audio_mime = type;
+    cur.audio_seconds = Math.round((Date.now() - t0) / 100) / 10;
+    doneRes(cur.audio);
+    fbSaveDraft(cur);                                  
+    if(FB_CUR !== cur) return;
+    const row = document.getElementById('fbrecrow');
+    if(row) row.innerHTML = '<span class="sm">✓ Recorded <b>' + n(cur.audio_seconds) + ' s</b></span>' +
+      '<button type="button" onclick="fbRecStart()">↺ Re-record</button>' +
+      '<button type="button" class="ghost" onclick="fbRecDiscard()">Remove it</button>';
+  };
+  mr.start(1000);
+  const row = document.getElementById('fbrecrow');
+  if(row) row.innerHTML = '<button type="button" class="warn" id="fbstop" onclick="fbRecStop()">■ Stop</button>' +
+    '<span id="fbtimer" class="sm" style="font-variant-numeric:tabular-nums">0:00 / 3:00</span>';
+  FB_REC.timer = setInterval(() => {
+
+    const fd = document.getElementById('fbdlg');
+    if(!fd || !fd.open){ rec_.cancelled = true; try{ if(mr.state !== 'inactive') mr.stop(); }catch(e){}
+                         fbReleaseMic(rec_); if(FB_REC === rec_) FB_REC = null; return; }
+    const s_ = Math.floor((Date.now() - t0) / 1000), el = document.getElementById('fbtimer');
+    if(el) el.textContent = Math.floor(s_ / 60) + ':' + String(s_ % 60).padStart(2, '0') + ' / 3:00';
+    if(s_ >= FB_MAX_SECONDS) fbRecStop();
+  }, 250);
+}
+ 
+function fbRecStop(){
+  const r = FB_REC; if(!r) return Promise.resolve(null);
+  try{ if(r.mr.state !== 'inactive') r.mr.stop(); }catch(e){}
+  return Promise.race([r.done, new Promise(res => setTimeout(() => {
+    if(r.cancelled || r.cur.audio){ res(r.cur.audio || null); return; }
+    fbReleaseMic(r);
+    if(r.chunks.length){ const type = r.mr.mimeType || r.mime || 'audio/webm';
+      r.cur.audio = new Blob(r.chunks, {type:type}); r.cur.audio_mime = type;
+      r.cur.audio_seconds = Math.round((Date.now() - r.t0) / 100) / 10; }
+    if(FB_REC === r) FB_REC = null;
+    res(r.cur.audio || null); }, 3000))]);
+}
+ 
+function fbReleaseMic(r){
+  r = r || FB_REC; if(!r || r.released) return;
+  r.released = true;                                   
+  try{ if(r.timer) clearInterval(r.timer); }catch(e){}
+  try{ r.stream.getTracks().forEach(t => t.stop()); }catch(e){}
+}
+function fbRecDiscard(){ if(FB_CUR){ FB_CUR.audio = null; FB_CUR.audio_mime = null; FB_CUR.audio_seconds = null; } renderFeedback(); }
+function fbCancel(){
+  const r = FB_REC;
+  if(r){ r.cancelled = true; try{ if(r.mr.state !== 'inactive') r.mr.stop(); }catch(e){} fbReleaseMic(r); FB_REC = null; }
+  const cur = FB_CUR;
+  if(cur){ try{ FB_STORE.del(cur.id).catch(() => {}); }catch(e){} }     
+  FB_CUR = null; const d = document.getElementById('fbdlg'); if(d && d.open) d.close();
+}
+ 
+function fbSaveDraft(cur){
+  cur = cur || FB_CUR; if(!cur || (!cur.audio && !(cur.note || '').trim())) return Promise.resolve();
+  try{ const n_ = document.getElementById('fbnote'); if(n_ && FB_CUR === cur) cur.note = n_.value || ''; }catch(e){}
+  const rec = fbRecord(cur); rec.state = 'draft';
+  try{ return FB_STORE.put(rec).then(() => fbRefreshCount()).catch(() => {}); }catch(e){ return Promise.resolve(); }
+}
+function fbOnHide(){
+  const d = document.getElementById('fbdlg');
+  if(FB_CUR && d && d.open){ try{ const n_ = document.getElementById('fbnote'); if(n_) FB_CUR.note = n_.value || ''; }catch(e){}
+                             fbSaveDraft(FB_CUR); }
+}
+window.addEventListener('pagehide', fbOnHide);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') fbOnHide(); });
+ 
+async function fbDraftSend(id){
+  try{ const r = (await FB_STORE.all()).filter(x => x.id === id)[0]; if(!r) return;
+       r.state = 'queued'; await FB_STORE.put(r); toast('the earlier feedback is queued to send'); }catch(e){}
+  const b = document.getElementById('fbdraft'); if(b) b.remove();
+  await fbRefreshCount(); fbFlush();
+}
+async function fbDraftDiscard(id){
+  try{ await FB_STORE.del(id); }catch(e){}
+  const b = document.getElementById('fbdraft'); if(b) b.remove();
+  await fbRefreshCount();
+}
+ 
+async function fbSend(){
+  const cur = FB_CUR; if(!cur) return;
+  if(FB_REC) await fbRecStop();                     
+  cur.note = ((document.getElementById('fbnote') || {}).value || '').trim();
+  if(!cur.note && !cur.audio){ toast('⛔ record something or type a note first'); return; }
+  const sb = document.getElementById('fb-send'); if(sb){ sb.disabled = true; sb.textContent = 'Saving…'; }
+  try{ await cur.shotP; }catch(e){}
+  const rec = fbRecord(cur);
+  try{ await FB_STORE.put(rec); }
+  catch(e){ if(sb){ sb.disabled = false; sb.textContent = 'Send'; }
+            toast('⛔ could not save the feedback on this iPad: ' + ((e && e.message) || e)); return; }
+  FB_CUR = null;
+  const d = document.getElementById('fbdlg'); if(d && d.open) d.close();
+  toast('Thanks — feedback saved' + (haveToken() ? ', sending…' : '; it is sent once you sign in'));
+  await fbRefreshCount();
+  fbFlush();
+}
+function fbRecord(cur){
+  const meta = {schema:'freezer.feedback/1', id:cur.id, created:new Date().toISOString(), note:cur.note || '',
+    files:{audio:cur.audio ? 'audio.' + fbExt(cur.audio_mime) : null, audio_mime:cur.audio ? cur.audio_mime : null,
+           audio_seconds:cur.audio ? cur.audio_seconds : null, screenshot:cur.shot ? 'screenshot.png' : null,
+           photo:cur.photo ? cur.photo_name : null},
+    screenshot_error:cur.shot ? null : (cur.shot_error || 'no screenshot'),
+    app:{build:BUILD || '', ua:navigator.userAgent || ''}, context:cur.context};
+  return {id:cur.id, meta:meta, audio:cur.audio || null, shot:cur.shot || null, photo:cur.photo || null,
+          state:'queued', tries:0, last_error:null, uploaded:{}};
+}
+async function fbRefreshCount(){
+  try{ const all = await FB_STORE.all();
+       FB_PENDING = all.filter(r => r.state !== 'draft').length; FB_DRAFTS = all.length - FB_PENDING; }catch(e){}
+  renderFbPending();
+}
+function renderFbPending(){
+  if(!FB_PENDING && !FB_DRAFTS) return dropBanner('fbout');
+   
+  const el = banner('fbout', '<span class="sm">' +
+    (FB_PENDING ? '🎤 Feedback waiting to send (' + FB_PENDING + ')' + (haveToken() ? '' : ' — it goes once you sign in') : '') +
+    (FB_PENDING && FB_DRAFTS ? ' · ' : '') +
+    (FB_DRAFTS ? FB_DRAFTS + ' unsent feedback — tap 🎤 to send or discard' : '') + '</span>', 'okbox');
+  if(el){ el.style.padding = '2px 10px'; if(el.firstChild && el.firstChild.style) el.firstChild.style.padding = '4px 8px'; }
+}
+ 
+async function fbPutFile(siteId, path, blob, type){
+  const t = tokStore();
+  const base = GRAPH + '/sites/' + siteId + '/drive/root:/' + path;
+  if(blob.size <= 3.9 * 1024 * 1024){
+    const r = await fetch(base + ':/content', {method:'PUT', headers:{Authorization:'Bearer ' + t.access_token,
+                                                'Content-Type':type || 'application/octet-stream'}, body:blob});
+    if(r.status === 401){ expireAccess(); throw new Error('sign-in expired'); }
+    if(!r.ok) throw new Error(path + ' upload HTTP ' + r.status);
+    return;
+  }
+  const s1 = await fetch(base + ':/createUploadSession', {method:'POST', headers:{Authorization:'Bearer ' + t.access_token,
+                          'Content-Type':'application/json'}, body:JSON.stringify({item:{'@microsoft.graph.conflictBehavior':'replace'}})});
+  if(s1.status === 401){ expireAccess(); throw new Error('sign-in expired'); }       
+  if(!s1.ok) throw new Error(path + ' upload session HTTP ' + s1.status);
+  const up = (await s1.json()).uploadUrl;
+  const r2 = await fetch(up, {method:'PUT', headers:{'Content-Range':'bytes 0-' + (blob.size - 1) + '/' + blob.size}, body:blob});
+  if(!r2.ok) throw new Error(path + ' upload HTTP ' + r2.status);
+}
+
+let QUEUE_LAST_PATH = '';       
+async function queueJob(kind, subject){
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
+  const lst = (lists.value || []).find(l => l.displayName === JOB_LIST);
+  if(!lst) throw new Error('the ' + JOB_LIST + ' queue does not exist on this site yet — ' +
+                           'a person has to run `jobs.py provision --push` once');
+
+  const q = (v) => String(v).replace(/'/g, "''");
+  const isTwin = it => { const f = it.fields || {};
+    return f.Kind === kind && f.Subject === subject && ['queued','claimed','running'].indexOf(f.State) >= 0; };
+  const readPage = async (url) => {
+    const t = tokStore();
+    const r = await fetch(url.indexOf('http') === 0 ? url : GRAPH + url,
+      {headers:{Authorization:'Bearer ' + t.access_token, Prefer:'HonorNonIndexedQueriesWarningMayFailRandomly'}});
+    if(r.status === 401){ expireAccess(); throw Object.assign(new Error('sign-in expired — sign in again'), {auth:true}); }
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  };
+  let dup = null, path = 'filtered';
+  try{
+    let next = `/sites/${site.id}/lists/${lst.id}/items?expand=fields&$top=200&$filter=` +
+               encodeURIComponent(`fields/Kind eq '${q(kind)}' and fields/Subject eq '${q(subject)}'`);
+    let pages = 0;
+    while(next && !dup && pages++ < 50){
+      const page = await readPage(next);
+      dup = (page.value || []).find(isTwin) || null;
+      next = page['@odata.nextLink'] || null;
+    }
+  }catch(e1){
+    if(e1 && e1.auth) throw e1;
+
+    try{
+      path = 'newest-200';
+      const page = await readPage(`/sites/${site.id}/lists/${lst.id}/items?expand=fields&$orderby=` +
+                                  encodeURIComponent('fields/Created desc') + '&$top=200');
+      dup = (page.value || []).find(isTwin) || null;
+    }catch(e2){
+      if(e2 && e2.auth) throw e2;
+      path = 'unchecked';
+    }
+    try{ console.warn('queueJob ' + kind + ' ' + subject + ': duplicate check via ' + path +
+                      ' (' + ((e1 && e1.message) || e1) + ')'); }catch(e){}
+    try{ if(PAYLOAD && S){ ev('job_queue_check', {job_kind:kind, subject:subject, path:path}); saveQuiet(); } }catch(e){}
+  }
+  QUEUE_LAST_PATH = path;
+  if(dup) return {already: dup.id};
+  return graphWrite(`/sites/${site.id}/lists/${lst.id}/items`,
+    {fields: {Title: kind + ':' + subject, Kind: kind, Subject: subject, State: 'queued', Params: '{}',
+              RequestedBy: 'freezer app ' + deviceId(),
+              RequestedUtc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), Attempts: 0}});
+}
+ 
+async function fbUploadOne(rec){
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const dir = sp.doc_folder + '/feedback/' + rec.id + '/';
+  rec.uploaded = rec.uploaded || {};
+  const steps = [];
+  if(rec.audio) steps.push([rec.meta.files.audio, rec.audio, rec.meta.files.audio_mime]);
+  if(rec.shot) steps.push(['screenshot.png', rec.shot, 'image/png']);
+  if(rec.photo) steps.push([rec.meta.files.photo, rec.photo, rec.photo.type || 'image/jpeg']);
+  steps.push(['meta.json', new Blob([JSON.stringify(rec.meta, null, 1)], {type:'application/json'}), 'application/json']);
+  for(const st_ of steps){
+    if(rec.uploaded[st_[0]]) continue;
+    await fbPutFile(site.id, dir + st_[0], st_[1], st_[2]);
+    rec.uploaded[st_[0]] = new Date().toISOString();
+    await FB_STORE.put(rec);
+  }
+  rec.state = 'files_up'; await FB_STORE.put(rec);
+  await queueJob('freezer.feedback', rec.id);            
+  await FB_STORE.del(rec.id);
+  try{ if(PAYLOAD && S){ ev('feedback_sent', {id:rec.id}); saveQuiet(); } }catch(e){}    
+}
+ 
+async function fbFlush(){
+  if(FB_SENDING) return 'busy';
+  FB_SENDING = true;
+  try{
+    let recs = [];
+    try{ recs = (await FB_STORE.all()).filter(r => r.state !== 'draft'); }catch(e){ return 'no-store'; }
+    FB_PENDING = recs.length; renderFbPending();
+    if(!recs.length) return 'empty';
+    if(navigator.onLine === false) return 'offline';
+    if(!(await ensureToken())) return 'signed-out';
+    for(const rec of recs.sort((a, b) => String(a.id).localeCompare(String(b.id)))){
+      try{ await fbUploadOne(rec); }
+      catch(e){ rec.tries = (rec.tries || 0) + 1; rec.last_error = String((e && e.message) || e);
+                try{ await FB_STORE.put(rec); }catch(e2){} }
+    }
+    await fbRefreshCount();
+    return 'done';
+  } finally { FB_SENDING = false; }
+}
+setInterval(() => { try{ fbFlush(); }catch(e){} }, 60 * 1000);
+window.addEventListener('online', () => { try{ fbFlush(); }catch(e){} });
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') try{ fbFlush(); }catch(e){} });
+
 window.addEventListener('load', () => {
   const probe = probeStorage();
   STORAGE_OK = probe.ok;
@@ -9809,6 +10311,8 @@ window.addEventListener('load', () => {
   }catch(e){}
   keepAwake();
   boot();
+   
+  setTimeout(() => { try{ fbRefreshCount(); fbFlush(); }catch(e){} }, 1500);
 });
 
 function flushLocal(){
