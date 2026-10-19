@@ -164,7 +164,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '80985b27319a';
+let BUILD = '800b80c9d864';
 
 let VER_ARRIVED = (function(){
   try{
@@ -4199,7 +4199,9 @@ function renderReview(a){
     'works →</a></div></div>'+
     heldLine()+
     '<div class="card"><div class="pad">'+
-    '<h2>Is this week the right size?</h2><div>'+
+    '<h2>Is this week the right size?</h2>'+
+    '<div class="sm dim">Hours are PERSON-hours — the work of one person. With 2–3 people '+
+    'on the crew, the clock time is about a half to a third of this.</div><div>'+
     chip('Bays to open', t.bays) + chip('Pallets down', t.pallets_down) +
     chip('Units to the floor', Math.round(units)) +
     chip('Rearranging', asides.length + ' SKU') +
@@ -4237,7 +4239,7 @@ function startShift(via){
   return true;
 }
 function chip(k,v){ return '<span class="chip"><b>'+esc(v==null?'—':v)+'</b> '+esc(k)+'</span>'; }
-function hrs(m){ return m ? (Math.round(Number(m)/6)/10) + ' h' : '—'; }
+function hrs(m){ return m ? (Math.round(Number(m)/6)/10) + ' person-h' : '—'; }
 function section(title, rows, kind){
   if(!rows.length) return '';
   const sorted = rows.slice().sort((x,y)=>Number(y.l.planned_qty||0)-Number(x.l.planned_qty||0));
