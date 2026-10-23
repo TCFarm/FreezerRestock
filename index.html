@@ -116,6 +116,10 @@ th{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em
 button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 #fbdlg .fbrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
 #fbdlg .fbrow>button{min-height:44px}
+
+.ln .stk{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px}
+.ln .stkbtn{min-height:44px;min-width:44px;padding:0 10px;font-size:14px}
+.ln .stkbtn.on{border-color:var(--ok);color:var(--ok);font-weight:700}
 #fbdlg textarea{width:100%;min-height:88px;font:inherit;font-size:16px;border:2px solid var(--line);border-radius:12px;padding:10px;background:var(--bg);color:var(--ink);box-sizing:border-box}
 #fbshot{max-width:100%;max-height:160px;border:1px solid var(--line);border-radius:8px;display:block;margin-top:6px}
 </style>
@@ -164,7 +168,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '800b80c9d864';
+let BUILD = '3cb2bad102c1';
 
 let VER_ARRIVED = (function(){
   try{
@@ -333,6 +337,7 @@ async function fetchPlan(){
 function acceptPlan(p){
 
   if(setPlan(p) === false) return false;
+  setTimeout(ensureMode, 0);    
   try{ localStorage.setItem(CACHE_KEY, JSON.stringify(
         {fetched: new Date().toISOString(), plan: p})); }
   catch(e){ toast('⚠️ plan loaded but too large to cache — it will need signal again'); }
@@ -369,6 +374,9 @@ function cachedPlan(){
 }
 
 function setPlan(p){
+
+  const wasView = !!VIEW;
+  stopView();
   const prevPayload = PAYLOAD, prevKey = KEY, prevS = S;
   KEY = 'freezer.exec.' + (p.plan_date || 'x');
   S = load();
@@ -376,6 +384,7 @@ function setPlan(p){
   if(prevPayload && prevPayload.bays && prevKey === KEY && sameDateRebuildHeld(prevPayload, p, S)){
     PAYLOAD = prevPayload; S = prevS;
     holdRebuild(p);
+    if(wasView) setTimeout(ensureMode, 0);
     return false;
   }
 
@@ -866,8 +875,9 @@ async function boot(){
   if(c){ setPlan(c.plan); render();
 
          ensureToken().then(ok => {
-           if(ok){ dropBanner('staleplan'); refreshPlanQuietly(); reconcileOnBoot(); return; }
+           if(ok){ dropBanner('staleplan'); refreshPlanQuietly(); reconcileOnBoot(); ensureMode(); return; }
            renderNotSignedIn(c);
+           ensureMode();      
          });
          return; }
   if(!(await ensureToken())){
@@ -954,6 +964,8 @@ async function doPlanSwitch(from, to, done, bays){
   dropBanner('reconcile');        
 
   if(!acceptPlan(p)){ render(); return; }    
+
+  setTabletMode('record');
   HELD_PLAN = null; dropBanner('heldplan');
   ev('plan_started_after_switch', {from: from});
   save();
@@ -981,6 +993,17 @@ async function refreshPlanQuietly(){
     const p = await fetchPlan();
 
     const changed = (p.plan_date !== PAYLOAD.plan_date) || (p.built !== PAYLOAD.built);
+    if(changed && VIEW){
+
+      if(VIEW.lead && hasRecordedWork(VIEW.base)){
+        VIEW.newer = p.plan_date + ' (built ' + String(p.built || '').slice(0, 16) + ')';
+        renderViewBand();
+        return;
+      }
+      if(acceptPlan(p)) toast(`newer plan ${p.plan_date} loaded`);
+      render();
+      return;
+    }
     if(changed){
 
       if(sameDateRebuildHeld(PAYLOAD, p, S)){
@@ -1022,6 +1045,7 @@ function blank(){
           left_down:{},       
           temp_out:[],        
           floor_fix:{},       
+          stickers:{},        
           events:[],          
           breaks:[]};
 }
@@ -1087,6 +1111,476 @@ function banner(id, html, cls){
   return el;
 }
 function dropBanner(id){ const el = document.getElementById(id); if(el) el.hidden = true; }
+
+const MODE_PREFIX = 'freezer.mode.';
+const OTHER_REC_DELAY_MS = 8000;
+const VIEW_POLL_MS = 60 * 1000;
+
+const VIEW_NAV_KEYS = ['events', 'breaks', 'break_open', 'screen', 'bay', 'bay_lane', 'opened', 'synced', 'v'];
+let VIEW = null;           
+let MODE_ASKED = '';       
+
+function tabletMode(){
+  try{ return localStorage.getItem(MODE_PREFIX + ((PAYLOAD && PAYLOAD.plan_date) || 'x')) || ''; }
+  catch(e){ return ''; }
+}
+function setTabletMode(m){
+  try{ localStorage.setItem(MODE_PREFIX + PAYLOAD.plan_date, m); localStorage.setItem(MODE_PREFIX + 'last', m); }
+  catch(e){}
+}
+function lastTabletMode(){ try{ return localStorage.getItem(MODE_PREFIX + 'last') || ''; }catch(e){ return ''; } }
+function stableJson(o){
+  if(o === null || typeof o !== 'object') return JSON.stringify(o);
+  if(Array.isArray(o)) return '[' + o.map(stableJson).join(',') + ']';
+  return '{' + Object.keys(o).sort().map(k => JSON.stringify(k) + ':' + stableJson(o[k])).join(',') + '}';
+}
+
+function viewPalletsSansOpen(ps){
+  const o = {};
+  Object.keys(ps || {}).forEach(k => {
+    const e = Object.assign({}, ps[k] || {}); delete e.open;
+    if(Object.keys(e).length) o[k] = e;
+  });
+  return o;
+}
+function viewFp(st){
+  const o = {};
+  Object.keys(st || {}).forEach(k => { if(VIEW_NAV_KEYS.indexOf(k) < 0) o[k] = st[k]; });
+  o.pallets = viewPalletsSansOpen(o.pallets);
+  return stableJson(o);
+}
+function viewKeepNav(){
+  const keep = {};
+  VIEW_NAV_KEYS.forEach(k => { if(S && S[k] !== undefined) keep[k] = S[k]; });
+  keep._open = Object.keys((S && S.pallets) || {}).filter(k => S.pallets[k] && S.pallets[k].open);
+  return keep;
+}
+function viewApplyBase(){
+  const keep = viewKeepNav(), open = keep._open || [];
+  delete keep._open;
+  S = Object.assign(JSON.parse(JSON.stringify(VIEW.base)), keep);
+  S.pallets = S.pallets || {};
+  Object.keys(S.pallets).forEach(k => { if(S.pallets[k]) S.pallets[k].open = false; });
+  open.forEach(k => { S.pallets[k] = Object.assign({}, S.pallets[k] || {}, {open: true}); });
+}
+ 
+function viewGuard(){
+  if(!VIEW || viewFp(S) === VIEW.fp) return;
+  viewApplyBase();
+  const now = Date.now();
+  if(now - (VIEW.told || 0) > 3000){
+    VIEW.told = now;
+    toast('👁 View-only tablet — nothing was recorded. The recording tablet records the work.');
+  }
+  setTimeout(() => { try{ render(); }catch(e){} }, 0);
+}
+function viewSetBase(st){
+  VIEW.base = st;
+  VIEW.fp = viewFp(st);
+  viewApplyBase();
+}
+function startView(){
+  if(!PAYLOAD || !PAYLOAD.bays) return;
+  if(!VIEW){
+    VIEW = {base: null, fp: '', lead: null, note: 'Looking for the recording tablet…', told: 0, timer: null,
+            polling: false};
+    viewSetBase(blank());
+    VIEW.timer = setInterval(() => { if(document.visibilityState === 'visible') viewPoll(); }, VIEW_POLL_MS);
+    UNDO.length = 0; COMMITTED = null; try{ renderUndoBar(); }catch(e){}    
+  }
+  dropBanner('modeask'); dropBanner('otherrec');
+  renderViewBand();
+  try{ render(); }catch(e){}
+  viewPoll();
+}
+function stopView(){
+  if(!VIEW) return;
+  if(VIEW.timer) clearInterval(VIEW.timer);
+  VIEW = null;
+   
+  S = load();
+  UNDO.length = 0; COMMITTED = undoSnapshotOf(S); try{ renderUndoBar(); }catch(e){}
+  dropBanner('viewonly');
+}
+function renderViewBand(){
+  if(!VIEW) return dropBanner('viewonly');
+  const L = VIEW.lead;
+  banner('viewonly',
+    '<b>👁 VIEW ONLY — this tablet does not record.</b>'
+    + '<div class="sm" style="margin-top:4px">' + (L
+        ? 'Showing the recording tablet (<b>' + esc(L.device) + '</b>) as it last sent, at <b>'
+          + esc(localHM(L.at)) + '</b>. It sends every few minutes, so the newest taps can take a moment to show.'
+        : esc(VIEW.note || '')) + '</div>'
+    + (VIEW.newer ? '<div class="sm" style="margin-top:4px">A newer plan (' + esc(VIEW.newer) + ') is out. This tablet '
+                    + 'stays on the recording tablet\'s version until that shift is finished.</div>' : '')
+    + '<div class="sm" style="margin-top:4px">Only one tablet records the transfers. You can still look at every '
+    + 'pallet and send feedback with the 🎤 button.</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button type="button" class="ghost" id="vo-refresh" style="min-height:44px" onclick="viewPoll(true)">Refresh now</button>'
+    + '<button type="button" class="ghost" id="vo-leave" style="min-height:44px" onclick="askLeaveView()">'
+    + 'Make this the recording tablet</button></div>', 'okbox');
+}
+
+async function viewPoll(byHand){
+  if(!VIEW || VIEW.polling) return;
+  VIEW.polling = true;
+  try{
+    if(!(await ensureToken())){ VIEW.note = 'Not signed in — sign in to see the recording tablet\'s progress.'; return; }
+    const cls = await listRecords();
+    const cand = cls.same_build_other_device.slice()
+                    .sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+    if(!cand){
+      VIEW.lead = null;
+      VIEW.note = cls.other.length
+        ? 'The recording tablet is working a different version of this plan, so its progress cannot be shown on this '
+          + 'one. It shows again once both tablets are on the same version.'
+        : 'The recording tablet has not sent anything yet. Its progress shows here once it syncs.';
+      if(byHand) toast('nothing from the recording tablet yet');
+      return;
+    }
+    if(VIEW.lead && VIEW.lead.name === cand.name && VIEW.lead.at === cand.at){
+      if(byHand) toast('up to date — last sent ' + localHM(cand.at));
+      return;
+    }
+    const rec = await fetchNamed(cand.name);
+    if(!VIEW) return;
+    if((rec.plan_built && PAYLOAD.built && rec.plan_built !== PAYLOAD.built) ||
+       (rec.plan_date && rec.plan_date !== PAYLOAD.plan_date)) return;
+    viewSetBase(stateFromRecord(rec));
+    VIEW.lead = {name: cand.name, at: cand.at, device: cand.device};
+    if(byHand) toast('updated — last sent ' + localHM(cand.at));
+    try{ render(); }catch(e){}
+  }catch(e){
+    VIEW.note = 'Could not reach SharePoint (' + String((e && e.message) || e) + ') — still showing the last copy.';
+  }finally{
+    if(VIEW){ VIEW.polling = false; renderViewBand(); }
+  }
+}
+
+function askMode(other){
+  if(!PAYLOAD || MODE_ASKED === PAYLOAD.plan_date) return;
+  MODE_ASKED = PAYLOAD.plan_date;
+  const last = lastTabletMode();
+  const viewFirst = !!other || last === 'view';
+  renderModeBanner(other);
+
+  const open = document.getElementById('dlg');
+  if(open && open.open) return;
+  dlg('Which tablet is this?',
+    '<div class="warnbox"><b>Only ONE tablet records the transfers for a shift.</b>'
+    + '<div class="sm" style="margin-top:4px">Choose <b>Recording</b> on that one and <b>View only</b> on every '
+    + 'other tablet. Two recording tablets stop the shift from reaching Finale.</div></div>'
+    + (other ? '<div class="okbox"><b>Tablet ' + esc(other.device) + ' is already recording this shift</b>'
+               + (other.at ? ' (last sent ' + esc(localHM(other.at)) + ')' : '') + '.'
+               + '<div class="sm" style="margin-top:4px">If that tablet is in use, make this one view only.</div></div>'
+             : '')
+    + '<p class="sm dim">A view-only tablet shows the plan and the recording tablet\'s progress. You can change '
+    + 'this later from the band at the top.</p>',
+    [{t: 'Recording tablet', c: viewFirst ? 'ghost' : 'pri', f: () => setTimeout(() => chooseRecord(other), 0)},
+     {t: 'View only', c: viewFirst ? 'pri' : 'ghost', f: () => setTimeout(chooseView, 0)}]
+      .concat(other ? [{t: 'This IS that tablet — it was reset', c: 'ghost',
+                        f: () => setTimeout(chooseAdopt, 0)}] : []));
+}
+ 
+function renderModeBanner(other){
+  banner('modeask',
+    '<b>Is this the recording tablet or a view-only tablet?</b>'
+    + '<div class="sm" style="margin-top:4px">Only one tablet records the transfers.'
+    + (other ? ' Tablet <b>' + esc(other.device) + '</b> is already recording.' : '') + '</div>'
+    + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+    + '<button type="button" class="pri" id="mb-view" style="min-height:44px" onclick="chooseView()">View only</button>'
+    + '<button type="button" class="ghost" id="mb-rec" style="min-height:44px" onclick="chooseRecord(MODE_OTHER)">'
+    + 'Recording tablet</button>'
+    + (other ? '<button type="button" class="ghost" id="mb-reset" style="min-height:44px" onclick="chooseAdopt()">'
+               + 'This IS that tablet — it was reset</button>' : '')
+    + '</div>', 'warnbox');
+  MODE_OTHER = other || null;
+}
+let MODE_OTHER = null;
+function chooseView(){
+   
+  if(!VIEW && hasRecordedWork(S)){
+    return dlg('This tablet has recorded work',
+      '<div class="badbox"><b>This tablet has already recorded work for this shift, so it is the recording '
+      + 'tablet.</b><div class="sm" style="margin-top:4px">Finish and sync on this tablet. Use the other tablet '
+      + 'to look.</div></div>', [{t: 'OK', c: 'pri'}]);
+  }
+   
+  setTabletMode('view');
+  dropBanner('modeask'); dropBanner('otherrec'); dropBanner('reconcile');
+  startView();
+}
+function chooseRecord(other){
+  if(other && !hasRecordedWork(S)){
+    return dlg('Another tablet is recording',
+      '<div class="badbox"><b>Tablet ' + esc(other.device) + ' has already sent work for this shift.</b>'
+      + '<div class="sm" style="margin-top:4px">If both tablets record, the shift will not reach Finale until '
+      + 'someone merges them by hand. Only record here if that tablet has stopped.</div></div>',
+      [{t: 'View only', c: 'pri', f: () => setTimeout(chooseView, 0)},
+       {t: 'Record here anyway', c: 'ghost', f: () => setTimeout(() => chooseRecord(null), 0)}]);
+  }
+  stopView();
+  setTabletMode('record');
+  S = load();
+  ev('tablet_mode', {mode: 'record'});
+  saveQuiet();
+  dropBanner('modeask');
+  try{ render(); }catch(e){}
+  checkOtherRecorder();
+}
+
+function chooseAdopt(){
+  if(!MODE_OTHER) return;
+  const o = MODE_OTHER;
+
+  dlg('Was THIS tablet reset?',
+    '<div class="badbox"><b>Only if this is the tablet that sent ' + esc(o.device) + '\'s work</b> and its storage was '
+    + 'cleared.<div class="sm" style="margin-top:4px">' + (o.at ? 'That tablet last sent work at <b>'
+    + esc(localHM(o.at)) + '</b>. ' : '') + 'If that tablet is still in someone\'s hands, choose View only instead — two '
+    + 'tablets on one record overwrite each other.</div></div>',
+    [{t: 'View only', c: 'pri', f: () => setTimeout(chooseView, 0)},
+     {t: 'Yes — this tablet was reset', c: 'ghost', f: () => setTimeout(() => {
+        OFFER = {name: o.name, at: o.at, device: o.device}; dropBanner('modeask'); adoptOffer(); }, 0)}]);
+}
+function askLeaveView(){
+
+  if(VIEW && VIEW.lead && hasRecordedWork(VIEW.base)){
+    const L = VIEW.lead;
+    return dlg('This shift is being recorded on ' + esc(L.device),
+      '<div class="badbox"><b>Finish the shift on that tablet.</b><div class="sm" style="margin-top:4px">'
+      + 'Recording here as well would split the shift into two records, which cannot go to Finale without a '
+      + 'person merging them — and both tablets would hand out the same P- card numbers.</div></div>'
+      + '<p class="sm">Only if that tablet is <b>broken or lost</b>: take its shift over here. Everything it last '
+      + 'sent (' + esc(localHM(L.at)) + ') comes with it, and that tablet must not be used again for this shift.</p>',
+      [{t: 'Stay view only', c: 'pri'},
+       {t: 'That tablet is broken — take over its shift', c: 'ghost', f: () => setTimeout(() => takeOverLead(L), 0)}]);
+  }
+  dlg('Make this the recording tablet?',
+    '<div class="warnbox"><b>Only one tablet records.</b><div class="sm" style="margin-top:4px">'
+    + (VIEW && VIEW.lead ? 'Tablet <b>' + esc(VIEW.lead.device) + '</b> has been recording this shift. Make sure '
+                           + 'it has stopped and synced before you record here.'
+                         : 'If another tablet is recording, it must stop first.') + '</div></div>',
+    [{t: 'Record on this tablet', c: 'pri', f: () => setTimeout(() => {
+        stopView(); setTabletMode('record'); S = load(); ev('tablet_mode', {mode: 'record'}); saveQuiet();
+        try{ render(); }catch(e){} checkOtherRecorder(); }, 0)},
+     {t: 'Stay view only', c: 'ghost'}]);
+}
+function takeOverLead(L){
+  stopView();
+  if(hasRecordedWork(S)) return toast('⚠️ this tablet has its own record for this plan — tell Jack before taking over');
+  OFFER = {name: L.name, at: L.at, device: L.device};
+  adoptOffer();
+}
+ 
+async function checkOtherRecorder(){
+  if(VIEW || !PAYLOAD) return;
+  let cls = null;
+  try{ if(!(await ensureToken())) return; cls = await listRecords(); }catch(e){ return; }
+  if(VIEW) return;
+  const near = (cls && cls.same_build_other_device) || [];
+  if(!near.length) return dropBanner('otherrec');
+  const o = near.sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+  MODE_OTHER = o;
+  banner('otherrec', hasRecordedWork(S)
+    ? '<b>⛔ Two tablets have recorded work on this plan</b> (this one and <b>' + esc(o.device) + '</b>).'
+      + '<div class="sm" style="margin-top:4px">The shift cannot go to Finale until they are merged. Stop recording '
+      + 'on one of them and tell Jack.</div>'
+    : '<b>⚠️ Tablet ' + esc(o.device) + ' is already recording this plan</b> (last sent ' + esc(localHM(o.at)) + ').'
+      + '<div class="sm" style="margin-top:4px">If it is in use, make this tablet view only.</div>'
+      + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+      + '<button type="button" class="pri" id="or-view" style="min-height:44px" onclick="chooseView()">Make this one view only</button>'
+      + '<button type="button" class="ghost" id="or-reset" style="min-height:44px" onclick="chooseAdopt()">'
+      + 'This IS that tablet — it was reset</button></div>',
+    hasRecordedWork(S) ? 'badbox' : 'warnbox');
+}
+ 
+async function ensureMode(){
+  if(!PAYLOAD || !PAYLOAD.bays) return;
+  const m = tabletMode();
+  if(m === 'view') return startView();
+   
+  if(m === 'record'){ setTimeout(checkOtherRecorder, OTHER_REC_DELAY_MS); return; }
+   
+  if(S.started || hasRecordedWork(S)){ setTabletMode('record'); return checkOtherRecorder(); }
+  let other = null;
+  try{
+    if(await ensureToken()){
+      const cls = await listRecords();
+      other = (cls.same_build_other_device || []).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null;
+    }
+  }catch(e){   }
+  if(tabletMode()) return;            
+   
+  if(S.started || hasRecordedWork(S)){ setTabletMode('record'); return checkOtherRecorder(); }
+  askMode(other);
+}
+
+function stickerKey(sku, lot){
+  if(!lot) return '';
+  const raw = (PAYLOAD && PAYLOAD.lot_ids || {})[sku + '|' + lot];
+  return sku + '|' + (raw || lot);
+}
+function stickerState(key){
+  if(!key) return '';
+  const mine = (S.stickers || {})[key], known = (PAYLOAD && PAYLOAD.lot_stickers || {})[key];
+  if(mine && (!known || String(mine.at) >= String(known.at || ''))) return mine.state;
+  return known ? known.state : '';
+}
+function hasLookup(key){
+  const t = PAYLOAD && PAYLOAD.lot_lookups;
+  if(!t) return null;                  
+  return Object.prototype.hasOwnProperty.call(t, key);
+}
+function markSticker(sku, lot, state, loc, card){
+  const key = stickerKey(sku, lot);
+  if(!key) return;
+  S.stickers = S.stickers || {};
+  S.stickers[key] = {state: state, at: new Date().toISOString(), loc: loc || '', card: card || ''};
+  ev('sticker_mark', {sku: sku, lot: key.slice(sku.length + 1), state: state});
+  save();
+  render();
+}
+
+function markStickerBtn(el){
+  const d = el && el.dataset; if(!d) return;
+  markSticker(d.sku, d.lot, d.st, d.loc, d.card);
+}
+function stickerRow(b, p, l){
+  const key = stickerKey(l.sku, l.lot);
+  if(!key) return '';
+  const s = stickerState(key), lk = hasLookup(key);
+  const data = ' data-sku="' + esc(l.sku) + '" data-lot="' + esc(l.lot) + '" data-loc="' + esc(p.loc)
+             + '" data-card="' + esc(cardOf(p) || '') + '"';
+  return '<div class="sub stk" onclick="event.stopPropagation()">🏷 '
+    + (s === 'done' ? '<b style="color:var(--ok)">stickered</b>' : s === 'needed'
+        ? '<b style="color:var(--aside)">needs stickers</b>' : '<span class="dim">stickers not checked</span>')
+    + (lk === false ? ' · <span class="dim">no Finale lookup yet</span>' : '')
+    + ' <button type="button" class="ghost stkbtn' + (s === 'done' ? ' on' : '') + '"' + data
+    + ' data-st="done" onclick="markStickerBtn(this)" aria-label="Lot ' + esc(l.lot) + ' cases are stickered">✓ Stickered</button>'
+    + '<button type="button" class="ghost stkbtn' + (s === 'needed' ? ' on' : '') + '"' + data
+    + ' data-st="needed" onclick="markStickerBtn(this)" aria-label="Lot ' + esc(l.lot) + ' needs stickers">Needs stickers</button></div>';
+}
+ 
+function stickersNeeded(){
+  const out = {};
+  Object.keys((PAYLOAD && PAYLOAD.lot_stickers) || {}).forEach(k => { if(stickerState(k) === 'needed') out[k] = 1; });
+  Object.keys(S.stickers || {}).forEach(k => { if(stickerState(k) === 'needed') out[k] = 1; });
+  return Object.keys(out).sort();
+}
+function appendStickerSummary(a){
+  if(!a) return;
+  const need = stickersNeeded();
+  const marked = Object.keys(S.stickers || {}).length;
+  if(!need.length && !marked) return;
+  const lk = (PAYLOAD && PAYLOAD.lot_lookups) || {};
+  a.insertAdjacentHTML('beforeend',
+    '<div class="card" id="stkcard"><div class="pad"><h3>🏷 Lot stickers</h3>'
+    + '<div class="sm dim">' + marked + ' lot(s) checked on this tablet. ' + need.length + ' lot(s) still need stickers.</div>'
+    + (need.length ? '<table class="sm" style="margin-top:8px;width:100%"><tr><th align="left">SKU</th>'
+        + '<th align="left">Lot</th><th align="left">Finale lookup</th></tr>'
+        + need.slice(0, 60).map(k => { const i = k.indexOf('|');
+            return '<tr><td>' + esc(k.slice(0, i)) + '</td><td>' + esc(k.slice(i + 1)) + '</td><td>'
+              + (lk[k] ? esc(lk[k]) : '<span class="dim">create the lookup in Finale first</span>') + '</td></tr>'; }).join('')
+        + '</table>' : '')
+    + '<div class="sm" style="margin-top:8px">To print: ask Claude in the <b>Freezer Restock</b> project for '
+    + '<b>the sticker CSV</b>, then run it through the Finale label report. Don\'t open it in Excel first.</div>'
+    + '</div></div>');
+}
+
+const FB_LIST_MAX = 10, FB_LIST_LIMIT_MS = 30000;
+let FB_LIST_RUN = 0;    
+ 
+function fbOpenList(){
+  if(FB_REC) return toast('stop the recording first');
+  const nt = document.getElementById('fbnote');
+  if(nt && FB_CUR) FB_CUR.note = nt.value;
+  fbList();
+}
+function fbBackFromList(){
+  if(!FB_CUR){ const d = document.getElementById('fbdlg'); if(d) d.close(); return; }
+  const keep = FB_CUR.note || '';
+  renderFeedback();
+  const nt = document.getElementById('fbnote'); if(nt) nt.value = keep;
+}
+async function fbList(){
+  const box = document.getElementById('fbb'); if(!box) return;
+  const f = document.getElementById('fbf'); if(f){ f.innerHTML = '';
+    const bk = document.createElement('button'); bk.type = 'button'; bk.className = 'ghost'; bk.id = 'fb-back';
+    bk.textContent = '← Back'; bk.onclick = fbBackFromList;
+    f.appendChild(bk); }
+  const t0 = Date.now(), run = ++FB_LIST_RUN;
+  let stage = 'Finding your feedback', done = 0, total = 0, over = false;
+  const stale = () => run !== FB_LIST_RUN;
+  const status = () => { if(over || stale()) return; const el = document.getElementById('fblstat');
+    if(el) el.textContent = stage + (total ? ' — ' + done + ' of ' + total : '') + ' · '
+                            + Math.round((Date.now() - t0) / 1000) + ' s (gives up after 30 s)'; };
+  box.innerHTML = '<h3 style="margin:0 0 6px">Your earlier feedback</h3><div class="sm dim" id="fblstat"></div>'
+                + '<div id="fblist"></div>';
+  status();
+  const clock = setInterval(status, 1000);
+  const fail = (why) => { if(stale()) return clearInterval(clock); over = true; clearInterval(clock);
+    const el = document.getElementById('fblstat');
+    if(el) el.innerHTML = '⛔ Could not load it (' + esc(why) + '). <button type="button" class="ghost" id="fbl-retry" '
+                        + 'style="min-height:44px" onclick="fbList()">Try again</button>'; };
+  const timer = setTimeout(() => fail('it took longer than 30 seconds'), FB_LIST_LIMIT_MS);
+  try{
+    if(!(await ensureToken())){ clearTimeout(timer); return fail('not signed in'); }
+    const sp = CFG.sharepoint;
+    const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+    const kids = await graph(`/sites/${site.id}/drive/root:/${sp.doc_folder}/feedback:/children`
+                           + `?$select=name,folder&$expand=children($select=name)&$top=999`);
+    const folders = (kids.value || []).filter(x => x.folder && /^fb-/.test(x.name))
+                      .sort((a, b) => b.name.localeCompare(a.name)).slice(0, FB_LIST_MAX);
+    if(over) return;
+    total = folders.length; stage = 'Reading';
+    const get = async (fold, file) => {
+      try{ const r = await graph(`/sites/${site.id}/drive/root:/${sp.doc_folder}/feedback/${fold}/${file}:/content`);
+           return (typeof r === 'string' && /\.json$/.test(file)) ? JSON.parse(r) : r; }catch(e){ return null; } };
+
+    const rows = await Promise.all(folders.map(async fo => {
+      const has = new Set(((fo.children) || []).map(c => c.name));
+      const pick = f => has.has(f) ? get(fo.name, f) : Promise.resolve(null);
+      const [meta, js, ans, tr] = await Promise.all([pick('meta.json'), pick('job_state.json'),
+                                                     pick('answer.json'), pick('transcript.txt')]);
+      done++;
+      return {id: fo.name, meta: meta, js: js, ans: ans, tr: typeof tr === 'string' ? tr : ''};
+    }));
+    if(over || stale()) return;
+    clearTimeout(timer); over = true; clearInterval(clock);
+    const el = document.getElementById('fblstat'); if(el) el.textContent = rows.length ? '' : 'No feedback sent yet.';
+    const list = document.getElementById('fblist'); if(!list) return;
+    list.innerHTML = rows.map(r => {
+      const m = r.meta || {}, c = m.context || {}, js = r.js || {};
+      const said = (r.tr || m.note || '').trim();
+      const led = String(js.ledger_detail || '').trim();
+      const state = r.ans ? '<b style="color:var(--ok)">Answered</b>'
+                  : led ? 'Logged as <b>' + esc(led) + '</b> — not answered yet'
+                  : js.card1_done ? 'Received and sent to the team'
+                  : 'Waiting to be processed';
+      return '<div class="card fbitem" style="margin:8px 0"><div class="pad">'
+        + '<div class="sm dim">' + esc(localHM(m.created || '')) + ' · ' + esc(((c.user || {}).name) || '') + '</div>'
+        + '<div style="margin-top:4px">"' + esc(said.slice(0, 160)) + (said.length > 160 ? '…' : '') + '"</div>'
+        + '<div class="sm" style="margin-top:4px">' + state + '</div>'
+        + (r.ans ? '<div class="okbox sm" style="margin-top:6px"><b>' + esc(r.ans.by || 'Answer') + ':</b> '
+                   + esc(String(r.ans.text || '')) + '</div>' : '')
+        + '</div></div>';
+    }).join('');
+  }catch(e){ clearTimeout(timer); fail(String((e && e.message) || e)); }
+}
+
+const PLAN_CHECK_MS = 15 * 60 * 1000;
+let LAST_PLAN_CHECK = 0;
+function maybePlanRefresh(){
+  try{
+    if(!PAYLOAD || !PAYLOAD.bays || !tokStore()) return;
+    if(!VIEW && (S.started || hasRecordedWork(S))) return;
+    if(Date.now() - LAST_PLAN_CHECK < 60 * 1000) return;
+    LAST_PLAN_CHECK = Date.now();
+    refreshPlanQuietly();
+  }catch(e){}
+}
+setInterval(() => { if(document.visibilityState === 'visible') maybePlanRefresh(); }, PLAN_CHECK_MS);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') maybePlanRefresh(); });
 
 function renderNotSignedIn(c){
   if(!c || !c.plan) return;
@@ -1208,7 +1702,9 @@ let NO_UNDO = 0;
 function saveQuiet(){ NO_UNDO++; try{ save(); } finally { NO_UNDO--; } }
 
 function save(){
-  materialiseOffPlan();       
+  materialiseOffPlan();
+   
+  if(VIEW){ viewGuard(); return; }       
 
   if(!saveT && COMMITTED !== null && !NO_UNDO){
     UNDO.push({state: COMMITTED, label: 'the last change', ts: Date.now()});
@@ -1230,6 +1726,7 @@ function save(){
 
 let LAST_WRITE = 0;
 function writeLocal(){
+  if(VIEW) return;           
 
   if(WRITE_LOCK) return;
   try{ localStorage.setItem(KEY, JSON.stringify(S)); saveFailed = false; touchOwner();
@@ -1245,6 +1742,7 @@ function writeLocal(){
   }
 }
 function undoLast(){
+  if(VIEW) return toast('👁 View-only tablet — there is nothing to undo here.');    
   if(!UNDO.length) return;
   const top = UNDO[UNDO.length - 1];
   if(!confirm('Undo ' + top.label + '?\n\nThis puts the app back exactly as it was just '
@@ -4150,7 +4648,7 @@ function renderInner(){
   const a = $('#app');
   navArrows();
   if(S.screen === 'review'){ renderReview(a); appendOffPlanTools(a); renderOfflineBadge(); return; }
-  if(S.screen === 'done'){ renderDone(a); appendOffPlanTools(a); return; }
+  if(S.screen === 'done'){ renderDone(a); appendStickerSummary(a); appendOffPlanTools(a); return; }
   renderBay(a);
 }
 
@@ -4678,6 +5176,7 @@ function line(b, p, l, i){
       (function(){ if(l.kind === 'count') return '';
         const rt = pileRecordText(b, p, l, i);
         return rt ? '<div class="sub" style="color:var(--aside)"><b>recorded:</b> '+esc(rt)+'</div>' : ''; })()+
+      stickerRow(b, p, l)+        
       '</div>'+
     (l.kind==='stay'||l.kind==='count' ? '' : '<div class="qty">'+n(q)+'</div>')+
     (l.kind==='count' ? '<button onclick="doCount(\''+id+'\')">'+(done?mark:'Count')+'</button>'
@@ -9174,11 +9673,13 @@ async function graphWrite(path, body, method){
 }
 
 const META_EV = {app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1,
-                 feedback_sent:1, job_queue_check:1};    
+                 feedback_sent:1, job_queue_check:1,
+                 tablet_mode:1};        
  
 const EXTRA_STORES = ['unplanned', 'found_moves', 'found_here', 'load_order', 'adhoc_counts',
                       'finalize_requested', 'lot_fix', 'lane_push', 'deck_freed',
                       'card_high',    
+                      'stickers',     
                       'bay_lanes'];  
 
 function workEvents(o){
@@ -9268,6 +9769,8 @@ let RECONCILED = false;
 let SERVER_REC = null;           
 
 async function reconcileOnBoot(){
+   
+  if(VIEW || tabletMode() === 'view') return;
   if(RECONCILED) return;
   RECONCILED = true;
 
@@ -9299,6 +9802,7 @@ async function reconcileOnBoot(){
     if(!hasRecordedWork(S) && near.length){
 
       OFFER = near.sort((a,b) => String(b.at).localeCompare(String(a.at)))[0];
+
       renderAdoptOffer(OFFER, near.length);
     } else if(!hasRecordedWork(S) && far.length){
       banner('reconcile',
@@ -9363,6 +9867,14 @@ function stashLocal(tag){
   }catch(e){ return ''; }
 }
 
+function stateFromRecord(rec){
+  const o = blank();
+  ['started','finished','bay','screen','opened','lines','pallets','bays','putback_actual',
+   'new_pallets','split_contents','left_down','temp_out','floor_fix','events','breaks',
+   'backstock','stopped_early'].concat(EXTRA_STORES)
+    .forEach(k => { if(rec[k] !== undefined && rec[k] !== null) o[k] = rec[k]; });
+  return o;
+}
 function applyServerRecord(rec, how){
 
   const recBuilt = String((rec && rec.plan_built) || ''), curBuilt = String((PAYLOAD && PAYLOAD.built) || '');
@@ -9386,12 +9898,12 @@ function applyServerRecord(rec, how){
       + 'style="margin-top:4px">Nothing has been changed. Tell Jack — this needs a person.</div>');
     return;
   }
-  const o = blank();
+  const o = stateFromRecord(rec);
 
-  ['started','finished','bay','screen','opened','lines','pallets','bays','putback_actual',
-   'new_pallets','split_contents','left_down','temp_out','floor_fix','events','breaks',
-   'backstock','stopped_early'].concat(EXTRA_STORES)
-    .forEach(k => { if(rec[k] !== undefined && rec[k] !== null) o[k] = rec[k]; });
+  Object.keys(S.stickers || {}).forEach(k => {
+    const mine = S.stickers[k], there = (o.stickers || {})[k];
+    if(!there || String(mine.at) > String(there.at)){ o.stickers = o.stickers || {}; o.stickers[k] = mine; }
+  });
   const age = recordAge(o);
   S = o;                                      
   COMMITTED = undoSnapshotOf(S);
@@ -9472,7 +9984,9 @@ function renderAdoptOffer(f, n){
     + '<button class="pri" style="min-height:48px" onclick="adoptOffer()">'
     + 'Nobody else — bring it back</button>'
     + '<button class="ghost" style="min-height:48px" onclick="declineOffer()">'
-    + 'Leave it alone</button></div>', 'warnbox');
+    + 'Leave it alone</button>'
+    + '<button class="ghost" id="ad-view" style="min-height:48px" onclick="chooseView()">'
+    + 'Someone else is recording — make this one view only</button></div>', 'warnbox');
 }
 async function adoptOffer(){
   const f = OFFER; if(!f) return dropBanner('reconcile');
@@ -9486,7 +10000,12 @@ async function adoptOffer(){
     + 'tap it again.</div>'); }
 
   try{ localStorage.setItem('freezer.device', f.device); }catch(e){}
-  applyServerRecord(rec, 'adopted');
+  if(applyServerRecord(rec, 'adopted') !== false && hasRecordedWork(S)){
+     
+    setTabletMode('record'); dropBanner('modeask');
+    const d = document.getElementById('dlg');
+    if(d && d.open && /Which tablet is this/.test((document.getElementById('dlgh') || {}).textContent || '')) d.close();
+  }
 }
 function declineOffer(){
   OFFER = null;
@@ -9537,6 +10056,8 @@ function buildRecord(m, movesErr, conflicts){
                  ...(cs.length ? {off_plan_conflicts: cs} : {})};
 }
 async function syncNow(quiet){
+   
+  if(VIEW){ if(!quiet) viewPoll(true); return false; }
   if(SYNCING) return false;                
   SYNCING = true;
   let fileLanded = false;
@@ -9676,6 +10197,7 @@ const AUTOSYNC_MS = 5 * 60 * 1000;
 
 function autoSyncTick(){
   try{
+    if(VIEW) return;                                    
     if(!S || !S.started) return;                        
     if(!unsyncedCrewWork()) return;                     
     if(Date.now() - LAST_AUTOSYNC < AUTOSYNC_MS) return;
@@ -10007,8 +10529,8 @@ function renderFeedback(){
     '<label class="sm" style="margin-top:10px;display:block">What is it? A bug, an idea, anything — type it here too if you like</label>' +
     '<textarea id="fbnote" maxlength="2000" placeholder="e.g. the putback card showed the wrong placard for P-…"></textarea>';
   const f = document.getElementById('fbf'); f.innerHTML = '';
-  [['Cancel', 'ghost', fbCancel], ['Send', 'pri', fbSend]].forEach(x => {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = x[0]; b.className = x[1];
+  [['Earlier', 'ghost', fbOpenList, 'Earlier feedback'], ['Cancel', 'ghost', fbCancel], ['Send', 'pri', fbSend]].forEach(x => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = x[3] || x[0]; b.className = x[1];
     b.id = 'fb-' + x[0].toLowerCase(); b.onclick = x[2]; f.appendChild(b); });
   const ph = document.getElementById('fbphoto');
   if(ph) ph.onchange = () => { const file = ph.files && ph.files[0];
@@ -10205,6 +10727,9 @@ async function fbPutFile(siteId, path, blob, type){
 
 let QUEUE_LAST_PATH = '';       
 async function queueJob(kind, subject){
+   
+  if(VIEW && kind !== 'freezer.feedback')
+    throw new Error('this is a view-only tablet — only the recording tablet can do that');
   const sp = CFG.sharepoint;
   const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
   const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
