@@ -168,7 +168,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '3cb2bad102c1';
+let BUILD = '5c0c95107f82';
 
 let VER_ARRIVED = (function(){
   try{
@@ -5211,19 +5211,24 @@ function allAsPlanned(loc){
   ev('all_as_planned', {pallet:loc});
 
   const bb = PAYLOAD.bays[S.bay];
-  let ask = null;
+  let ask = null, askBack = false;
   f.lines.forEach((l, i) => {
     if(ask || (l.kind !== 'take' && l.kind !== 'aside')) return;
     const tal = pileTally(bb, f, l.sku, l.lot);
     const want = tal.over ? tal.over : (tal.short ? -tal.short : 0);
-    if(Math.abs(want) < 0.001) return;
+
+    if(Math.abs(want) < 0.001){
+      if((putbackAsk(tal) || {}).kind === 'stay'){ ask = tal.lines[tal.lines.length - 1]; askBack = true; }
+      return;
+    }
     const carried = tal.lines.reduce((s_, id2) => { const x = st(id2) || {};
       return s_ + (x.pile_adj ? (Number(x.adjustment || 0) - Number(x.to_temp || 0) +
                                  Number(x.from_temp || 0)) : 0); }, 0);
     if(Math.abs(carried - want) > 0.001) ask = tal.lines[tal.lines.length - 1];
   });
-  if(ask) setTimeout(() => { toast('⚠️ one pile does not add up — say what happened to the '+
-                                   'difference'); openLine(ask); }, 0);
+  if(ask) setTimeout(() => { toast(askBack ? '⚠️ one pile sends more back up than planned — confirm it'
+                                   : '⚠️ one pile does not add up — say what happened to the difference');
+                             openLine(ask); }, 0);
   const left = f.lines.filter((l,i) => l.kind==='count' &&
       !(st(lid(PAYLOAD.bays[S.bay].n,loc,l,i))||{}).state).length;
   if(left){ toast(left + ' cycle count(s) still to do on this pallet'); }
@@ -5348,6 +5353,16 @@ function openLine(id, opts){
   const tal0 = pileTally(f.b, f.p, l.sku, l.lot);
   const verb = l.kind === 'take' ? 'moved to ' + (l.dest||'F1') : 'set aside onto ' + l.onto_pallet;
 
+  const sibOpen = !!(f.p && f.p.lines.some((x, ix) => ix !== f.i && x.sku === l.sku &&
+        (x.lot||'') === (l.lot||'') && (x.kind === 'take' || x.kind === 'aside') &&
+        !(st(lid(f.b.n, f.p.loc, x, ix)) || {}).state));
+
+  const talOthers = pileTally(f.b, f.p, l.sku, l.lot, id, 0);
+  const wholeLeft = Math.max(0, Math.round((talOthers.system - talOthers.movedOut) * 1000) / 1000);
+  const showWhole = !sibOpen && missing <= 0 && wholeLeft > Number(planned || 0) + 0.001;
+   
+  const lineExp = prev.approved != null ? Number(prev.approved) : Number(l.planned_qty || 0);
+
   dlgL(id, l.sku + (l.lot ? ' · lot ' + l.lot : ' · no lot') + ' — planned ' + n(planned),
 
     (function(){ const c = pileClaim(f.b, f.p, l.sku, l.lot);
@@ -5380,6 +5395,11 @@ function openLine(id, opts){
       'written off; pick the reason.</div>' : '')+
     '<div><label class="sm dim">How many '+esc(verb)+'?</label>'+
       qtyField('q1', n(missing > 0 ? Math.max(0, pileLeft(f.b, f.p, l.sku, l.lot, id) - missing) : planned))+'</div>'+
+    (showWhole
+      ? '<button type="button" id="wholepile" style="width:100%;min-height:52px;margin-top:8px" '+
+        'onclick="var q=document.getElementById(\'q1\');q.value=\''+String(wholeLeft)+'\';'+
+        'q.dispatchEvent(new Event(\'input\'))">Took the whole pile — all '+n(wholeLeft)+'</button>'
+      : '')+
     '<div class="sm dim" style="margin-top:8px" id="pileline"></div>'+
     '<div id="calc" style="margin-top:10px"></div>',
     [{t:'Cancel',c:'ghost'},
@@ -5469,6 +5489,9 @@ function openLine(id, opts){
           setTimeout(() => skipLine(id), 0);   
           return;
         }
+        const pbWhy = putbackBlock(tal, mv, lineExp);   
+        if(pbWhy){ toast(pbWhy); return false; }
+        const pbAsk = putbackAsk(tal, mv, lineExp);
         let adj2 = adj;
 
         let stolen = 0;
@@ -5500,7 +5523,15 @@ function openLine(id, opts){
                        took_from_sibling: keepRealloc ? prev.took_from_sibling : undefined,
                        sibling_line: keepRealloc ? prev.sibling_line : undefined,
                        parked_not_here: undefined, temp_lot: undefined,
-                       rest_stays: restStays || undefined};
+
+                       rest_stays: (restStays || (pbAsk && pbAsk.kind === 'line' &&
+                                    ($('#pbconfirm')||{}).value === 'yes')) || undefined,
+                        
+                       back_confirmed: !pbAsk ? prev.back_confirmed
+                         : (pbAsk.kind === 'short' && restStays) ? pbAsk.fewer
+                         : (pbAsk.kind === 'stay' ||
+                            (pbAsk.kind === 'line' && ($('#pbconfirm')||{}).value === 'yes'))
+                           ? pbAsk.fewer : undefined};
 
         if(Math.abs(adj2) <= 0.001){ patch.reason = undefined; patch.direction = undefined; }
 
@@ -5561,13 +5592,22 @@ function openLine(id, opts){
         const _sa1 = $('#shortact');
         const _stays = !tal.over && tal.short > 0.001 && _sa1 && _sa1.value === 'stays';
         const _park  = !tal.over && tal.short > 0.001 && _sa1 && _sa1.value === 'temp' && tempLoc();
+        const _pbWhy = putbackBlock(tal, mv, lineExp);   
+        if(_pbWhy){ toast(_pbWhy); return false; }
+        const _pbAsk = putbackAsk(tal, mv, lineExp);
         const adj = tal.over ? tal.over : ((tal.short && !_stays && !_park) ? -tal.short : 0);
         const patch = {state:'done', actual:mv, adjustment:adj,
                        left:undefined, baseline:undefined, sibling_took:undefined,
                        pile_adj:((Math.abs(adj) > 0.001) || _park) || undefined,
                         
                        parked_not_here:undefined, to_temp:undefined, temp_lot:undefined,
-                       rest_stays:_stays || undefined};
+                       rest_stays:(_stays || (_pbAsk && _pbAsk.kind === 'line' &&
+                                   ($('#pbconfirm')||{}).value === 'yes')) || undefined,
+                       back_confirmed: !_pbAsk ? prev.back_confirmed
+                         : (_pbAsk.kind === 'short' && _stays) ? _pbAsk.fewer
+                         : (_pbAsk.kind === 'stay' ||
+                            (_pbAsk.kind === 'line' && ($('#pbconfirm')||{}).value === 'yes'))
+                           ? _pbAsk.fewer : undefined};
         if(_park){ patch.to_temp = Math.round(tal.short * 1000) / 1000;
                    patch.temp_sku = l.sku; patch.temp_lot = l.lot || ''; }
         if(Math.abs(adj) > 0.001){
@@ -5598,6 +5638,7 @@ function openLine(id, opts){
         const mv=Number($('#q1').value)||0;
         const tal=pileTally(f.b, f.p, l.sku, l.lot, id, mv);
         const adj=tal.over ? tal.over : (tal.short ? -tal.short : 0);
+        const shortAsked = (putbackAsk(tal, mv, lineExp) || {}).kind === 'short';
         const c=$('#calc'), pl=$('#pileline');
 
         if(pl) pl.innerHTML = tal.pending
@@ -5608,9 +5649,35 @@ function openLine(id, opts){
             '</b> staying on it'+(tal.cleared ? ' — and the plan clears this pile' : '');
         if(Math.abs(adj)<0.001){
 
+          const pa = putbackAsk(tal, mv, lineExp);
+          if(pa && (pa.kind === 'stay' || pa.kind === 'line')){
+            const where = esc((f.p && (f.p.pallet_id || f.p.loc)) || 'the pallet');
+            c.innerHTML = '<div class="warnbox sm">'+
+              (pa.kind === 'stay'
+                ? '<b>'+n(pa.back)+' go back up on '+where+'</b> — '+n(pa.fewer)+' more than the plan '+
+                  'expected, because '+n(pa.fewer)+' fewer were carried off this pile.'
+                : '<b>You carried '+n(pa.fewer)+' fewer than this line asked.</b> Where are the other '+
+                  n(pa.fewer)+'?')+
+              '<select id="pbconfirm" style="margin-top:8px">'+
+                '<option value="__choose__" selected>— '+(pa.kind === 'stay' ? 'is that right?' : 'choose one')+
+                  ' —</option>'+
+                (pa.kind === 'stay'
+                  ? '<option value="yes">Yes — '+n(pa.back)+' are still on the pallet and go back up</option>'
+                  : '<option value="yes">Still on the pallet — they go back up with it</option>'+
+                    '<option value="other">Going with the other line on this pallet</option>')+
+                '<option value="no">No — I took more than that (I will fix the number)</option>'+
+              '</select>'+
+              (showWhole ? '<div class="sm dim" style="margin-top:6px">If you took the whole pile, use '+
+                '<b>Took the whole pile</b> above.</div>' : '')+'</div>';
+            const pb = $('#pbconfirm');
+            if(pb) pb.onchange = () => { if(pb.value === 'no'){ const q = $('#q1'); if(q) q.focus(); } };
+            return;
+          }
           c.innerHTML = '<div class="okbox sm">'+
             (tal.pending ? 'Recorded. We add the pile up once every line is answered.'
-             : tal.cleared ? 'Adds up — the pile is clear and there is nothing to correct.'
+              
+             : (tal.cleared || tal.movedOut >= tal.system - 0.001)
+               ? 'Adds up — the pile is clear and there is nothing to correct.'
              : 'Adds up — the rest stays on the pallet. Nothing to correct.')+'</div>';
           return;
         }
@@ -5656,9 +5723,11 @@ function openLine(id, opts){
           (adj < 0
             ? '<label class="sm" style="margin-top:8px">What about the other '+
               n(-adj)+'?</label>'+
+
               '<select id="shortact">'+
-                '<option value="stays" selected>It is still on the pallet — I only took what '+
-                  'I wanted, the rest goes back up with it</option>'+
+                (shortAsked ? '<option value="__choose__" selected>— choose one —</option>' : '')+
+                '<option value="stays"'+(shortAsked ? '' : ' selected')+'>They are still on the pallet — I only took what '+
+                  'I wanted, the other '+n(-adj)+' go back up with it</option>'+
                 (tempLoc() ? '<option value="temp">It is NOT here — park it at '+esc(tempLoc())+
                   ', I think it is on another pallet</option>' : '')+
                 '<option value="writeoff">It is NOT here — write it off, it is really gone</option>'+
@@ -6956,8 +7025,8 @@ function pileAdjFields(adj, tal, p, picked){
 }
 
 function pileTally(b, p, sku, lot, overrideId, overrideActual){
-  const out = {system:0, plannedOut:0, plannedStay:0, movedOut:0, cleared:false,
-               lines:[], pending:0, short:0, over:0};
+  const out = {system:0, plannedOut:0, expectedOut:0, restingExpected:0, confirmedBack:0,
+               plannedStay:0, movedOut:0, cleared:false, lines:[], pending:0, short:0, over:0};
   if(!b || !p) return out;
   out.system = onPallet(b, p, sku, lot);
   (p.lines || []).forEach((l, i) => {
@@ -6967,6 +7036,12 @@ function pileTally(b, p, sku, lot, overrideId, overrideActual){
     const sRaw = st(id) || {};
     const planned = Number(l.planned_qty || 0);
     out.plannedOut += planned;
+
+    const expected = (sRaw.approved != null ? Number(sRaw.approved) : planned);
+    out.expectedOut += expected;
+
+    if(sRaw.state === 'done' && sRaw.back_confirmed != null)
+      out.confirmedBack = Math.max(out.confirmedBack, Number(sRaw.back_confirmed));
     out.lines.push(id);
      
     const isOverride = (overrideId && id === overrideId);
@@ -6976,8 +7051,10 @@ function pileTally(b, p, sku, lot, overrideId, overrideActual){
 
     if(state === 'done' && !isOverride && sRaw.rest_stays) out.restStays = true;
     if(state === 'done')          out.movedOut += act;
-    else if(state === 'skipped')  {   }
-    else if(state === 'missing')  {   }
+    else if(state === 'skipped')  {  
+                                    out.restingExpected += expected; }
+    else if(state === 'missing')  {  
+                                    out.restingExpected += expected; }
     else                          out.pending++;
   });
   out.plannedStay = Math.max(0, out.system - out.plannedOut);
@@ -6989,6 +7066,39 @@ function pileTally(b, p, sku, lot, overrideId, overrideActual){
     if(out.movedOut > out.system + 0.001)                out.over  = r(out.movedOut - out.system);
   }
   return out;
+}
+
+function putbackAsk(tal, mv, lineExpected){
+  if(!tal || tal.over) return null;
+  const r = x => Math.round(x * 1000) / 1000;
+
+  if(tal.pending){
+    return (mv != null && lineExpected != null && mv < lineExpected - 0.001)
+      ? {kind:'line', fewer:r(lineExpected - mv)} : null;
+  }
+  const active = tal.expectedOut - tal.restingExpected;
+  if(tal.movedOut >= active - 0.001) return null;
+  const short = tal.short > 0.001;
+  if(!short && tal.cleared) return null;
+  const back = short ? tal.short : r(tal.system - tal.movedOut);
+  const fewer = r(active - tal.movedOut);
+
+  if(fewer <= tal.confirmedBack + 0.001) return null;
+  return {kind: short ? 'short' : 'stay', back:back, fewer:fewer};
+}
+ 
+function putbackBlock(tal, mv, lineExpected){
+  const a = putbackAsk(tal, mv, lineExpected); if(!a) return '';
+  if(a.kind === 'short'){
+    const s = $('#shortact');
+    return (s && s.value === '__choose__')
+      ? '⛔ say what happened to the other ' + n(a.back) + ' — are they still on the pallet?' : '';
+  }
+  const pb = $('#pbconfirm');
+  if(!pb || pb.value === 'yes' || (a.kind === 'line' && pb.value === 'other')) return '';
+  return pb.value === 'no' ? '⛔ change the number to what you really took, then Save'
+       : a.kind === 'line' ? '⛔ say where the other ' + n(a.fewer) + ' are'
+       : '⛔ confirm what goes back up — ' + n(a.back) + ' on the pallet';
 }
 
 function pileBasis(b, p, l){
