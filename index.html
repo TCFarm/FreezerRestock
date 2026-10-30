@@ -168,7 +168,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '5c0c95107f82';
+let BUILD = 'c42cb60e1bbf';
 
 let VER_ARRIVED = (function(){
   try{
@@ -2140,6 +2140,7 @@ function askMoveInstead(id){
                               {add: !!($('#mi5') && $('#mi5').checked)});
         if(!r.ok){ toast(r.why); return false; }
         maybeDone(f.p.loc); render();
+        openPutbackFollowUp(putbackFollowUp(f.b, f.p, l.sku, l.lot, id));   
       }}],
     () => {
       const cb = $('#mi5'), q_ = $('#mi1');
@@ -5799,7 +5800,8 @@ function whyRead(){
 
 function skipLine(id, bulk, typed){
   const f = find(id); if(!f) return;
-  const done = () => { if(!bulk){ maybeDone(f.p ? f.p.loc : ''); render(); } };
+  const done = () => { if(!bulk){ maybeDone(f.p ? f.p.loc : ''); render();
+    openPutbackFollowUp(putbackFollowUp(f.b, f.p, f.l.sku, f.l.lot)); } };   
 
   if(bulk){ setLine(id, {state:'skipped', actual:0, reason:bulk,
                          reason_source:(typed ? 'typed' : 'picked')});
@@ -5841,7 +5843,11 @@ function skipRest(loc){
         left.forEach(x => skipLine(x.id, r.why, r.typed));
         S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false});
         ev('pallet_skipped',{pallet:loc, lines:left.length, why:r.why, typed:r.typed});
-        save(); render(); }}], whyWire);
+        save(); render();
+         
+        let fu = null;
+        left.forEach(x => { if(!fu) fu = putbackFollowUp(b, p, x.l.sku, x.l.lot); });
+        openPutbackFollowUp(fu); }}], whyWire);
 }
 function orphanDone(id, took){
   const f = find(id);
@@ -7085,6 +7091,26 @@ function putbackAsk(tal, mv, lineExpected){
 
   if(fewer <= tal.confirmedBack + 0.001) return null;
   return {kind: short ? 'short' : 'stay', back:back, fewer:fewer};
+}
+
+function putbackFollowUp(b, p, sku, lot, preferId){
+  if(!b || !p) return null;
+  const pile = pileTally(b, p, sku, lot);
+  const done = pile.lines.filter(x => (st(x) || {}).state === 'done');
+  const pick = (preferId && done.indexOf(preferId) >= 0) ? preferId : null;
+  if(pile.pending){
+    if(!pick) return null;
+    const s = st(pick), ln = (find(pick) || {}).l || {};
+    const exp = s.approved != null ? Number(s.approved) : Number(ln.planned_qty || 0);
+    return putbackAsk(pile, Number(s.actual || 0), exp) ? pick : null;
+  }
+  if(!done.length || !putbackAsk(pile)) return null;
+  return pick || done[done.length - 1];
+}
+function openPutbackFollowUp(id){
+  if(!id) return false;
+  setTimeout(() => { toast('⚠️ more goes back up than the plan said — confirm it'); openLine(id); }, 0);
+  return true;
 }
  
 function putbackBlock(tal, mv, lineExpected){
