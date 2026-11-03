@@ -148,6 +148,8 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
   <button class="ghost" onclick="openFinish()" title="Finish &amp; export">⇪</button>
 </div>
 
+<div id="crewstrip" style="display:none;justify-content:flex-end;padding:0 12px;border-bottom:1px solid var(--line)"><button type="button" class="ghost" id="crewbtn" onclick="crewChange()" style="min-height:44px;border:0;padding:4px 8px;font-size:14px">👥 ? · change</button></div>
+
 <div class="wrap" id="app"></div>
 
 <div class="foot"><div class="wrap"><button class="big pri" id="mainbtn"></button></div></div>
@@ -168,7 +170,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = 'c42cb60e1bbf';
+let BUILD = '8cd419603a01';
 
 let VER_ARRIVED = (function(){
   try{
@@ -1039,6 +1041,7 @@ function blank(){
           lane_push:{},       
           deck_freed:{},      
           load_order:{},      
+          crew:[],            
           finished:null,      
           stopped_early:null, 
           split_contents:{},  
@@ -1675,7 +1678,7 @@ const UNDO = [];
 const UNDO_MAX = 30;
 let COMMITTED = null;    
 
-const UNDO_KEEP = ['events', 'breaks', 'started', 'break_open', 'card_high'];
+const UNDO_KEEP = ['events', 'breaks', 'started', 'break_open', 'card_high', 'crew'];    
 
 function undoSnapshotOf(st){
   const o = {};
@@ -1848,6 +1851,7 @@ function ev(kind, extra){
 
   S.events.push(Object.assign({ts:new Date().toISOString(), kind:kind}, extra||{}));
   save();
+  crewKick(kind);
 }
 
 let breakStart = null, breakTimer = null;
@@ -2191,7 +2195,7 @@ function askLoadOrder(bayN){
 }
 
 function askFixLocation(){ return askFound(null, true); }
-function askFound(loc, anywhere){
+function askFound(loc, anywhere, pre){
   let b = null, p = null;
   PAYLOAD.bays.forEach(x => (x.pallets || []).forEach(q => { if(q.loc === loc){ b=x; p=q; } }));
   if(!p && !anywhere) return;
@@ -2252,6 +2256,7 @@ function askFound(loc, anywhere){
             return false; }
           const sel = $('#fxfrom');
           const from = sel ? sel.value : homes[0][0];
+          if(!from){ toast('⛔ Pick where Finale has it — we will not move it from a place you did not name.'); return false; }
           const r = moveFromHome(who.sku, who.lot, q, from, to,
                                  'location correction: Finale had it at ' + from +
                                  ', it is really at ' + to);
@@ -2313,6 +2318,8 @@ function askFound(loc, anywhere){
           return;
         }
         const homes = homesFor(who.sku, who.lot);
+         
+        const needPick = !!(pre && pre.from && who.sku === pre.sku && !homes.some(h => h[0] === pre.from));
 
         const nm = skuName(who.sku);
         const head = nm
@@ -2322,8 +2329,11 @@ function askFound(loc, anywhere){
             'kept on the record either way. ⛔ Check the box before you save it.</div></div>';
         box.innerHTML = lotBox + head + (homes.length
           ? '<b style="color:var(--take)">⭐ Finale thinks '+esc(who.sku)+
-            (who.lot?' lot '+esc(who.lot):'')+' is here:</b>'+
+            (who.lot?' lot '+esc(who.lot):'')+' is '+(needPick ? 'at one of these' : 'here')+':</b>'+
+            (needPick ? '<div class="warnbox sm">Finale does not hold it at <b>'+esc(pre.from)+'</b>. '+
+              '⛔ Pick the place Finale really has it — we will not guess.</div>' : '')+
             '<select id="fxfrom" style="margin-top:6px">'+
+              (needPick ? '<option value="">— pick where Finale has it —</option>' : '')+
               homes.map(h=>'<option value="'+esc(h[0])+'">'+esc(h[0])+' — '+n(h[1])+
                 '</option>').join('')+'</select>'+
             '<div class="dim" style="margin-top:6px">⛔ So this is a <b>MOVE</b>, not a find. '+
@@ -2399,7 +2409,23 @@ function askFound(loc, anywhere){
       wireCodeScan('fx1', upd);
       ['fx1','fx2','fx3'].forEach(id => { const el = $('#' + id);
         if(el){ el.oninput = upd; el.onchange = upd; } });
+
+      if(pre && pre.sku){
+        const sel = $('#fx2'), k = pre.sku + '|' + (pre.lot || '');
+        if(sel){
+          if(![...sel.options].some(o => o.value === k)){
+            const o = document.createElement('option'); o.value = k;
+            o.textContent = pre.sku + ' — ' + (skuName(pre.sku) || '?') + (pre.lot ? ' · lot ' + pre.lot : '');
+            sel.appendChild(o);
+          }
+          sel.value = k;
+        }
+      }
       upd();
+      if(pre && pre.from){
+        const fr = $('#fxfrom');
+        if(fr && [...fr.options].some(o => o.value === pre.from)) fr.value = pre.from;
+      }
     });
 }
 
@@ -4640,7 +4666,7 @@ function renderTestBanner(){
     'Tap through it exactly as if it were real. Nothing you record here reaches Finale — '+
     'the office machine refuses a practice run on purpose.</div>';
 }
-function render(){ return withMovesCache(renderInner); }
+function render(){ renderCrewBtn(); return withMovesCache(renderInner); }
 function renderInner(){
   materialiseOffPlan();
   renderUndoBar();
@@ -4736,6 +4762,58 @@ function startShift(via){
   S.started = new Date().toISOString();
   ev('session_start', via ? {via:via} : undefined);
   return true;
+}
+
+let CREW_ASKED = false, CREW_T = null;
+function crewNow(){ const c = (S && S.crew) || []; return c.length ? Number(c[c.length - 1].n) : 0; }
+function crewSet(k){
+  const m = Math.max(1, Math.min(9, Math.round(Number(k) || 0)));
+  const at = new Date().toISOString();
+  CREW_ASKED = true;                        
+  const last = (S.crew || [])[(S.crew || []).length - 1];
+   
+  if(last && Number(last.n) === m && Date.now() - Date.parse(last.from) < 60000){ renderCrewBtn(); return; }
+  S.crew = (S.crew || []).concat([{n:m, from:at}]);
+  ev('crew_size', {n:m, at:at});
+  renderCrewBtn();
+}
+function renderCrewBtn(){
+  const b = document.getElementById('crewbtn'), st = document.getElementById('crewstrip'); if(!b || !st) return;
+  if(VIEW || !PAYLOAD || !PAYLOAD.bays){ st.style.display = 'none'; return; }
+  const k = crewNow();
+  st.style.display = 'flex';
+  b.textContent = '\u{1F465} ' + (k ? (k >= 7 ? '7+ people' : k + (k === 1 ? ' person' : ' people')) : 'how many people?') + ' \u00B7 change';
+  b.setAttribute('aria-label', (k ? k + ' people working' : 'How many people are working?') + ' — change');
+}
+function crewChange(){ if(VIEW) return toast('👁 View-only tablet — the recording tablet sets the headcount.'); askCrew(true); }
+function askCrew(change){
+  if(VIEW) return;
+  const cur = crewNow();
+  dlg(change ? 'How many people are working now?' : 'How many people are working this restock today?',
+    '<p class="sm dim">One tap — it sizes next week\'s plan to the crew you really have. You can change it '+
+    'any time from <b>👥</b> at the top.</p>'+
+    '<div id="crewbtns" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px">'+
+      [1,2,3,4,5,6,7].map(k => '<button type="button" class="pri" data-n="'+k+'" style="min-height:64px;font-size:26px;'+
+        'font-weight:700;padding:4px'+(k === Math.min(cur, 7) ? ';outline:3px solid var(--ok)' : '')+'">'+
+        (k === 7 ? '7+' : k)+'</button>').join('')+'</div>',
+    [{t: change ? 'Cancel' : 'Not now', c:'ghost', f: change ? undefined : () => { CREW_ASKED = true; }}],
+    () => { document.querySelectorAll('#crewbtns button').forEach(b => { b.onclick = () => {
+        crewSet(Number(b.dataset.n)); const d = $('#dlg'); d.close(); dlgClosed();
+        toast('👥 ' + crewNow() + (crewNow() >= 7 ? '+' : '') + ' people — recorded'); }; }); });
+}
+ 
+function crewKick(kind){
+  try{ if(CREW_ASKED || VIEW || !S.started || (S.crew || []).length || kind === 'crew_size' || META_EV[kind]) return; }
+  catch(e){ return; }
+  clearTimeout(CREW_T); CREW_T = setTimeout(crewTry, 450);
+}
+function crewTry(){
+  if(CREW_ASKED || VIEW || !S.started || crewNow() || !PAYLOAD || !PAYLOAD.bays) return;
+  const d = document.getElementById('dlg'), f = document.getElementById('fbdlg');
+
+  if(d && d.open && /^How many people/.test((document.getElementById('dlgh') || {}).textContent || '')) return;
+  if((d && d.open) || (f && f.open)){ clearTimeout(CREW_T); CREW_T = setTimeout(crewTry, 1500); return; }
+  askCrew(false);
 }
 function chip(k,v){ return '<span class="chip"><b>'+esc(v==null?'—':v)+'</b> '+esc(k)+'</span>'; }
 function hrs(m){ return m ? (Math.round(Number(m)/6)/10) + ' person-h' : '—'; }
@@ -4965,11 +5043,11 @@ function renderBay(a){
             esc(x.l.kind)+' · '+esc(x.loc)+'</span>').join('<br>')+
           (left.length>10?'<br><span class="dim">…and '+(left.length-10)+' more</span>':'')+
         '</div>'+
-        whyPicker(),
+        whyPicker({defer: left.some(x => x.l.kind === 'take')}),
         [{t:'Go back',c:'ghost'},
          {t:'Record and close',c:'warn',f:()=>{
             const r = whyRead(); if(r === false) return false;
-            left.forEach(x => skipLine(x.id, r.why, r.typed));
+            left.forEach(x => skipLine(x.id, r.why, r.typed, r));
             settleStays();
             b.pallets.forEach(p => { S.pallets[p.loc] =
               Object.assign(S.pallets[p.loc]||{}, {done:true, open:false}); });
@@ -5757,40 +5835,111 @@ function openLine(id, opts){
     });
 }
 
+const WHY_ENOUGH = 'we already have enough on the floor';    
+const WHY_DEFER = '__defer';
 const SKIP_WHY = [
   'ran out of time',
   'pallets had to go back up',
   'no room on the destination',
   'too heavy / awkward',
   'doing it later today',
+  WHY_ENOUGH,
+  'old lot is somewhere else',
+  'pallet too tall / unsafe to unwrap',
+  'stock is on another pallet in the row',
+  'already in a good spot',
+  'not pulling this pallet down',
 ];
 const WHY_OTHER = '__type_it';
-function whyPicker(){
+let WHY_CLAIM = {line:'', ans:''};
+
+function floorClaimInfo(sku){
+  const f = (PAYLOAD.floor_stock || {})[sku];
+  return f ? {finale_f1:f.f1_units, weekly_rate:f.weekly_rate, weeks_left:f.weeks_left}
+           : {finale_f1:null, weekly_rate:null, weeks_left:null};
+}
+function snapAt(){
+  const a = String((PAYLOAD && PAYLOAD.snapshot_as_of) || '');
+  return a ? a.replace('T', ' ').slice(0, 16) : 'an unknown time';
+}
+function floorClaimHtml(lineId){
+  const f = find(lineId); if(!f) return '';
+  const fs = (PAYLOAD.floor_stock || {})[f.l.sku], c = floorClaimInfo(f.l.sku);
+  const sel = a => (WHY_CLAIM.ans === a ? ';outline:3px solid var(--ok)' : '');
+  return '<div class="warnbox sm" style="margin-top:10px">'+
+    (fs ? 'Finale at <b>'+esc(snapAt())+'</b> shows <b>'+n(c.finale_f1)+'</b> in F1 locations — '+
+          (c.weeks_left != null ? 'about <b>'+n(c.weeks_left)+'</b> weeks at the usual rate.'
+                                : 'there is no usual weekly rate on file for it, so we cannot say how many weeks.')
+        : 'Finale\'s F1 number is not available for this SKU on this plan, so we cannot show it.')+
+    '<div style="margin-top:8px"><button type="button" id="skwc1" class="ok" style="min-height:48px;margin:0 6px 6px 0'+sel('finale_right')+'" '+
+      'onclick="whyClaim(\'finale_right\')">That number looks right</button>'+
+    '<button type="button" id="skwc2" class="warn" style="min-height:48px;margin:0 0 6px 0'+sel('needs_count')+'" '+
+      'onclick="whyClaim(\'needs_count\')">No — needs an F1 count</button></div>'+
+    '<div id="skwcm" class="dim" style="margin-top:2px">'+(WHY_CLAIM.ans === 'needs_count'
+      ? '⭐ It will be on the F1 recount list.' : '')+'</div></div>';
+}
+function whyClaim(ans){
+  WHY_CLAIM.ans = ans;
+  const box = $('#skwf'); if(box) box.innerHTML = floorClaimHtml(WHY_CLAIM.line);
+}
+
+function whyPicker(o){
+  o = o || {};
+  WHY_CLAIM = {line:o.line || '', ans:''};
   return '<label class="sm dim">Why?</label>'+
     '<select id="skw">'+
       SKIP_WHY.map(r => '<option value="'+esc(r)+'">'+esc(r)+'</option>').join('')+
-      '<option value="'+WHY_OTHER+'">something else — let me type it</option>'+
+      (o.defer && !o.plain ? '<option value="'+WHY_DEFER+'">we\'ll do it later — delay it</option>' : '')+
+      '<option value="'+WHY_OTHER+'">something else — use the 🎤 key on the keyboard to say it (or let me type it)</option>'+
     '</select>'+
+    '<div id="skwd" style="display:none;margin-top:10px">'+
+      '<label class="sm dim">Delay it how many weeks?</label>'+
+      '<select id="skwdw">'+[1,2,3,4,5,6].map(k => '<option value="'+k+'">'+k+' week'+(k === 1 ? '' : 's')+' — '+
+        (k === 1 ? 'at the next restock, ' : 'at the restock on ')+deferUntil(k)+'</option>').join('')+'</select>'+
+      '<div class="sm dim" style="margin-top:6px">We will not ask for it again until then — unless the floor would run out first.</div>'+
+    '</div>'+
+    '<div id="skwf" style="display:none"></div>'+
     '<div id="skwo" style="display:none;margin-top:10px">'+
-      '<label class="sm dim">In your own words — what stopped it?</label>'+
+      '<label class="sm dim">In your own words — tap the 🎤 microphone key on the tablet keyboard and just <b>say</b> it, or type it</label>'+
       '<input id="skwt" type="text" maxlength="140" autocomplete="off" '+
-        'placeholder="e.g. the pallet was shrink-wrapped to the rack">'+
+        'placeholder="tap 🎤 on the keyboard and say it — e.g. the pallet was shrink-wrapped to the rack">'+
     '</div>';
 }
 
 function whyWire(){
-  const s = $('#skw'), box = $('#skwo'), t = $('#skwt');
+  const s = $('#skw'), box = $('#skwo'), t = $('#skwt'), dd = $('#skwd'), ff = $('#skwf');
   if(!s || !box) return;
   s.onchange = () => {
     const other = (s.value === WHY_OTHER);
     box.style.display = other ? '' : 'none';
+    if(dd) dd.style.display = (s.value === WHY_DEFER) ? '' : 'none';
+    if(ff){
+      const show = (s.value === WHY_ENOUGH && !!WHY_CLAIM.line);
+      ff.style.display = show ? '' : 'none';
+      if(show) ff.innerHTML = floorClaimHtml(WHY_CLAIM.line);
+    }
     if(other && t) t.focus();
   };
+}
+ 
+function deferUntil(w){
+  const base = String(PAYLOAD.pull_day || PAYLOAD.plan_date || '').slice(0, 10);
+  const t0 = Date.parse(base + 'T00:00:00Z');
+  return isFinite(t0) ? new Date(t0 + w * 7 * 86400000).toISOString().slice(0, 10) : '';
 }
 
 function whyRead(){
   const s = $('#skw');
   if(!s) return {why:'skipped', typed:false};
+  if(s.value === WHY_DEFER){
+    const w = Math.max(1, Math.min(6, Math.round(Number(($('#skwdw') || {}).value) || 1)));
+    return {why:'delayed ' + w + ' week' + (w === 1 ? '' : 's'), typed:false,
+            defer_weeks:w, defer_until:deferUntil(w)};
+  }
+  if(s.value === WHY_ENOUGH && WHY_CLAIM.line){
+    if(!WHY_CLAIM.ans){ toast('⛔ Tell us whether Finale\'s number looks right — or pick another reason.'); return false; }
+    return {why:s.value, typed:false, claim:WHY_CLAIM.ans};
+  }
   if(s.value !== WHY_OTHER) return {why:s.value, typed:false};
   const t = $('#skwt'), v = ((t && t.value) || '').trim();
   if(!v){ toast('⛔ Type what stopped it — or pick one of the reasons above.');
@@ -5798,23 +5947,30 @@ function whyRead(){
   return {why:v, typed:true};
 }
 
-function skipLine(id, bulk, typed){
+function skipLine(id, bulk, typed, r0){
   const f = find(id); if(!f) return;
   const done = () => { if(!bulk){ maybeDone(f.p ? f.p.loc : ''); render();
     openPutbackFollowUp(putbackFollowUp(f.b, f.p, f.l.sku, f.l.lot)); } };   
 
-  if(bulk){ setLine(id, {state:'skipped', actual:0, reason:bulk,
-                         reason_source:(typed ? 'typed' : 'picked')});
-            ev('line_skipped',{line:id, why:bulk, typed:!!typed}); return; }
+  const dfr = r => ({defer_weeks:(r && r.defer_weeks) || undefined, defer_until:(r && r.defer_until) || undefined});
+  if(bulk){ setLine(id, Object.assign({state:'skipped', actual:0, reason:bulk,
+                         reason_source:(typed ? 'typed' : 'picked'), floor_claim:undefined},
+                          
+                         dfr(f.l.kind === 'take' ? r0 : null)));
+            ev('line_skipped',{line:id, why:bulk, typed:!!typed,
+                               defer_weeks:(f.l.kind === 'take' && r0 && r0.defer_weeks) || undefined}); return; }
   dlgL(id, 'Skip ' + f.l.sku + '?',
     '<p class="dim">This records that you DID NOT do it — not that the stock is missing. '+
     'Nothing will be transferred and Finale will not be corrected.</p>'+
-    whyPicker(),
+    whyPicker({line: f.l.kind === 'take' ? id : '', defer: f.l.kind === 'take'}),
     [{t:'Cancel',c:'ghost'},
      {t:'Skip it',c:'warn',f:()=>{ const r = whyRead(); if(r === false) return false;
-        setLine(id,{state:'skipped', actual:0, reason:r.why,
-                    reason_source:(r.typed ? 'typed' : 'picked')});
-        ev('line_skipped',{line:id, why:r.why, typed:r.typed}); done(); }}], whyWire);
+        const claim = (r.claim && f.l.kind === 'take')
+          ? Object.assign(floorClaimInfo(f.l.sku), {answer:r.claim}) : undefined;
+        setLine(id,Object.assign({state:'skipped', actual:0, reason:r.why,
+                    reason_source:(r.typed ? 'typed' : 'picked'), floor_claim:claim}, dfr(r)));
+        ev('line_skipped',{line:id, why:r.why, typed:r.typed, defer_weeks:r.defer_weeks || undefined,
+                           floor_claim:r.claim || undefined}); done(); }}], whyWire);
 }
 
 function skipRest(loc){
@@ -5837,10 +5993,10 @@ function skipRest(loc){
     '<div class="sm dim" style="margin:8px 0">'+
       left.slice(0,8).map(x=>'• '+esc(x.l.sku)+' <span class="dim">('+esc(x.l.kind)+')</span>').join('<br>')+
       (left.length>8?'<br>…and '+(left.length-8)+' more':'')+'</div>'+
-    whyPicker(),
+    whyPicker({defer: left.some(x => x.l.kind === 'take')}),
     [{t:'Cancel',c:'ghost'},
      {t:'Skip '+left.length,c:'warn',f:()=>{ const r = whyRead(); if(r === false) return false;
-        left.forEach(x => skipLine(x.id, r.why, r.typed));
+        left.forEach(x => skipLine(x.id, r.why, r.typed, r));
         S.pallets[loc] = Object.assign(S.pallets[loc]||{}, {done:true, open:false});
         ev('pallet_skipped',{pallet:loc, lines:left.length, why:r.why, typed:r.typed});
         save(); render();
@@ -5969,6 +6125,9 @@ function doCount(id, rest){
     '<div id="cvar"></div>'+
     (rest && rest.length ? '<p class="sm dim" style="margin-top:8px">'+rest.length+' more on this pallet after this one.</p>' : ''),
     [{t:'Cancel',c:'ghost'},
+
+     {t:'It\'s actually on a different pallet',c:'ghost',f:()=>{
+        setTimeout(() => askFound(null, true, {sku:l.sku, lot:l.lot || '', from:f.p.loc}), 0); }},
 
      {t:'Matches',c:'ok',f:()=>{ setLine(id,{state:'done', counted:l.system_qty, variance:0,
                                              count_reason:undefined, answer:'matched',
@@ -6398,12 +6557,16 @@ function setFullness(bayN, loc, k, mode, ourPct){
           '<option value="stack_height">could not stack it as high here</option>'+
           '<option value="wrong_contents">what is on it is not what the app listed</option>'+
           '<option value="part_elsewhere">part of this pallet is somewhere else</option>'+
-          '<option value="other">something else — let me type it</option></select>'+
+           
+          '<option value="irregular_boxes">boxes are different sizes / irregular</option>'+
+          '<option value="partly_empty">partly empty boxes</option>'+
+          '<option value="taller_than_deck">it\'s taller than the deck height we use</option>'+
+          '<option value="other">something else — use the 🎤 key on the keyboard to say it (or let me type it)</option></select>'+
 
         '<div id="fwhyo" style="display:none;margin-top:8px">'+
-          '<label class="sm dim">What is different about this one?</label>'+
+          '<label class="sm dim">What is different about this one? Tap the 🎤 microphone key on the tablet keyboard and just <b>say</b> it, or type it</label>'+
           '<input id="fwhyt" type="text" maxlength="140" autocomplete="off" '+
-            'placeholder="in your own words">'+
+            'placeholder="tap 🎤 on the keyboard and say it — in your own words">'+
         '</div></div>')+
     (k === 'over'
       ? '<div class="warnbox sm" style="margin-top:10px"><b>⛔ Do not force it.</b> Leave '+
@@ -8021,7 +8184,7 @@ function clockOut(){
           (homeless.length ? ' · <b>'+homeless.length+'</b> pallet(s) down with no '+
                              'recorded spot' : '')+
         '</div>'+
-        whyPicker()
+        whyPicker({plain:true})
       : '<p class="sm">This stamps the time you stopped, so we can tell how long the job '+
         'actually took. It does not send anything on its own — sync after.</p>'),
     [{t:'Not yet'},
@@ -8468,6 +8631,8 @@ function moves(){
   const FLOOR_KEPT = [];    
   materialiseOffPlan();
   const out = {transfers:[], adjustments:[], counts:[], missing:[], skipped:[],
+                
+               crew:(S.crew || []).map(x => Object.assign({}, x)), floor_claims:[],
 
                fullness:[], lane_room:[],
 
@@ -8688,7 +8853,15 @@ function moves(){
         onto_pallet:(l.kind === 'aside' ? (l.onto_pallet||'') : ''),
         onto_bay:(l.kind === 'aside' ? (l.onto_bay||'') : ''),
         cross:!!l.cross,
-        reason:s.reason||'', reason_source:s.reason_source||'', ts:s.ts}); return; }
+        reason:s.reason||'', reason_source:s.reason_source||'',
+         
+        defer_weeks:(l.kind === 'take' && s.defer_weeks) || '', defer_until:(l.kind === 'take' && s.defer_until) || '', ts:s.ts});
+
+        if(s.floor_claim && l.kind === 'take' && s.floor_claim.answer)
+          out.floor_claims.push({sku:l.sku, lot:l.lot||'', finale_f1:s.floor_claim.finale_f1,
+            weekly_rate:s.floor_claim.weekly_rate, weeks_left:s.floor_claim.weeks_left,
+            answer:s.floor_claim.answer, ts:s.ts});
+        return; }
 
       if(l.kind === 'count'){
          
@@ -9808,7 +9981,8 @@ async function graphWrite(path, body, method){
   return j;                                   
 }
 
-const META_EV = {app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1,
+const META_EV = {crew_size:1,    
+                 app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1,
                  feedback_sent:1, job_queue_check:1,
                  tablet_mode:1};        
  
@@ -9816,6 +9990,7 @@ const EXTRA_STORES = ['unplanned', 'found_moves', 'found_here', 'load_order', 'a
                       'finalize_requested', 'lot_fix', 'lane_push', 'deck_freed',
                       'card_high',    
                       'stickers',     
+                      'crew',         
                       'bay_lanes'];  
 
 function workEvents(o){
