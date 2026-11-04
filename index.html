@@ -170,7 +170,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '8cd419603a01';
+let BUILD = 'ed11ded17174';
 
 let VER_ARRIVED = (function(){
   try{
@@ -618,14 +618,25 @@ function strandedRecords(){
                        || Object.keys(o.putback_actual || {}).length
                        || (o.events || []).length;
     if(!work) return;                        
-    out.push({key: k, plan: k.slice(13), lines: lines,
+
+    const sy = (o.synced && typeof o.synced.at === 'string') ? o.synced : null;
+    let edited = false;
+    if(sy){
+      const evs = Array.isArray(o.events) ? o.events : [];
+      const real = e => e && !META_EV[e.kind] && !SYNC_EV[e.kind];
+      edited = (typeof sy.events === 'number')
+        ? evs.slice(sy.events).some(real)
+        : evs.some(e => real(e) && typeof e.ts === 'string' && e.ts > sy.at);
+    }
+    out.push({key: k, plan: k.slice(13), lines: lines, edited: edited,
 
               synced: (o.synced && typeof o.synced.at === 'string') ? o.synced.at : null});
   });
   return out;
 }
 function scanStranded(){
-  const st = strandedRecords();
+
+  const st = strandedRecords().filter(r => r.unreadable || !r.synced || r.edited);
   if(!st.length) return dropBanner('stranded');
 
   const unsent = st.filter(r => !r.synced || r.unreadable);
@@ -637,7 +648,7 @@ function scanStranded(){
     + st.map(r => '<div class="sm" style="margin-top:4px">Plan <b>' + esc(r.plan) + '</b> — '
         + (r.unreadable ? 'could not be read'
                         : r.lines + ' line(s) recorded, '
-                          + (r.synced ? 'last sent ' + esc(String(r.synced).slice(0, 16))
+                          + (r.synced ? '<b>edited since it was last sent</b> (' + esc(String(r.synced).slice(0, 16)) + ')'
                                       : '<b>never sent</b>'))
         + ' <button class="ghost" style="min-height:44px;margin-left:6px" '
         + 'onclick="sendStranded(' + JSON.stringify(r.key).replace(/"/g, '&quot;')
