@@ -170,7 +170,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = 'f321cfa20ac1';
+let BUILD = '066d8dfee918';
 
 let VER_ARRIVED = (function(){
   try{
@@ -2521,8 +2521,8 @@ function askLotFix(loc){
     '<p class="sm dim">⛔ Only for a lot you are <b>reading off the box</b>. Finale will be told '+
     'to change the lot for what goes back up on this pallet.</p>'+
      
-    '<p class="sm dim">⚠️ Boxes you take down to a floor face, or write off, keep their old lot in Finale — '+
-    'this cannot change those. If that is all of them, tell Jack instead.</p>'+
+    '<p class="sm dim">⚠️ Boxes you take to a floor face are relabelled too — but only when you correct the '+
+    '<b>whole pile</b>. A part of a pile that went to a face, and boxes you write off, keep the old lot; tell Jack for those.</p>'+
     '<label class="sm">Which item</label><select id="lf1">'+
       piles.map(l => '<option value="'+esc(l.sku+'|'+(l.lot||''))+'">'+esc(l.sku)+' — '+
         esc(l.desc || skuName(l.sku) || '')+' · Finale lot '+esc(l.lot || '(none)')+'</option>').join('')+
@@ -9793,7 +9793,10 @@ function moves(){
 
     (out.transfers || []).forEach(t => {
       if(t.sku !== fx.sku || (t.lot || '') !== (fx.from_lot || '')) return;
-      if(t.from_location !== FLR || !/^F[23]-/.test(t.to_location || '')) return;
+
+      const faceOk = !(Number(fx.qty) > 0) && /^F1-/.test(t.to_location || '') && t.to_location !== FLR &&
+                     t.kind !== 'to_temp' && t.kind !== 'found_move';
+      if(t.from_location !== FLR || !(/^F[23]-/.test(t.to_location || '') || faceOk)) return;
       const mine = t.from_pallet_loc ? t.from_pallet_loc === fx.loc : t.onto_pallet === fx.pallet_id;
       if(mine) up[t.to_location] = (up[t.to_location] || 0) + Number(t.quantity || 0);
     });
@@ -9816,10 +9819,29 @@ function moves(){
     });
     let want = Number(fx.qty) > 0 ? Number(fx.qty) : Infinity;
     const keys = Object.keys(up).filter(k => up[k] > 0.0005).sort();
+
+    if(!isFinite(want)){
+      let tmp = 0;
+      (out.transfers || []).forEach(t => { if(t.sku === fx.sku && (t.lot || '') === (fx.from_lot || '') &&
+        t.kind === 'to_temp' && t.from_pallet_loc === fx.loc) tmp += Number(t.quantity || 0); });
+      if(tmp > 0.0005)
+        out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+          loc:fx.loc, qty:tmp, why:n(tmp)+' of this pile are parked at the temp location, so they keep the old lot '+
+          'until they are found — fix that lot in Finale by hand'});
+    }
+     
+    if(!keys.length && isFinite(want) && (out.transfers || []).some(t => t.sku === fx.sku &&
+        (t.lot || '') === (fx.from_lot || '') && t.from_location === FLR && t.from_pallet_loc === fx.loc &&
+        /^F1-/.test(t.to_location || '') && t.to_location !== FLR && t.kind !== 'to_temp' && Number(t.quantity || 0) > 0)){
+      out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
+        loc:fx.loc, qty:want, why:'only part of this pile was corrected and it went to the floor faces — we cannot '+
+        'tell which boxes are which, so correct the WHOLE pile, or fix that lot in Finale by hand'});
+      return;
+    }
     if(!keys.length){
       out.lot_changes_unapplied.push({sku:fx.sku, from_lot:fx.from_lot, to_lot:fx.to_lot, bay:fx.bay,
-        loc:fx.loc, qty:fx.qty || '', why:'none of it went back up into reserve from this pallet '+
-        '(taken to the floor faces, or the pallet is still down), so there is no pile to relabel'});
+        loc:fx.loc, qty:fx.qty || '', why:'none of it went back up into reserve or onto a floor face from this pallet '+
+        '(it was written off, or the pallet is still down), so there is no pile to relabel'});
       return;
     }
 
