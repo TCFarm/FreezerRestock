@@ -170,7 +170,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = 'ed11ded17174';
+let BUILD = 'f321cfa20ac1';
 
 let VER_ARRIVED = (function(){
   try{
@@ -2520,6 +2520,9 @@ function askLotFix(loc){
         .join('<br>')+'</div>' : '')+
     '<p class="sm dim">⛔ Only for a lot you are <b>reading off the box</b>. Finale will be told '+
     'to change the lot for what goes back up on this pallet.</p>'+
+     
+    '<p class="sm dim">⚠️ Boxes you take down to a floor face, or write off, keep their old lot in Finale — '+
+    'this cannot change those. If that is all of them, tell Jack instead.</p>'+
     '<label class="sm">Which item</label><select id="lf1">'+
       piles.map(l => '<option value="'+esc(l.sku+'|'+(l.lot||''))+'">'+esc(l.sku)+' — '+
         esc(l.desc || skuName(l.sku) || '')+' · Finale lot '+esc(l.lot || '(none)')+'</option>').join('')+
@@ -2598,6 +2601,13 @@ function confirmLotFix(b, p, sku, from, to, isNew, typed, qty, whole){
         ev('lot_fix_confirmed', {loc:p.loc, sku:sku, from_lot:from, to_lot:to, to_new:!!isNew, qty:qty});
         save(); render(); toast('✓ lot recorded as ' + to + ' — Finale is told when the shift is sent');
      }}]);
+}
+ 
+function undoLotFixFor(loc, sku, from){
+  const mine = (S.lot_fix || []).filter(x => x.loc === loc);
+  const i = mine.findIndex(x => x.sku === sku && (x.from_lot || '') === (from || ''));
+  if(i < 0) return toast('that correction is already gone');
+  undoLotFix(loc, i);
 }
 function undoLotFix(loc, i){
   const mine = (S.lot_fix || []).filter(x => x.loc === loc), x = mine[i];
@@ -5569,6 +5579,9 @@ function openLine(id, opts){
         if(mv==null) return toast('⛔ fill in the quantity');
 
         const tal = pileTally(f.b, f.p, l.sku, l.lot, id, mv);
+         
+        const _cc = countConflict(f.b, f.p, l.sku, l.lot, tal.movedOut);
+        if(_cc){ toast('⛔ ' + countConflictWords(_cc).replace(/^you/, 'You') + '. Change the count first, or take ' + n(_cc.counted) + ' or fewer.'); return false; }
         const _sa0 = $('#shortact');
 
         const restStays = !tal.over && tal.short > 0.001 && _sa0 && _sa0.value === 'stays';
@@ -5678,6 +5691,9 @@ function openLine(id, opts){
         if(mv == null) return toast('⛔ how many did you move?') && false;
 
         const tal = pileTally(f.b, f.p, l.sku, l.lot, id, mv);
+         
+        const _cc = countConflict(f.b, f.p, l.sku, l.lot, tal.movedOut);
+        if(_cc){ toast('⛔ ' + countConflictWords(_cc).replace(/^you/, 'You') + '. Change the count first, or take ' + n(_cc.counted) + ' or fewer.'); return false; }
 
         const _sa1 = $('#shortact');
         const _stays = !tal.over && tal.short > 0.001 && _sa1 && _sa1.value === 'stays';
@@ -6104,6 +6120,24 @@ function countFigures(b, p, l, s_){
   return {counted:c, variance:(s_.variance != null ? Number(s_.variance) : Math.round((c - sys) * 1000) / 1000),
           basis:s_.counted_basis || 'total', left:null};
 }
+
+function countConflict(b, p, sku, lot, carried){
+  if(!(carried > 0.001)) return null;
+  let hit = null;
+  (p.lines || []).forEach((l, i) => {
+    if(l.kind !== 'count' || l.sku !== sku || (l.lot || '') !== (lot || '')) return;
+    const id = lid(b.n, p.loc, l, i), s_ = st(id) || {};
+    if(s_.state !== 'done' || s_.answer !== 'typed') return;
+    const cf = countFigures(b, p, l, s_);
+    if(!cf || cf.basis === 'left') return;
+    if(cf.counted < carried - 0.001) hit = {counted:cf.counted, carried:carried, id:id};
+  });
+  return hit;
+}
+function countConflictWords(cc){
+  return 'you counted ' + n(cc.counted) + ' altogether on this pallet, but ' + n(cc.carried) +
+    ' were taken off it — both cannot be true';
+}
 function doCount(id, rest){
   const f = find(id); if(!f) return;
   const l = f.l;
@@ -6150,6 +6184,11 @@ function doCount(id, rest){
         if(typed===null) return toast('⛔ enter the counted quantity');
         if(hasCarry && !basisOf()) return toast('⛔ say whether you counted everything, or what was LEFT after the '+n(carried.units)+' taken off');
         const v = totalOf(typed);
+         
+        if(hasCarry && basisOf() === 'total' && v < carried.units - 0.001){
+          toast('⛔ You took ' + n(carried.units) + ' off this pile, so there cannot have been only ' + n(v) +
+                ' on it altogether. Count again, or fix the take first.');
+          return false; }
         const vr = Math.round((v - Number(l.system_qty)) * 1000) / 1000;
         let rsn;
         if(Math.abs(vr) > 0.001){
@@ -7671,9 +7710,16 @@ function floorCard(m){
   if(lcu.length)
     out += '<div class="badbox"><b>⛔ '+lcu.length+' lot correction'+(lcu.length===1?'':'s')+
       ' cannot be sent to Finale as recorded.</b><div class="sm" style="margin-top:4px">'+
-      lcu.map(u => esc(u.sku)+': '+esc(u.from_lot || '(no lot)')+' → '+esc(u.to_lot)+
-        (u.qty ? ' ×'+n(u.qty) : '')+' at '+esc(u.loc)+' — '+esc(u.why)).join('<br>')+
-      '<br>⭐ Tell Jack, or fix the lot in Finale by hand.</div></div>';
+
+      lcu.map(u => '<div style="margin-top:8px">'+esc(u.sku)+': '+esc(u.from_lot || '(no lot)')+' → '+esc(u.to_lot)+
+        (u.qty ? ' ×'+n(u.qty) : '')+' at '+esc(u.loc)+' — '+esc(u.why)+
+        '<div class="row" style="margin-top:6px">'+
+          '<button type="button" class="ghost" style="min-height:44px" onclick="undoLotFixFor(\''+esc(u.loc)+'\',\''+
+            esc(u.sku)+'\',\''+esc(u.from_lot || '')+'\')">Take this correction back</button>'+
+          '<button type="button" class="ghost" style="min-height:44px" onclick="goToPallet(\''+esc(u.loc)+
+            '\')">Open the pallet</button></div></div>').join('')+
+      '<div style="margin-top:8px">This does <b>not</b> stop you sending the shift. Finale keeps the old lot on '+
+      'these boxes unless it is fixed — ⭐ tell Jack, or fix the lot in Finale by hand.</div></div></div>';
 
   const waiting = open_.filter(o => o.cause === 'awaiting_bay' &&
                                     !PAYLOAD.bays.every(b => (S.bays[b.n]||{}).closed));
@@ -7819,6 +7865,11 @@ function floorProblemRows(bad){
         if(off.units > 0.001) checks.push('a line of this pile says it was really on ' + c.pid + ', while ' +
           off.what.join(', ') + ' off ' + (p.pallet_id || p.loc) + ' — both cannot be true. Open ' +
           (p.pallet_id || p.loc) + ' and undo the "different pallet" answer if it was here after all.'); }
+
+      const _cc = countConflict(b, p, sku, lot, pileCarriedOff(b, p, sku, lot).units);
+      if(_cc) checks.push(countConflictWords(_cc).replace(/^you/, 'You') + '. Open ' + (p.pallet_id || p.loc) +
+        ' and either count it again (' + n(_cc.carried) + ' or more if everything was there) or change the take to ' +
+        n(_cc.counted) + ' or fewer.');
       ls.forEach(o => { if(o.l.kind !== 'count') return;
         const s_ = st(lid(b.n, p.loc, o.l, o.i)) || {};
         if(s_.counted == null || s_.counted_basis) return;     
