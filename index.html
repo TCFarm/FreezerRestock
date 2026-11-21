@@ -44,6 +44,7 @@ button.pri{background:var(--take);border-color:var(--take);color:#fff}
 button.ok{background:var(--ok);border-color:var(--ok);color:var(--onaccent)}
 button.warn{background:var(--aside);border-color:var(--aside);color:#fff}
 button.ghost{background:transparent}
+button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
 button[disabled]{opacity:.4}
 .bar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:8px 12px;display:flex;gap:8px;align-items:center}
@@ -150,6 +151,8 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 <div id="crewstrip" style="display:none;justify-content:flex-end;padding:0 12px;border-bottom:1px solid var(--line)"><button type="button" class="ghost" id="crewbtn" onclick="crewChange()" style="min-height:44px;border:0;padding:4px 8px;font-size:14px">👥 ? · change</button></div>
 
+<div id="planstrip" style="display:none;padding:0 12px;border-bottom:1px solid var(--line)"><button type="button" class="ghost" id="planbtn" onclick="openNewPlan()" style="min-height:48px;border:0;padding:4px 8px;font-size:14px">🗓 New plan</button></div>
+
 <div class="wrap" id="app"></div>
 
 <div class="foot"><div class="wrap"><button class="big pri" id="mainbtn"></button></div></div>
@@ -170,7 +173,7 @@ button.fbmic{min-width:44px;width:44px;padding:0;flex:0 0 44px}
 
 const CFG = {"entra":{"client_id":"4a5939ef-bb89-4629-8a95-007509bb11a5","tenant_id":"c0f23c54-f515-4e2e-8aef-d3afb1ae34d0"},"sharepoint":{"hostname":"tcfarm0.sharepoint.com","site_path":"/sites/ClaudeAgents","list_name":"FreezerRestock","doc_folder":"FreezerRestock"}};
 
-let BUILD = '066d8dfee918';
+let BUILD = 'eaadcb0c6f5b';
 
 let VER_ARRIVED = (function(){
   try{
@@ -1001,9 +1004,10 @@ async function doPlanSwitch(from, to, done, bays){
     [{t: 'Start', c: 'pri'}]);
 }
 
-async function refreshPlanQuietly(){
+async function refreshPlanQuietly(pre){
+
   try{
-    const p = await fetchPlan();
+    const p = pre || await fetchPlan();
 
     const changed = (p.plan_date !== PAYLOAD.plan_date) || (p.built !== PAYLOAD.built);
     if(changed && VIEW){
@@ -1011,27 +1015,33 @@ async function refreshPlanQuietly(){
       if(VIEW.lead && hasRecordedWork(VIEW.base)){
         VIEW.newer = p.plan_date + ' (built ' + String(p.built || '').slice(0, 16) + ')';
         renderViewBand();
-        return;
+        return 'held';
       }
-      if(acceptPlan(p)) toast(`newer plan ${p.plan_date} loaded`);
+      const vok = acceptPlan(p);
+      if(vok) toast(`newer plan ${p.plan_date} loaded`);
       render();
-      return;
+      return vok ? 'loaded' : 'held';
     }
     if(changed){
 
       if(sameDateRebuildHeld(PAYLOAD, p, S)){
          
         holdRebuild(p);
+        return 'held';
       }else if(S.started || hasRecordedWork(S)){
 
         PENDING_PLAN = p;
         renderPendingPlan();
+        return 'pending';
       }else{
-        if(acceptPlan(p)){ HELD_PLAN = null; dropBanner('heldplan'); toast(`newer plan ${p.plan_date} loaded`); }
+        const ok = acceptPlan(p);
+        if(ok){ HELD_PLAN = null; dropBanner('heldplan'); toast(`newer plan ${p.plan_date} loaded`); }
         render();
+        return ok ? 'loaded' : 'held';
       }
     }
-  }catch(e){   }
+    return 'same';
+  }catch(e){   return 'error'; }
 }
 
 let S = blank();   
@@ -4687,7 +4697,7 @@ function renderTestBanner(){
     'Tap through it exactly as if it were real. Nothing you record here reaches Finale — '+
     'the office machine refuses a practice run on purpose.</div>';
 }
-function render(){ renderCrewBtn(); return withMovesCache(renderInner); }
+function render(){ renderCrewBtn(); renderPlanStrip(); return withMovesCache(renderInner); }
 function renderInner(){
   materialiseOffPlan();
   renderUndoBar();
@@ -4745,7 +4755,7 @@ function renderReview(a){
     'works →</a></div></div>'+
     heldLine()+
     '<div class="card"><div class="pad">'+
-    '<h2>Is this week the right size?</h2>'+
+    '<h2>Is this week the right size?</h2>'+horizonLine()+
     '<div class="sm dim">Hours are PERSON-hours — the work of one person. With 2–3 people '+
     'on the crew, the clock time is about a half to a third of this.</div><div>'+
     chip('Bays to open', t.bays) + chip('Pallets down', t.pallets_down) +
@@ -10068,6 +10078,7 @@ async function graphWrite(path, body, method){
 const META_EV = {crew_size:1,    
                  app_open:1, boot_reconcile:1, boot_restore:1, storage_persist:1,
                  feedback_sent:1, job_queue_check:1,
+                 plan_requested:1, plan_request_done:1, plan_request_refused:1, plan_request_stopped:1,    
                  tablet_mode:1};        
  
 const EXTRA_STORES = ['unplanned', 'found_moves', 'found_here', 'load_order', 'adhoc_counts',
@@ -11123,7 +11134,7 @@ async function fbPutFile(siteId, path, blob, type){
 let QUEUE_LAST_PATH = '';       
 async function queueJob(kind, subject){
    
-  if(VIEW && kind !== 'freezer.feedback')
+  if(VIEW && kind !== 'freezer.feedback' && kind !== 'freezer.plan')    
     throw new Error('this is a view-only tablet — only the recording tablet can do that');
   const sp = CFG.sharepoint;
   const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
@@ -11175,6 +11186,336 @@ async function queueJob(kind, subject){
     {fields: {Title: kind + ':' + subject, Kind: kind, Subject: subject, State: 'queued', Params: '{}',
               RequestedBy: 'freezer app ' + deviceId(),
               RequestedUtc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), Attempts: 0}});
+}
+
+const PLANREQ_KEY = 'freezer.planreq';
+const PLANREQ_CFG = {poll_ms:15000, tick_ms:1000, limit_ms:30*60*1000, read_limit_ms:20000, send_limit_ms:45000,
+                     typical_ms:15*60*1000, forget_ms:24*3600*1000, slow_queue_ms:3*60*1000, min_weeks:1, max_weeks:8};
+const PLAN_PANEL_TITLE = 'New plan — progress';
+const PLAN_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+let PLANREQ = null;         
+let PLANREQ_TIMER = null, PLANREQ_INIT = false, PLAN_SEL = 1, PLAN_BUSY = false, PLAN_PANEL_KEY = '', JOBLIST_IDS = null;
+
+function planToday(){ return localDay(Date.now()); }                       
+function planDayName(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '')); if(!m) return '';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return PLAN_DOW[d.getDay()] + ' ' + (d.getMonth() + 1) + '/' + d.getDate();
+}
+function planAddDays(iso, days){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso)); if(!m) return '';
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) + days * 864e5).toISOString().slice(0, 10);
+}
+ 
+function planSubject(today, weeks){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(String(today))) throw new Error('planSubject: bad date ' + today);
+  const w = Number(weeks);
+  if(!(Number.isInteger(w) && w >= PLANREQ_CFG.min_weeks && w <= PLANREQ_CFG.max_weeks))
+    throw new Error('planSubject: weeks must be 1 to ' + PLANREQ_CFG.max_weeks + ', got ' + weeks);
+  return today + '-w' + w;
+}
+ 
+function planPreview(deliveryDays, today, weeks){
+  const next = (Array.isArray(deliveryDays) ? deliveryDays : []).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d)) && d > today).sort()[0] || null;
+  const w = Number(weeks);
+  if(!next) return {next:null, through:null,
+    text:'Covers orders through ' + w + ' week(s) after the next delivery day — the office machine works out the date'};
+  const through = planAddDays(next, 7 * w);
+  return {next:next, through:through,
+    text:'Covers orders from today through ' + planDayName(through) + ' — ' + w + ' week(s) from the next delivery day (' + planDayName(next) + ')'};
+}
+
+function planGuardBlocked(){
+  if(!PAYLOAD || !S) return false;
+  if(!hasRecordedWork(S)) return false;
+  return !(S.finalize_requested && !unsyncedCrewWork());
+}
+function planLastLine(msg){
+  const ls = String(msg == null ? '' : msg).split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  return ls.length ? ls[ls.length - 1] : '';
+}
+function planEv(kind, extra){         
+  if(VIEW || !S || !PAYLOAD) return;
+  try{ NO_UNDO++; try{ ev(kind, extra); } finally { NO_UNDO--; } }catch(e){}
+}
+function planLimit(p, ms, what){
+  let t; const to = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('no answer from ' + what + ' in ' + Math.round(ms / 1000) + ' s')), ms); });
+  return Promise.race([p, to]).finally(() => clearTimeout(t));
+}
+function mmss(ms){ const s = Math.max(0, Math.floor(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+
+function renderPlanStrip(){
+  const st = document.getElementById('planstrip'), b = document.getElementById('planbtn'); if(!st || !b) return;
+  if(!PAYLOAD || !PAYLOAD.bays){ st.style.display = 'none'; return; }
+  planReqInit();
+  st.style.display = 'flex';
+  const pend = planPending();
+  b.textContent = pend ? '⏳ New plan is being built — tap for progress' : '🗓 New plan';
+  b.setAttribute('aria-label', pend ? 'A new plan is being built — see progress' : 'Ask for a new plan');
+}
+function openNewPlan(){
+  if(!PAYLOAD || !PAYLOAD.bays) return toast('Open a plan first.');
+  if(planPending()) return openPlanPanel();
+  if(planGuardBlocked()){
+    return dlg('Finish the shift first',
+      '<div class="warnbox"><b>This tablet has work recorded on the current plan.</b><div class="sm" style="margin-top:6px">'+
+      'Finish the shift and send it to Finale first — a new plan built now would be sized on a floor Finale doesn’t know about yet.</div></div>',
+      [{t:'Take me there', c:'pri', f:() => { openFinish(); }}, {t:'OK', c:'ghost'}]);
+  }
+  PLAN_SEL = 1; PLAN_BUSY = false;
+  openPlanWeeks();
+}
+function planCurrentLine(){
+  const hz = PAYLOAD.horizon || {};
+  return '<div class="sm dim">Current plan: pull day <b>' + esc(PAYLOAD.plan_date || '?') + '</b> · built ' +
+    esc(String(PAYLOAD.built || '?').replace('T', ' ').slice(0, 16)) + (hz.label ? ' · ' + esc(hz.label) : '') + '</div>';
+}
+function openPlanWeeks(){
+  const btns = [];
+  for(let w = PLANREQ_CFG.min_weeks; w <= PLANREQ_CFG.max_weeks; w++)
+    btns.push('<button type="button" data-w="' + w + '" aria-label="' + w + ' week' + (w === 1 ? '' : 's') + '" style="min-height:64px;font-size:26px;font-weight:700;padding:4px">' + w + '</button>');
+  dlg('Build a new plan',
+    '<p class="sm">How many weeks of orders should it cover, counted from the next delivery day?</p>' +
+    '<div id="pwbtns" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0">' + btns.join('') + '</div>' +
+    '<div id="pwprev" class="okbox" style="font-weight:600"></div>' + planCurrentLine(),
+    [{t:'Cancel', c:'ghost'},
+     {t:'Next', c:'pri', f:() => { askReplacePlan(PLAN_SEL); return false; }}],
+    () => {
+      const paint = () => {
+        [].slice.call(document.querySelectorAll('#pwbtns button')).forEach(b => {
+          const on = Number(b.dataset.w) === PLAN_SEL; b.className = on ? 'pri' : 'ghost'; b.setAttribute('aria-pressed', String(on)); });
+        const pv = document.getElementById('pwprev'); if(pv) pv.textContent = planPreview(PAYLOAD.delivery_days, planToday(), PLAN_SEL).text;
+      };
+      [].slice.call(document.querySelectorAll('#pwbtns button')).forEach(b => b.onclick = () => { PLAN_SEL = Number(b.dataset.w); paint(); });
+      paint();
+    });
+}
+function askReplacePlan(weeks){
+  const pv = planPreview(PAYLOAD.delivery_days, planToday(), weeks);
+  const through = pv.through ? planDayName(pv.through) : (weeks + ' week(s) after the next delivery day');
+  dlg('Replace the current plan?',
+    '<div class="badbox"><b>This REPLACES the current plan on every tablet that has not recorded work on it.</b>' +
+    '<div class="sm" style="margin-top:6px">A tablet that is mid-shift keeps its plan until that shift is sent to Finale.</div></div>' +
+    '<p>The current plan (pull day <b>' + esc(PAYLOAD.plan_date || '?') + '</b>, built ' +
+      esc(String(PAYLOAD.built || '?').replace('T', ' ').slice(0, 16)) + ') will be replaced by a new plan covering orders through <b>' + esc(through) + '</b>.</p>' +
+    '<ul class="sm"><li>Anything planned but not yet done on the current plan is dropped and <b>cannot be brought back</b>.</li>' +
+    '<li>Work already sent to Finale is kept.</li>' +
+    '<li>It takes about 10–15 minutes and you can close the app.</li></ul>',
+    [{t:'Keep the current plan', c:'pri'},
+     {t:'Replace the plan', c:'danger', f:() => { requestNewPlan(weeks); return false; }}]);
+}
+
+async function jobListIds(){
+  if(JOBLIST_IDS) return JOBLIST_IDS;
+  const sp = CFG.sharepoint;
+  const site = await graph(`/sites/${sp.hostname}:${sp.site_path}`);
+  const lists = await graph(`/sites/${site.id}/lists?$select=displayName,id`);
+  const lst = (lists.value || []).find(l => l.displayName === JOB_LIST);
+  if(!lst) throw new Error('the ' + JOB_LIST + ' queue does not exist on this site yet');
+  return (JOBLIST_IDS = {site:site.id, list:lst.id});
+}
+async function planReqReadRow(rowId){
+  const ids = await jobListIds();
+  return graph(`/sites/${ids.site}/lists/${ids.list}/items/${encodeURIComponent(rowId)}?expand=fields`);
+}
+function planReqPersist(){
+  try{ const P = PLANREQ; localStorage.setItem(PLANREQ_KEY, JSON.stringify({rowId:P.rowId, subject:P.subject, weeks:P.weeks, requestedAt:P.requestedAt})); }catch(e){}
+}
+function planReqForget(){ try{ localStorage.removeItem(PLANREQ_KEY); }catch(e){} }
+function planPending(){ return !!(PLANREQ && !PLANREQ.terminal); }
+function planReqInit(){                       
+  if(PLANREQ_INIT) return; PLANREQ_INIT = true;
+  let r = null;
+  try{ r = JSON.parse(localStorage.getItem(PLANREQ_KEY) || 'null'); }catch(e){ r = null; }
+  if(!r || r.rowId == null || !r.subject || !isFinite(Date.parse(r.requestedAt || ''))){ if(r) planReqForget(); return; }
+  if(Date.now() - Date.parse(r.requestedAt) > PLANREQ_CFG.forget_ms){ planReqForget(); return; }    
+  PLANREQ = {rowId:r.rowId, subject:r.subject, weeks:r.weeks, requestedAt:r.requestedAt, gen:1, row:null, err:null,
+             polling:false, lastPoll:0, doneSeen:false, outcome:null, terminal:false, resumed:true};
+  planReqStart(true);
+  setTimeout(() => { try{ toast('A new plan is being built — tap 🗓 for progress'); }catch(e){} }, 0);
+}
+function planReqStart(pollNow){
+  clearInterval(PLANREQ_TIMER);
+  PLANREQ_TIMER = setInterval(planReqTick, PLANREQ_CFG.tick_ms);
+  if(pollNow) setTimeout(() => planReqPoll(), 0);
+}
+function planReqTick(){
+  if(!planPending()){ clearInterval(PLANREQ_TIMER); PLANREQ_TIMER = null; return; }
+  const open = planPanelOpen();
+  if(open) renderPlanPanel(false);
+  const due = Date.now() - (PLANREQ.lastPoll || 0) >= PLANREQ_CFG.poll_ms;
+  if(due && !PLANREQ.polling && (open || document.visibilityState !== 'hidden')) planReqPoll();
+}
+async function requestNewPlan(weeks){
+  if(PLAN_BUSY) return; PLAN_BUSY = true;
+  const t0 = Date.now(); let subject;
+  try{ subject = planSubject(planToday(), weeks); }
+  catch(e){ PLAN_BUSY = false; return planSendFailed(String(e.message || e)); }
+  const tick = setInterval(() => { const el = document.getElementById('prclock'); if(el && PLAN_PANEL_KEY === 'sending') el.textContent = 'Elapsed ' + mmss(Date.now() - t0); }, 1000);
+  PLAN_PANEL_KEY = 'sending';
+  dlg(PLAN_PANEL_TITLE,
+    '<div aria-live="polite"><b>Step 1 of 2 · Sending the request to the office machine…</b></div>' +
+    '<div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="5"><i style="width:5%"></i></div>' +
+    '<div class="sm dim"><span id="prclock">Elapsed 00:00</span> · we stop waiting at ' + mmss(PLANREQ_CFG.send_limit_ms) + '</div>',
+    [{t:'Close', c:'ghost'}]);
+  try{
+    const r = await planLimit(queueJob('freezer.plan', subject), PLANREQ_CFG.send_limit_ms, 'the office list');
+    if(!r || (r.id == null && r.already == null)) throw new Error('the office list gave no id for the request');
+    const rowId = r.already != null ? r.already : r.id;
+    clearInterval(tick); PLAN_BUSY = false;
+    PLANREQ = {rowId:rowId, subject:subject, weeks:Number(weeks), requestedAt:new Date().toISOString(), gen:(PLANREQ ? PLANREQ.gen : 0) + 1,
+               row:null, err:null, polling:false, lastPoll:0, doneSeen:false, outcome:null, terminal:false, already:r.already != null};
+    planReqPersist();
+    planEv('plan_requested', {subject:subject, weeks:Number(weeks), row:String(rowId), already:r.already != null});
+    planReqStart(true);
+    renderPlanStrip();
+    renderPlanPanel(true);
+  }catch(e){
+    clearInterval(tick); PLAN_BUSY = false;
+    planSendFailed(String((e && e.message) || e));
+  }
+}
+function planSendFailed(why){
+  PLAN_PANEL_KEY = 'sendfail';
+  dlg(PLAN_PANEL_TITLE,
+    '<div class="badbox"><b>The request did not go through.</b><div class="sm" style="margin-top:6px">Nothing changed — your current plan is exactly as it was, and your work is safe. ' +
+    'If it did reach the office machine, Try again shows its progress instead of asking twice.</div></div>' +
+    '<details class="sm dim"><summary>Details</summary>' + esc(why) + '</details>',
+    [{t:'Close', c:'ghost'}, {t:'Try again', c:'pri', f:() => { openNewPlan(); return false; }}]);
+}
+
+async function planReqPoll(){
+  const P = PLANREQ; if(!P || P.terminal || P.polling) return;
+  P.polling = true; P.lastPoll = Date.now(); const gen = P.gen;
+  try{
+    if(!P.doneSeen){
+      const row = await planLimit(planReqReadRow(P.rowId), PLANREQ_CFG.read_limit_ms, 'the office list');
+      if(PLANREQ !== P || P.gen !== gen || P.terminal) return;            
+      if(!row || !row.fields) return planReqEnd(P, 'gone');
+      P.row = row;
+    }
+    P.err = null;
+    await planReqAdvance(P, gen);
+  }catch(e){
+    if(PLANREQ === P && P.gen === gen){
+      const m = String((e && e.message) || e);
+      if(/\/items\/.*HTTP 404/.test(m)) planReqEnd(P, 'gone');           
+      else P.err = m;
+    }
+  }finally{
+    if(PLANREQ === P){ P.polling = false; renderPlanPanel(false); renderPlanStrip(); }
+  }
+}
+async function planReqAdvance(P, gen){
+  const f = (P.row && P.row.fields) || {}, st = String(f.State || 'queued');
+  if(st === 'refused' || st === 'failed' || st === 'needs_human'){
+    return planReqEnd(P, st);
+  }
+  if(st === 'done' && /PLAN_REFUSED/.test(String(f.Message || ''))){
+     
+    return planReqEnd(P, 'plan_refused');
+  }
+  if(st === 'done'){
+    P.doneSeen = true;
+     
+    const p = await planLimit(fetchPlan(), PLANREQ_CFG.read_limit_ms * 2, 'the plan file');
+    if(PLANREQ !== P || P.gen !== gen || P.terminal) return;
+    const out = await refreshPlanQuietly(p);
+    if(PLANREQ !== P || P.gen !== gen) return;
+    const hz = p.horizon || {};
+    if(out === 'loaded' || out === 'held' || out === 'pending'){
+      P.outcome = out;
+      P.outcomeText = out === 'loaded'
+        ? 'New plan loaded' + (hz.through ? ' — covers orders through ' + planDayName(hz.through) : (hz.label ? ' — ' + hz.label : '')) + '.'
+        : 'The new plan is ready, but this tablet has work recorded on the current plan, so it stays on that plan until the shift is closed out — see the notice at the top.';
+      return planReqEnd(P, 'done');
+    }
+     
+    P.err = out === 'same' ? 'The office machine says it is done, but this tablet still sees the old plan — checking again…' : 'Could not load the new plan yet — checking again…';
+  }
+}
+function planReqEnd(P, state){
+  P.terminal = true; P.endState = state;
+  planReqForget();
+  const f = (P.row && P.row.fields) || {};
+  planEv(state === 'done' ? 'plan_request_done' : (state === 'stopped' ? 'plan_request_stopped' : 'plan_request_refused'),
+         {subject:P.subject, state:state, outcome:P.outcome || null, message:planLastLine(f.Message).slice(0, 200)});
+  clearInterval(PLANREQ_TIMER); PLANREQ_TIMER = null;
+  try{ render(); }catch(e){}
+   
+  if(!planPanelOpen() && state !== 'stopped'){ try{ toast(state === 'done' ? (P.outcomeText || 'New plan loaded.') : state === 'gone' ? 'The plan request is no longer on the office list — ask again.' : (planLastLine(f.Message) || 'The new plan could not be built.')); }catch(e){} }
+}
+
+function planPanelOpen(){
+  const d = document.getElementById('dlg'), h = document.getElementById('dlgh');
+  return !!(d && d.open && h && h.textContent === PLAN_PANEL_TITLE && /^(queued|queued_slow|running|loading|ready|refused|failed|late|gone|stopped)$/.test(PLAN_PANEL_KEY));
+}
+function planReqBase(){
+  const t = Date.parse((PLANREQ.row && PLANREQ.row.fields && PLANREQ.row.fields.RequestedUtc) || '');
+  return isFinite(t) ? t : Date.parse(PLANREQ.requestedAt);
+}
+function planReqView(now){
+  const P = PLANREQ, f = (P.row && P.row.fields) || {}, st = String(f.State || 'queued'), el = now - planReqBase();
+  const last = planLastLine(f.Message);
+  if(P.terminal && P.endState === 'done') return {key:'ready', tone:'okbox', step:'Ready', pct:100, text:P.outcomeText || 'New plan loaded.'};
+  if(P.terminal && P.endState === 'plan_refused') return {key:'refused', tone:'badbox', step:'The office machine said no', pct:0,
+    text:'The office machine said no: ' + (last || 'it did not say why.') + ' Your current plan is unchanged.'};
+  if(P.terminal && P.endState === 'gone') return {key:'gone', tone:'badbox', step:'The request is gone', pct:0,
+    text:'This request is no longer on the office machine’s list — ask again. Your current plan is unchanged.'};
+  if(P.terminal && P.endState === 'stopped') return {key:'stopped', tone:'warnbox', step:'Stopped waiting', pct:0,
+    text:'This tablet has stopped waiting. The office machine may still finish it — if it does, the new plan arrives on its own the normal way. Your current plan is unchanged.'};
+  if(P.terminal) return {key:st === 'refused' ? 'refused' : 'failed', tone:'badbox', step:st === 'refused' ? 'The office machine said no' : 'The plan could not be built', pct:0,
+    text:(last || 'The office machine stopped without saying why.') + (st === 'refused' ? '' : ' Jack has been told.') +
+         ' Your current plan is unchanged.'};
+  if(el > PLANREQ_CFG.limit_ms) return {key:'late', tone:'warnbox', step:'This is taking longer than usual', pct:Math.min(92, 15 + 77),
+    text:'The office machine may still be building it. Your current plan is unchanged and your work is safe. Check again, close this and come back later (the request is kept), or stop waiting.'};
+  if(P.doneSeen) return {key:'loading', tone:'okbox', step:'Step 2 of 2 · Loading the new plan onto this tablet…', pct:95, text:''};
+  if(st === 'claimed' || st === 'running'){
+    const frac = Math.min(1, el / PLANREQ_CFG.typical_ms);
+    return {key:'running', tone:'okbox', step:'Step 2 of 2 · Building the plan — usually 10–15 minutes', pct:Math.round(15 + frac * 75), text:'You can close the app. It keeps building, and this tablet picks the plan up when you come back.'};
+  }
+  if(el > PLANREQ_CFG.slow_queue_ms) return {key:'queued_slow', tone:'okbox', step:'Step 1 of 2 · Waiting for the office machine to pick it up', pct:8,
+    text:'You can close the app. The office machine may be finishing another plan first.'};
+  return {key:'queued', tone:'okbox', step:'Step 1 of 2 · Waiting for the office machine to pick it up', pct:8, text:'You can close the app.'};
+}
+function openPlanPanel(){ if(PLANREQ) renderPlanPanel(true); }
+function renderPlanPanel(force){
+  if(!PLANREQ) return;
+  if(!force && !planPanelOpen()) return;
+  const now = Date.now(), v = planReqView(now), P = PLANREQ;
+  const note = P.err ? 'Can’t get an answer right now (' + P.err + ') — still trying.' : '';
+  const clock = 'Elapsed ' + mmss(now - planReqBase()) + (P.terminal ? '' : ' · we stop waiting at ' + mmss(PLANREQ_CFG.limit_ms));
+  if(!force && PLAN_PANEL_KEY === v.key){                            
+    const c = document.getElementById('prclock'); if(c) c.textContent = clock;
+    const b = document.getElementById('prbar'); if(b){ b.style.width = v.pct + '%'; if(b.parentNode) b.parentNode.setAttribute('aria-valuenow', String(v.pct)); }
+    const n_ = document.getElementById('prnote'); if(n_) n_.textContent = note;
+    return;
+  }
+  PLAN_PANEL_KEY = v.key;
+  const buttons = [{t:'Close', c:'ghost'}];
+  if(v.key === 'late') buttons.push({t:'Check again', c:'pri', f:() => { P.lastPoll = 0; planReqPoll(); return false; }});
+  if(v.key === 'late') buttons.push({t:'Stop waiting', c:'ghost', f:() => { planReqStop(); return false; }});
+  if(v.key === 'refused' || v.key === 'failed' || v.key === 'gone') buttons.push({t:'Try again', c:'pri', f:() => { openNewPlan(); return false; }});
+  dlg(PLAN_PANEL_TITLE,
+    '<div class="' + v.tone + '"><div id="prstep" aria-live="polite"><b>' + esc(v.step) + '</b></div>' +
+    (v.text ? '<div class="sm" style="margin-top:6px">' + esc(v.text) + '</div>' : '') + '</div>' +
+    '<div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + v.pct + '"><i id="prbar" style="width:' + v.pct + '%"></i></div>' +
+    '<div class="sm dim"><span id="prclock">' + esc(clock) + '</span></div>' +
+    '<div id="prnote" class="sm">' + esc(note) + '</div>' +
+    '<details class="sm dim"><summary>Details</summary>request ' + esc(String(P.rowId)) + ' · ' + esc(P.subject) + ' · state ' +
+      esc(String((P.row && P.row.fields && P.row.fields.State) || 'not read yet')) + '</details>',
+    buttons);
+}
+
+function planReqStop(){
+  const P = PLANREQ; if(!P || P.terminal) return;
+  P.gen++;                                    
+  planReqEnd(P, 'stopped');
+  renderPlanPanel(true);
+}
+function horizonLine(){
+  const hz = PAYLOAD && PAYLOAD.horizon;
+  return (hz && hz.label) ? '<div class="sm dim" style="margin:2px 0 6px">' + esc(hz.label) + '</div>' : '';
 }
  
 async function fbUploadOne(rec){
